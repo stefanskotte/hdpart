@@ -60,6 +60,16 @@ int disc_is_device_name(const char *s)
     return 1;
 }
 
+int disc_is_partitionable(const char *driver, uint32_t total_blocks)
+{
+    const char *fd = "trackdisk.device";
+    int i;
+    if (total_blocks == 0) return 0;        /* no media / directory drive */
+    for (i = 0; driver[i] && fd[i] && driver[i] == fd[i]; i++) ;
+    if (driver[i] == 0 && fd[i] == 0) return 0;  /* exact "trackdisk.device" */
+    return 1;
+}
+
 #ifdef HDPART_AMIGA
 
 /* Curated list of common block-device drivers to probe (units 0..PROBE_UNITS-1).
@@ -81,10 +91,11 @@ static int add_unique(DiscDisk out[], int *count, int max,
     if (idx >= 0) return idx;
     if (*count >= max) return -1;
     idx = (*count)++;
-    out[idx].unit    = unit;
-    out[idx].size_mb = 0;
-    out[idx].status  = DST_UNKNOWN;
-    out[idx].label[0]= 0;
+    out[idx].unit         = unit;
+    out[idx].size_mb      = 0;
+    out[idx].status       = DST_UNKNOWN;
+    out[idx].partitionable = 0;
+    out[idx].label[0]     = 0;
     for (n = 0; n < DISC_DRIVER_LEN - 1 && driver[n]; n++)
         out[idx].driver[n] = driver[n];
     out[idx].driver[n] = 0;
@@ -101,6 +112,7 @@ static void probe_one(DiscDisk *d)
     if (dev_geometry(h, &info) == 0 && info.has_media && info.total_blocks > 0) {
         static RdbModel m;   /* ~1.8KB: keep off the 4KB Shell stack */
         d->size_mb = disc_blocks_to_mb(info.total_blocks, info.block_bytes);
+        d->partitionable = disc_is_partitionable(d->driver, info.total_blocks);
         if (d->label[0] == 0) {
             char model[40];
             if (dev_inquiry_model(h, model) == 0 && model[0]) {

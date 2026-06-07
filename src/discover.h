@@ -20,6 +20,7 @@ typedef struct {
     uint32_t   unit;
     uint32_t   size_mb;                   /* from geometry, 0 if unknown */
     DiskStatus status;
+    int        partitionable;             /* 1 if this can hold an RDB (for the GUI picker) */
     char       label[DISC_LABEL_LEN];     /* model string / DOS name for display */
 } DiscDisk;
 
@@ -39,6 +40,10 @@ uint32_t disc_blocks_to_mb(uint32_t total_blocks, uint32_t block_bytes);
    ending in ".device" (case-insensitive). Used to reject non-disk DOS handlers
    (RAW:, PRT:, SER:, ...) whose dol_Startup is not a FileSysStartupMsg. */
 int disc_is_device_name(const char *s);
+
+/* True if a (driver,total_blocks) pair represents an RDB-partitionable disk:
+   has media (total_blocks>0) and is not a floppy (trackdisk.device). */
+int disc_is_partitionable(const char *driver, uint32_t total_blocks);
 
 /* ---- OS-bound entry point (implemented in discover.c) ---- */
 /* Fill out[] with up to `max` discovered disks; return the count. */

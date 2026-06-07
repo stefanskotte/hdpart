@@ -62,12 +62,26 @@ static void test_is_device_name(void)
     }
 }
 
+static void test_is_partitionable(void)
+{
+    /* Real disks with media: partitionable. */
+    CHECK(disc_is_partitionable("scsi.device",  100) == 1);
+    CHECK(disc_is_partitionable("uaehf.device", 8192) == 1);
+    CHECK(disc_is_partitionable("lide.device",  1) == 1);
+    /* Floppies are never RDB-partition targets. */
+    CHECK(disc_is_partitionable("trackdisk.device", 1760) == 0);
+    /* Directory drives / no-media report 0 blocks. */
+    CHECK(disc_is_partitionable("uae.device", 0) == 0);
+    CHECK(disc_is_partitionable("scsi.device", 0) == 0);
+}
+
 int main(void)
 {
     test_bcpl_to_c();
     test_find();
     test_blocks_to_mb();
     test_is_device_name();
+    test_is_partitionable();
     if (g_fail) { printf("%d CHECK(s) FAILED\n", g_fail); return 1; }
     printf("DISCOVER TESTS PASSED\n");
     return 0;
