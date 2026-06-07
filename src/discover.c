@@ -179,28 +179,14 @@ static void scan_probe(DiscDisk out[], int *count, int max)
     }
 }
 
-/* TEMP: phase markers to localize any crash; remove once scan is stable. */
-static void disc_dbg(const char *s)
-{
-    BPTR o = Output();
-    LONG n = 0;
-    const char *p = s;
-    while (*p++) n++;
-    if (o) Write(o, (CONST APTR)s, n);
-}
-
 int discover_disks(DiscDisk out[], int max)
 {
     int count = 0;
     int i;
-    disc_dbg("\n<dos");  scan_dos_devices(out, &count, max);  disc_dbg(" ok>");
-    disc_dbg("<probe");  scan_probe(out, &count, max);        disc_dbg(" ok>");
-    for (i = 0; i < count; i++) {
-        disc_dbg("<p:"); disc_dbg(out[i].driver); disc_dbg(">");
+    scan_dos_devices(out, &count, max);
+    scan_probe(out, &count, max);
+    for (i = 0; i < count; i++)
         probe_one(&out[i]);
-        disc_dbg("ok ");
-    }
-    disc_dbg("<done>\n");
     return count;
 }
 
