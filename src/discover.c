@@ -35,11 +35,18 @@ int disc_find(const DiscDisk list[], int count, const char *driver, uint32_t uni
 
 uint32_t disc_blocks_to_mb(uint32_t total_blocks, uint32_t block_bytes)
 {
-    uint32_t blocks_per_mb;
+    /* No libgcc on this toolchain: avoid / by shift.
+       block_bytes is always a power of 2 on Amiga block devices.
+       MB = (total_blocks * block_bytes) >> 20.
+       Compute shift = log2(block_bytes), then MB = total_blocks >> (20 - shift).
+       If block_bytes >= 1MB the result is 0 (degenerate). */
+    int shift;
+    uint32_t b;
     if (block_bytes == 0) return 0;
-    blocks_per_mb = (1024UL * 1024UL) / block_bytes;   /* 2048 for 512 */
-    if (blocks_per_mb == 0) return 0;
-    return total_blocks / blocks_per_mb;
+    shift = 0;
+    for (b = block_bytes; b > 1; b >>= 1) shift++;  /* log2(block_bytes) */
+    if (shift >= 20) return 0;       /* block_bytes >= 1 MB: degenerate */
+    return total_blocks >> (20 - shift);
 }
 
 #ifdef HDPART_AMIGA
