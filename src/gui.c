@@ -48,7 +48,9 @@ static WORD     g_topb, g_leftb;     /* window border offsets (title bar / left 
 /* Exec list of partition rows for the listview. */
 static struct List g_partlist;
 static struct Node g_partnodes[RDB_MAX_PARTS];
-static char        g_partrows[RDB_MAX_PARTS][64];
+/* 80 bytes: worst legal row (31-char name + 3x10-digit fields + labels + NUL)
+   is 67 bytes; 80 leaves headroom and prevents overflow for any legal RDB. */
+static char        g_partrows[RDB_MAX_PARTS][80];
 static char        g_statusbuf[80];
 
 static int u2s(char *o, ULONG v)   /* write decimal, return length */
@@ -206,8 +208,7 @@ int gui_run(void)
     CloseWindow(g_win); g_win = 0;
 cleanup_gad:
     FreeGadgets(g_glist); g_glist = 0;
-cleanup_vi:
-    FreeVisualInfo(g_vi); g_vi = 0;
+    FreeVisualInfo(g_vi); g_vi = 0;   /* reached by fall-through from cleanup_gad */
 cleanup_scr:
     if (!g_pub && g_scr) CloseScreen(g_scr);
     if (g_pub) UnlockPubScreen(0, g_pub);
