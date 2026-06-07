@@ -179,3 +179,10 @@ geometry.
 - **Phase 2+:** bootable/boot-priority UI, selectable filesystem types and
   embedding custom filesystems (FSHD/LSEG), >4 GB / TD64, bad-block handling,
   mount-after-save, custom visual theme layer.
+- **Localization (later):** translate the UI via AmigaOS built-in
+  `locale.library` catalogs (`OpenCatalog`/`GetCatalogStr`). Note
+  `locale.library` is V38 (OS 2.1)+, above our V37 baseline, so it must be
+  opened defensively with an English built-in fallback when absent. To keep
+  this cheap to add, **phase 1 routes all user-facing strings through a
+  single table/`STR_*` id scheme** rather than inlining literals, so the
+  catalog layer drops in without touching call sites.
