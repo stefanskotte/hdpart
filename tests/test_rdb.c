@@ -60,12 +60,45 @@ static void test_init_model(void)
     CHECK(m.num_parts == 0);
 }
 
+static void test_add_partition(void)
+{
+    RdbModel m;
+    rdb_init_model(&m, 996, 16, 63);
+
+    /* First partition: 200 MB -> 407 cyl, starts at lo_cyl=2 */
+    int r = rdb_add_partition(&m, "DH0", 200, RDB_DOSTYPE_FFS_INTL);
+    CHECK(r == RDB_OK);
+    CHECK(m.num_parts == 1);
+    CHECK(m.parts[0].low_cyl == 2);
+    CHECK(m.parts[0].high_cyl == 2 + 407 - 1);          /* 408 */
+    CHECK(strcmp(m.parts[0].name, "DH0") == 0);
+    CHECK(m.parts[0].dos_type == RDB_DOSTYPE_FFS_INTL);
+
+    /* Second partition follows immediately */
+    r = rdb_add_partition(&m, "DH1", 200, RDB_DOSTYPE_FFS_INTL);
+    CHECK(r == RDB_OK);
+    CHECK(m.parts[1].low_cyl == 409);
+    CHECK(m.parts[1].high_cyl == 409 + 407 - 1);        /* 815 */
+
+    /* Duplicate name rejected */
+    r = rdb_add_partition(&m, "DH0", 10, RDB_DOSTYPE_FFS_INTL);
+    CHECK(r == RDB_ERR_DUP_NAME);
+
+    /* Too big to fit (remaining cyls 816..995 = 180 cyl ~ 88 MB) */
+    r = rdb_add_partition(&m, "DH2", 500, RDB_DOSTYPE_FFS_INTL);
+    CHECK(r == RDB_ERR_NO_SPACE);
+
+    /* validate passes on the good model */
+    CHECK(rdb_validate(&m) == RDB_OK);
+}
+
 int main(void)
 {
     test_endian();
     test_checksum();
     test_geometry();
     test_init_model();
+    test_add_partition();
     /* further test functions appended in later tasks */
     if (g_fail) { printf("%d CHECK(s) FAILED\n", g_fail); return 1; }
     printf("ALL TESTS PASSED\n");

@@ -45,4 +45,25 @@ typedef struct {
 
 void rdb_init_model(RdbModel *m, uint32_t cyl, uint32_t heads, uint32_t sectors);
 
+enum {
+    RDB_OK = 0,
+    RDB_ERR_NO_SPACE,
+    RDB_ERR_DUP_NAME,
+    RDB_ERR_TOO_MANY,
+    RDB_ERR_BAD_NAME,
+    RDB_ERR_OVERLAP,
+    RDB_ERR_IO,
+    RDB_ERR_NO_RDB
+};
+
+/* Append a partition sized in MB, placed immediately after the last one
+   (or at lo_cyl). Returns RDB_OK or an RDB_ERR_*. */
+int rdb_add_partition(RdbModel *m, const char *name, uint32_t size_mb,
+                      uint32_t dos_type);
+/* Remove partition by index, shifting the rest down. */
+int rdb_delete_partition(RdbModel *m, int index);
+/* Validate all partitions: bounds within [lo_cyl,hi_cyl], no overlaps,
+   unique names. Returns RDB_OK or first error found. */
+int rdb_validate(const RdbModel *m);
+
 #endif
