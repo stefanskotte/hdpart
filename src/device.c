@@ -95,4 +95,53 @@ int dev_block_io(void *ctx, uint32_t block, uint8_t *buf, int write)
                  : dev_read_block (h, block, (UBYTE *)buf);
 }
 
-/* dev_inquiry_model is added in Task 2.2.1 */
+/* Standard SCSI INQUIRY (6-byte CDB), 36-byte response.
+   Response: bytes 8..15 = vendor id, 16..31 = product id (space padded). */
+int dev_inquiry_model(DeviceHandle *h, char model[40])
+{
+    static UBYTE cdb[6];
+    static UBYTE data[36];
+    static UBYTE sense[32];
+    struct SCSICmd sc;
+    LONG err;
+    int i, n;
+
+    model[0] = 0;
+    for (i = 0; i < 6;  i++) cdb[i]  = 0;
+    for (i = 0; i < 36; i++) data[i] = 0;
+    cdb[0] = 0x12;   /* INQUIRY */
+    cdb[4] = 36;     /* allocation length */
+
+    sc.scsi_Data       = (UWORD *)data;
+    sc.scsi_Length     = 36;
+    sc.scsi_Actual     = 0;
+    sc.scsi_Command    = cdb;
+    sc.scsi_CmdLength  = 6;
+    sc.scsi_CmdActual  = 0;
+    sc.scsi_Flags      = SCSIF_READ | SCSIF_AUTOSENSE;
+    sc.scsi_Status     = 0;
+    sc.scsi_SenseData  = sense;
+    sc.scsi_SenseLength= sizeof(sense);
+    sc.scsi_SenseActual= 0;
+
+    h->req->iotd_Req.io_Command = HD_SCSICMD;
+    h->req->iotd_Req.io_Data    = &sc;
+    h->req->iotd_Req.io_Length  = sizeof(sc);
+    h->req->iotd_Req.io_Actual  = 0;
+    err = DoIO((struct IORequest *)h->req);
+    if (err != 0) return (int)err;     /* device has no SCSI passthrough */
+
+    /* Compose "VENDOR PRODUCT", trimming trailing spaces of each field. */
+    n = 0;
+    for (i = 8; i < 16 && n < 39; i++) {
+        if (data[i] >= 32 && data[i] < 127) model[n++] = (char)data[i];
+    }
+    while (n > 0 && model[n-1] == ' ') n--;
+    if (n < 39) model[n++] = ' ';
+    for (i = 16; i < 32 && n < 39; i++) {
+        if (data[i] >= 32 && data[i] < 127) model[n++] = (char)data[i];
+    }
+    while (n > 0 && model[n-1] == ' ') n--;
+    model[n] = 0;
+    return 0;
+}
