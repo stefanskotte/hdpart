@@ -6,12 +6,16 @@
 #include <workbench/startup.h>
 #include <proto/exec.h>
 #include <proto/intuition.h>
+#include "rdb.h"
 
 struct IntuitionBase *IntuitionBase = 0;
 
 int hdpart_main(struct WBStartup *wbmsg)
 {
     struct Window *win;
+    RdbModel probe;
+    rdb_init_model(&probe, 100, 4, 17);   /* link-smoke: pulls in rdb.o */
+    (void)probe;
     (void)wbmsg;
 
     IntuitionBase = (struct IntuitionBase *)OpenLibrary("intuition.library", 37);
