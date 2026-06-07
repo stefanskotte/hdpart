@@ -46,7 +46,9 @@ static const char *status_name(DiskStatus s)
 static int run_scan(void)
 {
     BPTR out = Output();
-    DiscDisk disks[DISC_MAX];
+    /* static: DiscDisk[32] is ~2.9KB; on the 4KB default Shell stack, keeping
+       it (plus probe_one's RdbModel) on the stack overflows -> crash. */
+    static DiscDisk disks[DISC_MAX];
     int count, i;
 
     put_str(out, "HDPart device scan\n------------------\n");

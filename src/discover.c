@@ -99,7 +99,7 @@ static void probe_one(DiscDisk *d)
     if (!h) { if (d->status == DST_UNKNOWN) d->status = DST_NOMEDIA; return; }
 
     if (dev_geometry(h, &info) == 0 && info.has_media && info.total_blocks > 0) {
-        RdbModel m;
+        static RdbModel m;   /* ~1.8KB: keep off the 4KB Shell stack */
         d->size_mb = disc_blocks_to_mb(info.total_blocks, info.block_bytes);
         if (d->label[0] == 0) {
             char model[40];
@@ -179,14 +179,28 @@ static void scan_probe(DiscDisk out[], int *count, int max)
     }
 }
 
+/* TEMP: phase markers to localize any crash; remove once scan is stable. */
+static void disc_dbg(const char *s)
+{
+    BPTR o = Output();
+    LONG n = 0;
+    const char *p = s;
+    while (*p++) n++;
+    if (o) Write(o, (CONST APTR)s, n);
+}
+
 int discover_disks(DiscDisk out[], int max)
 {
     int count = 0;
     int i;
-    scan_dos_devices(out, &count, max);
-    scan_probe(out, &count, max);
-    for (i = 0; i < count; i++)
+    disc_dbg("\n<dos");  scan_dos_devices(out, &count, max);  disc_dbg(" ok>");
+    disc_dbg("<probe");  scan_probe(out, &count, max);        disc_dbg(" ok>");
+    for (i = 0; i < count; i++) {
+        disc_dbg("<p:"); disc_dbg(out[i].driver); disc_dbg(">");
         probe_one(&out[i]);
+        disc_dbg("ok ");
+    }
+    disc_dbg("<done>\n");
     return count;
 }
 
