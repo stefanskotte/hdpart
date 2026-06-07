@@ -42,6 +42,24 @@ uint32_t disc_blocks_to_mb(uint32_t total_blocks, uint32_t block_bytes)
     return total_blocks / blocks_per_mb;
 }
 
+int disc_is_device_name(const char *s)
+{
+    int len = 0, i;
+    const char suf[8] = ".device";   /* 7 chars + NUL */
+    if (!s) return 0;
+    while (s[len]) {
+        if (s[len] < 0x20 || s[len] > 0x7E) return 0;  /* printable only */
+        if (++len > 60) return 0;                      /* implausibly long */
+    }
+    if (len < 8) return 0;                             /* need >=1 char + ".device" */
+    for (i = 0; i < 7; i++) {
+        char c = s[len - 7 + i];
+        if (c >= 'A' && c <= 'Z') c = (char)(c - 'A' + 'a');
+        if (c != suf[i]) return 0;
+    }
+    return 1;
+}
+
 #ifdef HDPART_AMIGA
 
 /* Curated list of common block-device drivers to probe (units 0..PROBE_UNITS-1).
@@ -119,11 +137,18 @@ static void scan_dos_devices(DiscDisk out[], int *count, int max)
         char dosname[DISC_LABEL_LEN];
         int idx;
         if (e->dol_Type != DLT_DEVICE || startup == 0) continue;
+        /* Many DLT_DEVICE entries are handlers (RAW:, PRT:, SER:, ...) whose
+           dol_Startup is NOT a FileSysStartupMsg. Dereferencing it as one would
+           read garbage or crash, so validate every pointer with TypeOfMem (0 =
+           not in any memory region) and require a real ".device" name. */
+        if (TypeOfMem((APTR)BADDR(startup)) == 0) continue;
         fssm = (struct FileSysStartupMsg *)BADDR(startup);
-        if (!fssm || fssm->fssm_Device == 0) continue;
+        if (fssm->fssm_Device == 0) continue;
+        if (TypeOfMem((APTR)BADDR(fssm->fssm_Device)) == 0) continue;
 
         disc_bcpl_to_c((const unsigned char *)BADDR(fssm->fssm_Device),
                        driver, sizeof(driver));
+        if (!disc_is_device_name(driver)) continue;   /* skip non-disk handlers */
         idx = add_unique(out, count, max, driver, fssm->fssm_Unit);
         if (idx < 0) continue;
         out[idx].status = DST_MOUNTED;

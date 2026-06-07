@@ -35,6 +35,11 @@ int disc_find(const DiscDisk list[], int count, const char *driver, uint32_t uni
 /* Convert a block count + block size to whole MB (floor), 32-bit safe. */
 uint32_t disc_blocks_to_mb(uint32_t total_blocks, uint32_t block_bytes);
 
+/* True if `s` looks like an exec device name: non-empty, all printable, and
+   ending in ".device" (case-insensitive). Used to reject non-disk DOS handlers
+   (RAW:, PRT:, SER:, ...) whose dol_Startup is not a FileSysStartupMsg. */
+int disc_is_device_name(const char *s);
+
 /* ---- OS-bound entry point (implemented in discover.c) ---- */
 /* Fill out[] with up to `max` discovered disks; return the count. */
 int discover_disks(DiscDisk out[], int max);

@@ -45,11 +45,29 @@ static void test_blocks_to_mb(void)
     CHECK(disc_blocks_to_mb(100, 0) == 0);   /* guard against /0 */
 }
 
+static void test_is_device_name(void)
+{
+    CHECK(disc_is_device_name("scsi.device") == 1);
+    CHECK(disc_is_device_name("uaehf.device") == 1);
+    CHECK(disc_is_device_name("a.device") == 1);          /* min valid length 8 */
+    CHECK(disc_is_device_name("TRACKDISK.DEVICE") == 1);  /* case-insensitive */
+    CHECK(disc_is_device_name("RAW") == 0);               /* handler, not a device */
+    CHECK(disc_is_device_name("PRT") == 0);
+    CHECK(disc_is_device_name("") == 0);
+    CHECK(disc_is_device_name(".device") == 0);           /* nothing before suffix */
+    CHECK(disc_is_device_name("foo.handler") == 0);
+    {
+        char bad[5]; bad[0]='g'; bad[1]=(char)0x01; bad[2]='B'; bad[3]=0;
+        CHECK(disc_is_device_name(bad) == 0);             /* non-printable */
+    }
+}
+
 int main(void)
 {
     test_bcpl_to_c();
     test_find();
     test_blocks_to_mb();
+    test_is_device_name();
     if (g_fail) { printf("%d CHECK(s) FAILED\n", g_fail); return 1; }
     printf("DISCOVER TESTS PASSED\n");
     return 0;
