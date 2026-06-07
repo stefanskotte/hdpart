@@ -15,6 +15,15 @@ struct DosLibrary *DOSBase = 0;
 /* Provided by main.c */
 extern int hdpart_main(struct WBStartup *wbmsg);
 
+/* CRITICAL: elf2hunk does NOT honor the ELF entry symbol — AmigaDOS begins
+ * executing at the first byte of the code hunk. We must therefore guarantee
+ * _start is the lowest-addressed code. The default GNU linker script places
+ * .text.startup ahead of .text/.text.*, so putting _start there makes it the
+ * hunk's first instruction. Without this, execution falls into whatever
+ * function the linker happened to place first (e.g. hdpart_main) with SysBase
+ * uninitialised, and the first library call dereferences a NULL base -> Guru.
+ * (Verified by the Makefile's post-link entry guard.) */
+__attribute__((section(".text.startup")))
 int _start(void)
 {
     struct Process  *proc;

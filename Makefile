@@ -29,11 +29,26 @@ CCFLAGS = -g -MP -MMD -m68000 -Os -nostdlib -ffreestanding -fomit-frame-pointer 
           -ffunction-sections -fdata-sections -Isrc
 LDFLAGS = -nostdlib -Wl,-e,_start,--emit-relocs,--gc-sections,-Map=$(OUT).map
 
+# elf2hunk ignores the ELF entry symbol and runs the first byte of the code
+# hunk. This guard fails the build if the lowest-addressed function is not
+# _start (see src/startup.c). Skipped on Windows (cmd.exe shell).
+ifdef WINDOWS
+ENTRY_CHECK = @echo (entry-order check skipped on Windows)
+else
+ENTRY_CHECK = @first=`m68k-amiga-elf-objdump -d $(OUT).elf | awk '/^[0-9a-f]+ </{print $$2; exit}'`; \
+	if [ "$$first" != "<_start>:" ]; then \
+		echo "FATAL: hunk entry is $$first, expected <_start>: (startup not first in .text)"; \
+		exit 1; \
+	fi; \
+	echo "entry-order OK: _start is first in .text"
+endif
+
 all: $(OUT).exe
 
 $(OUT).exe: $(OUT).elf
 	$(info Elf2Hunk $@)
 	@elf2hunk $(OUT).elf $(OUT).exe
+	$(ENTRY_CHECK)
 
 $(OUT).elf: $(c_objects)
 	$(info Linking $@)
