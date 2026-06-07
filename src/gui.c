@@ -212,14 +212,14 @@ void gui_rescan(void)
         g_devmap[n] = i;
         for (k = 0; d->driver[k] && p < 30; k++) t[p++] = d->driver[k];
         t[p++] = ' '; t[p++] = 'u';
-        /* unit as decimal */
-        { ULONG u = d->unit; char tmp[8]; int ti = 0;
+        /* unit as decimal (tmp[12]: a uint32 is up to 10 digits) */
+        { ULONG u = d->unit; char tmp[12]; int ti = 0;
           if (u == 0) tmp[ti++] = '0';
           while (u) { tmp[ti++] = (char)('0' + (u % 10)); u /= 10; }
           while (ti > 0 && p < 44) t[p++] = tmp[--ti]; }
         t[p++] = ' ';
         /* size MB */
-        { ULONG s = d->size_mb; char tmp[8]; int ti = 0;
+        { ULONG s = d->size_mb; char tmp[12]; int ti = 0;
           if (s == 0) tmp[ti++] = '0';
           while (s) { tmp[ti++] = (char)('0' + (s % 10)); s /= 10; }
           while (ti > 0 && p < 46) t[p++] = tmp[--ti];
