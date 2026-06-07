@@ -111,8 +111,11 @@ int gui_run(void)
 
     GadToolsBase = OpenLibrary("gadtools.library", 37);
     GfxBase = (struct GfxBase *)OpenLibrary("graphics.library", 37);
-    if (!GadToolsBase || !GfxBase) { if (GadToolsBase) CloseLibrary(GadToolsBase);
-        if (GfxBase) CloseLibrary((struct Library *)GfxBase); return 20; }
+    if (!GadToolsBase || !GfxBase) {
+        if (GadToolsBase) CloseLibrary(GadToolsBase);
+        if (GfxBase) CloseLibrary((struct Library *)GfxBase);
+        return 20;
+    }
 
     g_pub = LockPubScreen(0);
     if (g_pub) g_scr = g_pub;
@@ -125,7 +128,7 @@ int gui_run(void)
     g_vi = GetVisualInfo(g_scr, TAG_END);
     if (!g_vi) goto cleanup_scr;
 
-    if (!build_gadgets()) goto cleanup_vi;
+    if (!build_gadgets()) goto cleanup_gad;  /* FreeGadgets handles a partial/NULL chain */
 
     g_win = OpenWindowTags(0,
         WA_Left, 40, WA_Top, 24, WA_Width, 460, WA_Height, 210,
