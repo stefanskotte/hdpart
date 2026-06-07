@@ -10,6 +10,16 @@ static int g_fail = 0;
 #define CHECK(cond) do { if (!(cond)) { \
     printf("FAIL %s:%d  %s\n", __FILE__, __LINE__, #cond); g_fail++; } } while (0)
 
+typedef struct { FILE *f; } FileCtx;
+static int file_io(void *ctx, uint32_t block, uint8_t *buf, int write)
+{
+    FileCtx *c = (FileCtx *)ctx;
+    if (fseek(c->f, (long)block * RDB_BLOCK_BYTES, SEEK_SET)) return 1;
+    if (write) { if (fwrite(buf, 1, RDB_BLOCK_BYTES, c->f) != RDB_BLOCK_BYTES) return 1; }
+    else       { if (fread (buf, 1, RDB_BLOCK_BYTES, c->f) != RDB_BLOCK_BYTES) return 1; }
+    return 0;
+}
+
 static void test_endian(void)
 {
     uint8_t b[4];
@@ -137,15 +147,37 @@ static void test_serialize_parse(void)
     CHECK(back.parts[1].dos_type == RDB_DOSTYPE_FFS_INTL);
 }
 
-int main(void)
+int main(int argc, char **argv)
 {
+    if (argc >= 2 && strcmp(argv[1], "--emit") == 0) {
+        /* Small, self-consistent geometry so the image is only a few MB and
+           its size matches the geometry declared in the RDB (keeps rdbtool
+           happy): 64 cyl * 4 heads * 32 sec = 8192 blocks = 4 MB.
+           Output path is fixed to /tmp to avoid path-traversal concerns. */
+        const char *outpath = "/tmp/hdpart_test.img";
+        FILE *f = fopen(outpath, "wb+");
+        static uint8_t z[RDB_BLOCK_BYTES];
+        uint32_t i, total = 64u * 4u * 32u;   /* cylinders * cyl_blocks */
+        FileCtx c;
+        RdbModel m;
+        if (!f) { perror("fopen"); return 2; }
+        for (i = 0; i < total; i++) fwrite(z, 1, RDB_BLOCK_BYTES, f);
+        c.f = f;
+        rdb_init_model(&m, 64, 4, 32);
+        rdb_add_partition(&m, "DH0", 1, RDB_DOSTYPE_FFS_INTL);
+        rdb_add_partition(&m, "DH1", 1, RDB_DOSTYPE_FFS_INTL);
+        if (rdb_serialize(&m, file_io, &c) != RDB_OK) { fclose(f); return 3; }
+        fclose(f);
+        printf("wrote %s (%u blocks)\n", outpath, total);
+        return 0;
+    }
+
     test_endian();
     test_checksum();
     test_geometry();
     test_init_model();
     test_add_partition();
     test_serialize_parse();
-    /* further test functions appended in later tasks */
     if (g_fail) { printf("%d CHECK(s) FAILED\n", g_fail); return 1; }
     printf("ALL TESTS PASSED\n");
     return 0;
