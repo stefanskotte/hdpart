@@ -44,11 +44,28 @@ static void test_geometry(void)
     CHECK(mb == 200);                           /* 407 cyl -> 200 MB (floor) */
 }
 
+static void test_init_model(void)
+{
+    RdbModel m;
+    rdb_init_model(&m, /*cyl*/996, /*heads*/16, /*sectors*/63);
+    CHECK(m.cylinders == 996);
+    CHECK(m.heads == 16);
+    CHECK(m.sectors == 63);
+    CHECK(m.block_bytes == RDB_BLOCK_BYTES);
+    CHECK(m.cyl_blocks == 16u * 63u);          /* 1008 */
+    CHECK(m.lo_cyl == 2);                       /* reserve 2 cyl for RDB */
+    CHECK(m.hi_cyl == 995);                     /* cylinders-1 */
+    CHECK(m.rdb_blocks_lo == 0);
+    CHECK(m.rdb_blocks_hi == 2u * 1008u - 1u);  /* 2015 */
+    CHECK(m.num_parts == 0);
+}
+
 int main(void)
 {
     test_endian();
     test_checksum();
     test_geometry();
+    test_init_model();
     /* further test functions appended in later tasks */
     if (g_fail) { printf("%d CHECK(s) FAILED\n", g_fail); return 1; }
     printf("ALL TESTS PASSED\n");

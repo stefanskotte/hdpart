@@ -20,4 +20,29 @@ uint32_t rdb_sum_longs(const uint8_t *blk, uint32_t summed_longs);
 uint32_t rdb_mb_to_cyls(uint32_t mb, uint32_t cyl_blocks, uint32_t block_bytes);
 uint32_t rdb_cyls_to_mb(uint32_t cyls, uint32_t cyl_blocks, uint32_t block_bytes);
 
+typedef struct {
+    char     name[RDB_NAME_LEN]; /* NUL-terminated device name, e.g. "DH0" */
+    uint32_t low_cyl;
+    uint32_t high_cyl;
+    uint32_t dos_type;           /* e.g. 0x444F5303 = DOS\3 (FFS Intl) */
+    uint32_t num_buffers;
+    int32_t  boot_pri;
+    uint8_t  bootable;           /* 0/1 (UI greyed in phase 1) */
+} RdbPartition;
+
+typedef struct {
+    uint32_t cylinders, heads, sectors;
+    uint32_t block_bytes;
+    uint32_t cyl_blocks;         /* heads*sectors */
+    uint32_t lo_cyl, hi_cyl;     /* partitionable cylinder range */
+    uint32_t rdb_blocks_lo, rdb_blocks_hi;
+    int          num_parts;
+    RdbPartition parts[RDB_MAX_PARTS];
+} RdbModel;
+
+#define RDB_RESERVED_CYLS 2u     /* cylinders reserved for RDB metadata */
+#define RDB_DOSTYPE_FFS_INTL 0x444F5303u
+
+void rdb_init_model(RdbModel *m, uint32_t cyl, uint32_t heads, uint32_t sectors);
+
 #endif
