@@ -1,0 +1,25 @@
+# HDPart test configuration for FS-UAE.
+# Clones the working "Resource - kick 3.2 setup" (A4000, Kickstart 3.x) so it
+# boots to a real Workbench (which provides the public screen HDPart opens on),
+# and mounts the project's amiga_hd/ directory as the Amiga volume "HDPart:".
+#
+# After booting to Workbench, open a Shell and run:   HDPart:HDPart
+#
+# Install: copy this file to ~/Documents/FS-UAE/Configurations/ (the `make
+# install-fsuae` target does this). Then pick "HDPart" in the FS-UAE launcher.
+# Refresh the binary after each build with `make hd`.
+
+[fs-uae]
+amiga_model = A4000
+accelerator_memory = 32768
+bsdsocket_library = 1
+chip_memory = 2048
+fast_memory = 8192
+graphics_card = uaegfx-z3
+graphics_memory = 8192
+kickstart_file = kicka4000.rom
+hard_drive_0 = Harddisk.hdf
+hard_drive_1 = ResourceHD
+hard_drive_2 = /Users/sfs/Devel/party/amiga_hd
+hard_drive_2_label = HDPart
+save_disk = 0

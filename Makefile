@@ -58,6 +58,21 @@ obj/%.o : src/%.c
 	$(info Compiling $<)
 	@$(CC) $(CCFLAGS) -c -o $@ $(CURDIR)/$<
 
+# --- FS-UAE test helpers (dev convenience, macOS/Linux) -----------------------
+# `make hd`            stage the built binary into amiga_hd/ (mounted as HDPart:)
+# `make install-fsuae` copy the HDPart launcher config into FS-UAE
+FSUAE_CFG_DIR = $(HOME)/Documents/FS-UAE/Configurations
+
+hd: $(OUT).exe
+	@mkdir -p amiga_hd
+	@cp $(OUT).exe amiga_hd/HDPart
+	$(info Staged $(OUT).exe -> amiga_hd/HDPart  (FS-UAE volume HDPart:, run: HDPart:HDPart))
+
+install-fsuae:
+	@mkdir -p "$(FSUAE_CFG_DIR)"
+	@cp tools/fsuae/HDPart.fs-uae "$(FSUAE_CFG_DIR)/HDPart.fs-uae"
+	$(info Installed FS-UAE config -> $(FSUAE_CFG_DIR)/HDPart.fs-uae)
+
 clean:
 	$(info Cleaning...)
 ifdef WINDOWS
