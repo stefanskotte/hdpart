@@ -179,6 +179,14 @@ geometry.
 - **Phase 2+:** bootable/boot-priority UI, selectable filesystem types and
   embedding custom filesystems (FSHD/LSEG), >4 GB / TD64, bad-block handling,
   mount-after-save, custom visual theme layer.
+- **Device driver sources (later):** drivers come in two forms — (a) **resident**
+  in the exec device list already (ROM/autoconfig drivers, and controller-loaded
+  ones such as `lide.device` that the controller's own ROM installs), which
+  `OpenDevice` finds directly; and (b) **disk-based files in `DEVS:`** (e.g.
+  `devs:scsi.device`) that are NOT in the exec list until `Mount`ed/loaded.
+  Phase-1 discovery (Plan 2) handles only case (a). A later phase must also scan
+  `DEVS:` / `DEVS:storage` (and mountlists) for `.device` files, load them, and
+  probe them — so both delivery mechanisms are supported.
 - **Localization (later):** translate the UI via AmigaOS built-in
   `locale.library` catalogs (`OpenCatalog`/`GetCatalogStr`). Note
   `locale.library` is V38 (OS 2.1)+, above our V37 baseline, so it must be
