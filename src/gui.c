@@ -315,4 +315,29 @@ void gui_select_device(int idx)
     gui_draw_bar();
 }
 
-void gui_draw_bar(void) { }
+void gui_draw_bar(void)
+{
+    struct RastPort *rp;
+    int bx = 10 + g_leftb, by = 26 + g_topb, bw = 440, bh = 16;   /* bar rectangle in the window */
+    int i;
+    if (!g_win) return;
+    rp = g_win->RPort;
+
+    /* frame + unused background (pen 2 = black border, pen 0 = bg) */
+    SetAPen(rp, 1); RectFill(rp, bx, by, bx + bw - 1, by + bh - 1);    /* fill light */
+    SetAPen(rp, 2); Move(rp, bx, by); Draw(rp, bx + bw - 1, by);
+    Draw(rp, bx + bw - 1, by + bh - 1); Draw(rp, bx, by + bh - 1); Draw(rp, bx, by);
+
+    if (!g_have_model || g_model.cylinders == 0) return;
+
+    /* each partition drawn proportional to its cylinder span over hi_cyl */
+    for (i = 0; i < g_model.num_parts && i < RDB_MAX_PARTS; i++) {
+        RdbPartition *pt = &g_model.parts[i];
+        int x0 = bx + (int)((pt->low_cyl  * (ULONG)bw) / g_model.cylinders);
+        int x1 = bx + (int)(((pt->high_cyl + 1) * (ULONG)bw) / g_model.cylinders);
+        if (x1 <= x0) x1 = x0 + 1;
+        if (x1 > bx + bw - 1) x1 = bx + bw - 1;
+        SetAPen(rp, (UBYTE)(3 - (i & 1)));   /* alternate pens 3/2 */
+        RectFill(rp, x0, by + 1, x1 - 1, by + bh - 2);
+    }
+}
