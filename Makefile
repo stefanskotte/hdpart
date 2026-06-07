@@ -26,7 +26,7 @@ endif
 # No -Ttext=0 (that is for bare-metal). Provide our own _start entry.
 CCFLAGS = -g -MP -MMD -m68000 -Os -nostdlib -ffreestanding -fomit-frame-pointer \
           -Wall -Wextra -Wno-unused-function \
-          -ffunction-sections -fdata-sections -Isrc
+          -ffunction-sections -fdata-sections -Isrc -DHDPART_AMIGA
 LDFLAGS = -nostdlib -Wl,-e,_start,--emit-relocs,--gc-sections,-Map=$(OUT).map
 
 # elf2hunk ignores the ELF entry symbol and runs the first byte of the code
