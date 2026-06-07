@@ -37,6 +37,9 @@ static const char *g_devlabels[DISC_MAX + 1];  /* for GTCY_Labels */
 static char     g_devtext[DISC_MAX][48];
 static RdbModel g_model;
 static int      g_have_model;
+static WORD     g_topb, g_leftb;     /* window border offsets (title bar / left edge);
+                                        gadget coords are relative to the window's
+                                        outer top-left, so all gadgets shift by these */
 
 /* Forward decls (implemented in later tasks). */
 void gui_rescan(void);
@@ -59,10 +62,11 @@ static struct Gadget *build_gadgets(void)
 #pragma GCC diagnostic pop
     if (!g) return 0;
 
-    /* Device cycle gadget */
+    /* Device cycle gadget. All ng positions are offset by the window border
+       (g_leftb,g_topb) since gadget coords are relative to the window origin. */
     ng.ng_TextAttr   = &g_font;
     ng.ng_VisualInfo = g_vi;
-    ng.ng_LeftEdge = 70;  ng.ng_TopEdge = 4;  ng.ng_Width = 300; ng.ng_Height = 14;
+    ng.ng_LeftEdge = 70 + g_leftb;  ng.ng_TopEdge = 6 + g_topb;  ng.ng_Width = 300; ng.ng_Height = 14;
     ng.ng_GadgetText = (UBYTE *)"Disk:"; ng.ng_GadgetID = GID_DEVICE;
     ng.ng_Flags = 0;
     g_devlabels[0] = "(no disks)"; g_devlabels[1] = 0;
@@ -70,19 +74,19 @@ static struct Gadget *build_gadgets(void)
     g_gad[GID_DEVICE] = g;
 
     /* Rescan button */
-    ng.ng_LeftEdge = 380; ng.ng_TopEdge = 4; ng.ng_Width = 70; ng.ng_Height = 14;
+    ng.ng_LeftEdge = 380 + g_leftb; ng.ng_TopEdge = 6 + g_topb; ng.ng_Width = 70; ng.ng_Height = 14;
     ng.ng_GadgetText = (UBYTE *)"Rescan"; ng.ng_GadgetID = GID_RESCAN;
     g = CreateGadget(BUTTON_KIND, g, &ng, TAG_END);
     g_gad[GID_RESCAN] = g;
 
     /* Partition listview */
-    ng.ng_LeftEdge = 10; ng.ng_TopEdge = 70; ng.ng_Width = 440; ng.ng_Height = 90;
+    ng.ng_LeftEdge = 10 + g_leftb; ng.ng_TopEdge = 72 + g_topb; ng.ng_Width = 440; ng.ng_Height = 90;
     ng.ng_GadgetText = 0; ng.ng_GadgetID = GID_PARTS;
     g = CreateGadget(LISTVIEW_KIND, g, &ng, GTLV_Labels, 0, GTLV_ReadOnly, TRUE, TAG_END);
     g_gad[GID_PARTS] = g;
 
     /* Read-only status text */
-    ng.ng_LeftEdge = 70; ng.ng_TopEdge = 166; ng.ng_Width = 380; ng.ng_Height = 12;
+    ng.ng_LeftEdge = 70 + g_leftb; ng.ng_TopEdge = 168 + g_topb; ng.ng_Width = 380; ng.ng_Height = 12;
     ng.ng_GadgetText = (UBYTE *)"Status:"; ng.ng_GadgetID = 0;
     g = CreateGadget(TEXT_KIND, g, &ng, GTTX_Text, (ULONG)"no disk selected", TAG_END);
     /* not tracked; informational */
@@ -95,7 +99,7 @@ static struct Gadget *build_gadgets(void)
         };
         int k;
         for (k = 0; k < 5; k++) {
-            ng.ng_LeftEdge = btn[k].x; ng.ng_TopEdge = 184;
+            ng.ng_LeftEdge = btn[k].x + g_leftb; ng.ng_TopEdge = 186 + g_topb;
             ng.ng_Width = (btn[k].id == GID_INIT) ? 90 : 60; ng.ng_Height = 14;
             ng.ng_GadgetText = (UBYTE *)btn[k].txt; ng.ng_GadgetID = btn[k].id;
             g = CreateGadget(BUTTON_KIND, g, &ng, GA_Disabled, TRUE, TAG_END);
@@ -125,13 +129,21 @@ int gui_run(void)
     }
     if (!g_scr) goto cleanup_libs;
 
+    /* Window border offsets: gadget coords are relative to the window's outer
+       top-left (which includes the title bar), so shift all gadgets down/right
+       by these and size the window to enclose the content. */
+    g_topb  = g_scr->WBorTop + g_scr->Font->ta_YSize + 1;
+    g_leftb = g_scr->WBorLeft;
+
     g_vi = GetVisualInfo(g_scr, TAG_END);
     if (!g_vi) goto cleanup_scr;
 
     if (!build_gadgets()) goto cleanup_gad;  /* FreeGadgets handles a partial/NULL chain */
 
     g_win = OpenWindowTags(0,
-        WA_Left, 40, WA_Top, 24, WA_Width, 460, WA_Height, 210,
+        WA_Left, 40, WA_Top, 16,
+        WA_Width,  g_leftb + 460 + g_scr->WBorRight,
+        WA_Height, g_topb + 206 + g_scr->WBorBottom,
         WA_Title, (ULONG)"HDPart 0.1",
         WA_Gadgets, (ULONG)g_glist,
         WA_IDCMP, IDCMP_CLOSEWINDOW | IDCMP_REFRESHWINDOW | CYCLEIDCMP | BUTTONIDCMP | LISTVIEWIDCMP,

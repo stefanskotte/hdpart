@@ -17,6 +17,25 @@ struct DosLibrary *DOSBase = 0;
 /* Provided by main.c */
 extern int hdpart_main(struct WBStartup *wbmsg);
 
+/* --- StackSwap support ---------------------------------------------------
+ * Everything the StackSwap "window" touches MUST be addressed absolutely, not
+ * sp-relative: with -fomit-frame-pointer the compiler addresses function locals
+ * relative to A7, but A7 points at the NEW stack between the two StackSwap()
+ * calls, so any sp-relative access to caller locals (rc/wbmsg/newstack) reads
+ * the wrong memory and crashes on the return path. Hence these are file-static
+ * (absolute), and the swapped call is isolated in its own function that only
+ * touches globals. */
+#define HDPART_STACK_SIZE (64UL * 1024UL)
+static struct StackSwapStruct g_sss;
+static APTR              g_newstack;
+static struct WBStartup *g_swap_wbmsg;
+static int               g_swap_rc;
+
+static __attribute__((noinline)) void hdpart_run_swapped(void)
+{
+    g_swap_rc = hdpart_main(g_swap_wbmsg);   /* globals only — no sp-relative locals */
+}
+
 /* CRITICAL: elf2hunk does NOT honor the ELF entry symbol — AmigaDOS begins
  * executing at the first byte of the code hunk. We must therefore guarantee
  * _start is the lowest-addressed code. The default GNU linker script places
@@ -48,29 +67,22 @@ int _start(void)
         wbmsg = (struct WBStartup *)GetMsg(&proc->pr_MsgPort);
     }
 
-    /* Run on a generous private stack: the GadTools GUI + library calls + the
-       ~1.8KB RdbModel would overflow the ~4KB default Shell stack.
-       NOTE: `sss` MUST be static (not a stack local). After the first
-       StackSwap() switches A7 to the new stack, the compiler would address a
-       stack-local `&sss` relative to the NEW stack for the second call, passing
-       a wrong pointer -> crash. A static lives at a fixed address, valid on
-       either stack. */
-    {
-        #define HDPART_STACK_SIZE (64UL * 1024UL)
-        APTR newstack = AllocMem(HDPART_STACK_SIZE, MEMF_CLEAR);
-        if (newstack) {
-            static struct StackSwapStruct sss;
-            sss.stk_Lower   = newstack;
-            sss.stk_Upper   = (ULONG)newstack + HDPART_STACK_SIZE;
-            sss.stk_Pointer = (APTR)((ULONG)newstack + HDPART_STACK_SIZE);
-            StackSwap(&sss);
-            rc = hdpart_main(wbmsg);   /* runs on the new stack */
-            StackSwap(&sss);           /* restore the original stack */
-            FreeMem(newstack, HDPART_STACK_SIZE);
-        } else {
-            rc = hdpart_main(wbmsg);   /* fallback: original stack */
-        }
-        #undef HDPART_STACK_SIZE
+    /* Run on a generous private stack: GadTools + library calls + the ~1.8KB
+       RdbModel would overflow the ~4KB default Shell stack. All swap-window
+       data is file-static (see note above). */
+    g_swap_wbmsg = wbmsg;
+    g_newstack = AllocMem(HDPART_STACK_SIZE, MEMF_CLEAR);
+    if (g_newstack) {
+        g_sss.stk_Lower   = g_newstack;
+        g_sss.stk_Upper   = (ULONG)g_newstack + HDPART_STACK_SIZE;
+        g_sss.stk_Pointer = (APTR)((ULONG)g_newstack + HDPART_STACK_SIZE);
+        StackSwap(&g_sss);
+        hdpart_run_swapped();      /* runs on the new stack; touches only globals */
+        StackSwap(&g_sss);         /* restore the original stack */
+        FreeMem(g_newstack, HDPART_STACK_SIZE);
+        rc = g_swap_rc;
+    } else {
+        rc = hdpart_main(wbmsg);   /* fallback: original stack */
     }
 
     if (wbmsg) {
