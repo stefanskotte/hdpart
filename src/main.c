@@ -10,6 +10,7 @@
 #include <proto/exec.h>
 #include <proto/intuition.h>
 #include "rdb.h"
+#include "device.h"
 
 struct IntuitionBase *IntuitionBase = 0;
 
@@ -19,8 +20,10 @@ int hdpart_main(struct WBStartup *wbmsg)
     struct Screen *pubScr;       /* locked Workbench pubscreen, or NULL */
     struct Screen *ownScr = 0;   /* our custom screen, if we open one */
     RdbModel probe;
-
+    DeviceHandle *probe_dev;
     rdb_init_model(&probe, 100, 4, 17);   /* link-smoke: pulls in rdb.o */
+    probe_dev = dev_open("__nonexistent.device", 0); /* link-smoke: pulls in device.o */
+    if (probe_dev) dev_close(probe_dev);
     (void)probe;
     (void)wbmsg;
 
