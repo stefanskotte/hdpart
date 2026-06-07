@@ -32,10 +32,23 @@ static void test_checksum(void)
     CHECK(!rdb_checksum_ok(blk, 64));
 }
 
+static void test_geometry(void)
+{
+    /* 16 heads * 63 sectors = 1008 blocks/cyl; 512 b/blk => 504 KB/cyl
+       => ~0.4922 MB/cyl. 200 MB -> ceil(200*1024*1024 / (1008*512)) cyls. */
+    uint32_t cyl_blocks = 16u * 63u;            /* 1008 */
+    uint32_t cyls = rdb_mb_to_cyls(200, cyl_blocks, RDB_BLOCK_BYTES);
+    CHECK(cyls == 407);                         /* 200MB rounds up to 407 cyl */
+    /* round-trip: cyls back to MB (floor) */
+    uint32_t mb = rdb_cyls_to_mb(cyls, cyl_blocks, RDB_BLOCK_BYTES);
+    CHECK(mb == 200);                           /* 407 cyl -> 200 MB (floor) */
+}
+
 int main(void)
 {
     test_endian();
     test_checksum();
+    test_geometry();
     /* further test functions appended in later tasks */
     if (g_fail) { printf("%d CHECK(s) FAILED\n", g_fail); return 1; }
     printf("ALL TESTS PASSED\n");
