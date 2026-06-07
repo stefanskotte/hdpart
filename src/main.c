@@ -14,6 +14,7 @@
 #include "rdb.h"
 #include "device.h"
 #include "discover.h"
+#include "gui.h"
 
 struct IntuitionBase *IntuitionBase = 0;
 
@@ -72,9 +73,6 @@ static int run_scan(void)
 
 int hdpart_main(struct WBStartup *wbmsg)
 {
-    struct Window *win;
-    struct Screen *pubScr;       /* locked Workbench pubscreen, or NULL */
-    struct Screen *ownScr = 0;   /* our custom screen, if we open one */
     {
         /* CLI arg check: "scan" -> text report, else open the GUI window.
            GetArgStr returns the command line (args after the verb), or "" for WB. */
@@ -89,53 +87,9 @@ int hdpart_main(struct WBStartup *wbmsg)
     if (!IntuitionBase)
         return 20;
 
-    /* Prefer the Workbench public screen; if none exists, open our own. */
-    pubScr = LockPubScreen(0);
-    if (!pubScr) {
-        ownScr = OpenScreenTags(0,
-            SA_Depth,   2,
-            SA_Title,   (ULONG)"HDPart",
-            SA_Type,    CUSTOMSCREEN,
-            TAG_END);
-        if (!ownScr) {
-            CloseLibrary((struct Library *)IntuitionBase);
-            return 20;
-        }
+    {
+        int rc = gui_run();
+        CloseLibrary((struct Library *)IntuitionBase);
+        return rc;
     }
-
-    win = OpenWindowTags(0,
-        WA_Left,        80,
-        WA_Top,         40,
-        WA_Width,       360,
-        WA_Height,      120,
-        WA_Title,       (ULONG)"HDPart 0.1",
-        WA_IDCMP,       IDCMP_CLOSEWINDOW,
-        WA_Flags,       WFLG_DRAGBAR | WFLG_DEPTHGADGET | WFLG_CLOSEGADGET |
-                        WFLG_ACTIVATE | WFLG_SMART_REFRESH,
-        pubScr ? WA_PubScreen   : WA_CustomScreen,
-        (ULONG)(pubScr ? pubScr : ownScr),
-        TAG_END);
-
-    if (win) {
-        BOOL done = FALSE;
-        while (!done) {
-            struct IntuiMessage *msg;
-            WaitPort(win->UserPort);
-            while ((msg = (struct IntuiMessage *)GetMsg(win->UserPort))) {
-                ULONG cls = msg->Class;
-                ReplyMsg((struct Message *)msg);
-                if (cls == IDCMP_CLOSEWINDOW)
-                    done = TRUE;
-            }
-        }
-        CloseWindow(win);
-    }
-
-    if (ownScr)
-        CloseScreen(ownScr);
-    if (pubScr)
-        UnlockPubScreen(0, pubScr);
-
-    CloseLibrary((struct Library *)IntuitionBase);
-    return 0;
 }

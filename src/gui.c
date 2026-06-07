@@ -1,0 +1,188 @@
+/* HDPart GadTools GUI (read-only display in Plan 3a). */
+#include <exec/types.h>
+#include <intuition/intuition.h>
+#include <intuition/screens.h>
+#include <libraries/gadtools.h>
+#include <graphics/gfxbase.h>
+#include <proto/exec.h>
+#include <proto/intuition.h>
+#include <proto/gadtools.h>
+#include <proto/graphics.h>
+#include "gui.h"
+#include "discover.h"
+#include "device.h"
+#include "rdb.h"
+
+extern struct IntuitionBase *IntuitionBase;   /* opened in main.c */
+struct Library *GadToolsBase = 0;
+struct GfxBase *GfxBase = 0;
+
+/* Gadget IDs */
+enum { GID_DEVICE = 1, GID_RESCAN, GID_PARTS, GID_NEW, GID_DELETE, GID_EDIT,
+       GID_INIT, GID_SAVE };
+
+/* Module state for one GUI session. */
+static struct Screen  *g_scr;        /* screen we render on (pub or own) */
+static struct Screen  *g_pub;        /* locked pubscreen, or NULL */
+static struct Window  *g_win;
+static APTR            g_vi;          /* VisualInfo */
+static struct Gadget  *g_glist;      /* gadtools context list */
+static struct Gadget  *g_gad[16];    /* gadget pointers by a small index */
+static struct TextAttr g_font = { (STRPTR)"topaz.font", 8, 0, 0 };
+
+/* Discovery + current selection (static: keep off the stack). */
+static DiscDisk g_disks[DISC_MAX];
+static int      g_ndisks;
+static const char *g_devlabels[DISC_MAX + 1];  /* for GTCY_Labels */
+static char     g_devtext[DISC_MAX][48];
+static RdbModel g_model;
+static int      g_have_model;
+
+/* Forward decls (implemented in later tasks). */
+void gui_rescan(void);
+void gui_select_device(int idx);
+void gui_draw_bar(void);
+
+static struct Gadget *build_gadgets(void)
+{
+    struct NewGadget ng;
+    struct Gadget *g;
+    int i;
+    for (i = 0; i < 16; i++) g_gad[i] = 0;
+
+    /* CreateContext's inline macro (LP1) declares the input register as
+       'volatile t1' which in GCC 14+ triggers -Wincompatible-pointer-types
+       (now an error).  Suppress around this one call. */
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wincompatible-pointer-types"
+    g = CreateContext(&g_glist);
+#pragma GCC diagnostic pop
+    if (!g) return 0;
+
+    /* Device cycle gadget */
+    ng.ng_TextAttr   = &g_font;
+    ng.ng_VisualInfo = g_vi;
+    ng.ng_LeftEdge = 70;  ng.ng_TopEdge = 4;  ng.ng_Width = 300; ng.ng_Height = 14;
+    ng.ng_GadgetText = (UBYTE *)"Disk:"; ng.ng_GadgetID = GID_DEVICE;
+    ng.ng_Flags = 0;
+    g_devlabels[0] = "(no disks)"; g_devlabels[1] = 0;
+    g = CreateGadget(CYCLE_KIND, g, &ng, GTCY_Labels, (ULONG)g_devlabels, TAG_END);
+    g_gad[GID_DEVICE] = g;
+
+    /* Rescan button */
+    ng.ng_LeftEdge = 380; ng.ng_TopEdge = 4; ng.ng_Width = 70; ng.ng_Height = 14;
+    ng.ng_GadgetText = (UBYTE *)"Rescan"; ng.ng_GadgetID = GID_RESCAN;
+    g = CreateGadget(BUTTON_KIND, g, &ng, TAG_END);
+    g_gad[GID_RESCAN] = g;
+
+    /* Partition listview */
+    ng.ng_LeftEdge = 10; ng.ng_TopEdge = 70; ng.ng_Width = 440; ng.ng_Height = 90;
+    ng.ng_GadgetText = 0; ng.ng_GadgetID = GID_PARTS;
+    g = CreateGadget(LISTVIEW_KIND, g, &ng, GTLV_Labels, 0, GTLV_ReadOnly, TRUE, TAG_END);
+    g_gad[GID_PARTS] = g;
+
+    /* Read-only status text */
+    ng.ng_LeftEdge = 70; ng.ng_TopEdge = 166; ng.ng_Width = 380; ng.ng_Height = 12;
+    ng.ng_GadgetText = (UBYTE *)"Status:"; ng.ng_GadgetID = 0;
+    g = CreateGadget(TEXT_KIND, g, &ng, GTTX_Text, (ULONG)"no disk selected", TAG_END);
+    /* not tracked; informational */
+
+    /* Ghosted action buttons (enabled in Plan 3b) */
+    {
+        static const struct { int id; const char *txt; int x; } btn[] = {
+            { GID_NEW, "New", 10 }, { GID_DELETE, "Delete", 70 }, { GID_EDIT, "Edit", 150 },
+            { GID_INIT, "Init Disk", 280 }, { GID_SAVE, "Save", 390 }
+        };
+        int k;
+        for (k = 0; k < 5; k++) {
+            ng.ng_LeftEdge = btn[k].x; ng.ng_TopEdge = 184;
+            ng.ng_Width = (btn[k].id == GID_INIT) ? 90 : 60; ng.ng_Height = 14;
+            ng.ng_GadgetText = (UBYTE *)btn[k].txt; ng.ng_GadgetID = btn[k].id;
+            g = CreateGadget(BUTTON_KIND, g, &ng, GA_Disabled, TRUE, TAG_END);
+            g_gad[btn[k].id] = g;
+        }
+    }
+    return g;
+}
+
+int gui_run(void)
+{
+    BOOL done = FALSE;
+
+    GadToolsBase = OpenLibrary("gadtools.library", 37);
+    GfxBase = (struct GfxBase *)OpenLibrary("graphics.library", 37);
+    if (!GadToolsBase || !GfxBase) { if (GadToolsBase) CloseLibrary(GadToolsBase);
+        if (GfxBase) CloseLibrary((struct Library *)GfxBase); return 20; }
+
+    g_pub = LockPubScreen(0);
+    if (g_pub) g_scr = g_pub;
+    else {
+        g_scr = OpenScreenTags(0, SA_Depth, 2, SA_Title, (ULONG)"HDPart",
+                               SA_Type, CUSTOMSCREEN, TAG_END);
+    }
+    if (!g_scr) goto cleanup_libs;
+
+    g_vi = GetVisualInfo(g_scr, TAG_END);
+    if (!g_vi) goto cleanup_scr;
+
+    if (!build_gadgets()) goto cleanup_vi;
+
+    g_win = OpenWindowTags(0,
+        WA_Left, 40, WA_Top, 24, WA_Width, 460, WA_Height, 210,
+        WA_Title, (ULONG)"HDPart 0.1",
+        WA_Gadgets, (ULONG)g_glist,
+        WA_IDCMP, IDCMP_CLOSEWINDOW | IDCMP_REFRESHWINDOW | CYCLEIDCMP | BUTTONIDCMP | LISTVIEWIDCMP,
+        WA_Flags, WFLG_DRAGBAR | WFLG_DEPTHGADGET | WFLG_CLOSEGADGET |
+                  WFLG_ACTIVATE | WFLG_SMART_REFRESH,
+        g_pub ? WA_PubScreen : WA_CustomScreen, (ULONG)g_scr,
+        TAG_END);
+    if (!g_win) goto cleanup_gad;
+
+    GT_RefreshWindow(g_win, 0);
+    gui_rescan();          /* populate device list (Task 3a.2.1) */
+    gui_draw_bar();        /* initial bar (Task 3a.4.1) */
+
+    while (!done) {
+        struct IntuiMessage *imsg;
+        WaitPort(g_win->UserPort);
+        while ((imsg = GT_GetIMsg(g_win->UserPort)) != 0) {
+            ULONG cls = imsg->Class;
+            struct Gadget *gad = (struct Gadget *)imsg->IAddress;
+            UWORD code = imsg->Code;
+            GT_ReplyIMsg(imsg);
+            switch (cls) {
+                case IDCMP_CLOSEWINDOW:
+                    done = TRUE;
+                    break;
+                case IDCMP_REFRESHWINDOW:
+                    GT_BeginRefresh(g_win);
+                    gui_draw_bar();
+                    GT_EndRefresh(g_win, TRUE);
+                    break;
+                case IDCMP_GADGETUP:
+                    if (gad->GadgetID == GID_DEVICE) gui_select_device((int)code);
+                    else if (gad->GadgetID == GID_RESCAN) gui_rescan();
+                    break;
+            }
+        }
+    }
+
+    CloseWindow(g_win); g_win = 0;
+cleanup_gad:
+    FreeGadgets(g_glist); g_glist = 0;
+cleanup_vi:
+    FreeVisualInfo(g_vi); g_vi = 0;
+cleanup_scr:
+    if (!g_pub && g_scr) CloseScreen(g_scr);
+    if (g_pub) UnlockPubScreen(0, g_pub);
+    g_scr = 0; g_pub = 0;
+cleanup_libs:
+    CloseLibrary((struct Library *)GfxBase);
+    CloseLibrary(GadToolsBase);
+    return 0;
+}
+
+/* Stubs replaced in later tasks (kept so 3a.1 builds/links and runs). */
+void gui_rescan(void) { }
+void gui_select_device(int idx) { (void)idx; }
+void gui_draw_bar(void) { }
