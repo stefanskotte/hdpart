@@ -1,0 +1,13 @@
+# HDPart validation: Kickstart 2.04 (V37) with NO Workbench — exercises the
+# custom-screen fallback (important: a partition tool often runs on a machine
+# that cannot boot Workbench yet). Boots the project's amiga_boot/ directory
+# (its s/startup-sequence auto-runs HDPart); with no Workbench public screen,
+# HDPart opens its OWN screen. Refresh with `make hd`.
+
+[fs-uae]
+amiga_model = A500+
+chip_memory = 2048
+kickstart_file = amiga-os-204.rom
+hard_drive_0 = /Users/sfs/Devel/party/amiga_boot
+hard_drive_0_label = HDBoot
+save_disk = 0

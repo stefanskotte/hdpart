@@ -1,0 +1,18 @@
+# HDPart validation on the minimum target: Kickstart 2.04 (V37) + Workbench 2.04.
+# Boots WB 2.04 from floppy (df0 boots before the hard drive), and mounts the
+# project's amiga_hd/ as volume "HDPart:". After Workbench comes up, open a
+# Shell and run:  HDPart:HDPart   (window opens on the WB 2.04 public screen).
+# Refresh the binary with `make hd` after each build.
+
+[fs-uae]
+amiga_model = A500+
+chip_memory = 2048
+kickstart_file = amiga-os-204.rom
+floppy_drive_0 = /Users/sfs/Downloads/WB204/Workbench v2.04 rev 37.67 (1991)(Commodore)(Disk 1 of 4)(Workbench).adf
+floppy_image_0 = /Users/sfs/Downloads/WB204/Workbench v2.04 rev 37.67 (1991)(Commodore)(Disk 1 of 4)(Workbench).adf
+floppy_image_1 = /Users/sfs/Downloads/WB204/Workbench v2.04 rev 37.67 (1991)(Commodore)(Disk 2 of 4)(Extras).adf
+floppy_image_2 = /Users/sfs/Downloads/WB204/Workbench v2.04 rev 37.67 (1991)(Commodore)(Disk 3 of 4)(Fonts).adf
+floppy_image_3 = /Users/sfs/Downloads/WB204/Workbench v2.04 rev 37.67 (1991)(Commodore)(Disk 4 of 4)(Install).adf
+hard_drive_0 = /Users/sfs/Devel/party/amiga_hd
+hard_drive_0_label = HDPart
+save_disk = 0

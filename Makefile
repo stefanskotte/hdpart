@@ -64,14 +64,17 @@ obj/%.o : src/%.c
 FSUAE_CFG_DIR = $(HOME)/Documents/FS-UAE/Configurations
 
 hd: $(OUT).exe
-	@mkdir -p amiga_hd
+	@mkdir -p amiga_hd amiga_boot/s
 	@cp $(OUT).exe amiga_hd/HDPart
-	$(info Staged $(OUT).exe -> amiga_hd/HDPart  (FS-UAE volume HDPart:, run: HDPart:HDPart))
+	@cp $(OUT).exe amiga_boot/HDPart
+	@printf 'HDPart\n' > amiga_boot/s/startup-sequence
+	$(info Staged -> amiga_hd/HDPart (volume HDPart:, run: HDPart:HDPart))
+	$(info Staged -> amiga_boot/ (bootable dir; startup-sequence auto-runs HDPart for the no-Workbench own-screen test))
 
 install-fsuae:
 	@mkdir -p "$(FSUAE_CFG_DIR)"
-	@cp tools/fsuae/HDPart.fs-uae "$(FSUAE_CFG_DIR)/HDPart.fs-uae"
-	$(info Installed FS-UAE config -> $(FSUAE_CFG_DIR)/HDPart.fs-uae)
+	@cp tools/fsuae/*.fs-uae "$(FSUAE_CFG_DIR)/"
+	$(info Installed FS-UAE configs -> $(FSUAE_CFG_DIR)/  (HDPart, HDPart-204, HDPart-204-ownscreen))
 
 clean:
 	$(info Cleaning...)

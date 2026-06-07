@@ -5,3 +5,4 @@ out/
 *.hdf
 amiga_hd/HDPart
 amiga-exe/
+amiga_boot/
