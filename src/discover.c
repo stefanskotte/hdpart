@@ -105,10 +105,14 @@ static void probe_one(DiscDisk *d)
 /* (1) Scan mounted AmigaDOS devices for driver/unit pairs. */
 static void scan_dos_devices(DiscDisk out[], int *count, int max)
 {
-    struct DosList *dl = LockDosList(LDF_DEVICES | LDF_READ);
-    struct DosList *e;
-    if (!dl) return;
-    while ((e = NextDosEntry(dl, LDF_DEVICES | LDF_READ)) != 0) {
+    /* NextDosEntry advances from the entry you pass it, so the iterator MUST
+       be reassigned each pass (`e = NextDosEntry(e, ...)`). Passing the locked
+       list header every time returns the first device forever -> infinite loop.
+       The guard is belt-and-suspenders so a discovery bug can never hard-hang. */
+    struct DosList *e = LockDosList(LDF_DEVICES | LDF_READ);
+    int guard = 0;
+    if (!e) return;
+    while ((e = NextDosEntry(e, LDF_DEVICES | LDF_READ)) != 0 && ++guard < 256) {
         struct FileSysStartupMsg *fssm;
         BPTR startup = (BPTR)e->dol_misc.dol_handler.dol_Startup;
         char driver[DISC_DRIVER_LEN];
