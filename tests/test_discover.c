@@ -70,6 +70,8 @@ static void test_is_partitionable(void)
     CHECK(disc_is_partitionable("lide.device",  1) == 1);
     /* Floppies are never RDB-partition targets. */
     CHECK(disc_is_partitionable("trackdisk.device", 1760) == 0);
+    /* exact-match, not prefix: a different driver starting with the same text is OK */
+    CHECK(disc_is_partitionable("trackdisk.device2", 100) == 1);
     /* Directory drives / no-media report 0 blocks. */
     CHECK(disc_is_partitionable("uae.device", 0) == 0);
     CHECK(disc_is_partitionable("scsi.device", 0) == 0);

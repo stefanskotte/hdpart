@@ -49,12 +49,17 @@ int _start(void)
     }
 
     /* Run on a generous private stack: the GadTools GUI + library calls + the
-       ~1.8KB RdbModel would overflow the ~4KB default Shell stack. */
+       ~1.8KB RdbModel would overflow the ~4KB default Shell stack.
+       NOTE: `sss` MUST be static (not a stack local). After the first
+       StackSwap() switches A7 to the new stack, the compiler would address a
+       stack-local `&sss` relative to the NEW stack for the second call, passing
+       a wrong pointer -> crash. A static lives at a fixed address, valid on
+       either stack. */
     {
         #define HDPART_STACK_SIZE (64UL * 1024UL)
         APTR newstack = AllocMem(HDPART_STACK_SIZE, MEMF_CLEAR);
         if (newstack) {
-            struct StackSwapStruct sss;
+            static struct StackSwapStruct sss;
             sss.stk_Lower   = newstack;
             sss.stk_Upper   = (ULONG)newstack + HDPART_STACK_SIZE;
             sss.stk_Pointer = (APTR)((ULONG)newstack + HDPART_STACK_SIZE);
@@ -65,6 +70,7 @@ int _start(void)
         } else {
             rc = hdpart_main(wbmsg);   /* fallback: original stack */
         }
+        #undef HDPART_STACK_SIZE
     }
 
     if (wbmsg) {
