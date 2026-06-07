@@ -12,6 +12,18 @@
 struct ExecBase  *SysBase = 0;
 struct DosLibrary *DOSBase = 0;
 
+/* Minimal memcpy: required because the SDK's OpenWindowTags (and similar
+ * varargs macros) use a VLA initialised from .rodata, causing GCC to emit
+ * a compiler-generated memcpy call even in -nostdlib builds.
+ * No libgcc.a is available in this stripped toolchain. */
+void *memcpy(void *dst, const void *src, __SIZE_TYPE__ n)
+{
+    char       *d = (char *)dst;
+    const char *s = (const char *)src;
+    while (n--) *d++ = *s++;
+    return dst;
+}
+
 /* Provided by main.c */
 extern int hdpart_main(struct WBStartup *wbmsg);
 
