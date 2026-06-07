@@ -92,6 +92,51 @@ static void test_add_partition(void)
     CHECK(rdb_validate(&m) == RDB_OK);
 }
 
+/* Simple RAM-backed BlockIO for tests: 4096 blocks * 512 bytes. */
+#define RAMDISK_BLOCKS 4096
+static uint8_t g_ram[RAMDISK_BLOCKS][RDB_BLOCK_BYTES];
+
+static int ram_io(void *ctx, uint32_t block, uint8_t *buf, int write)
+{
+    (void)ctx;
+    if (block >= RAMDISK_BLOCKS) return 1;
+    if (write) memcpy(g_ram[block], buf, RDB_BLOCK_BYTES);
+    else       memcpy(buf, g_ram[block], RDB_BLOCK_BYTES);
+    return 0;
+}
+
+static void test_serialize_parse(void)
+{
+    RdbModel m, back;
+    int r;
+    memset(g_ram, 0, sizeof(g_ram));
+
+    rdb_init_model(&m, 996, 16, 63);
+    CHECK(rdb_add_partition(&m, "DH0", 200, RDB_DOSTYPE_FFS_INTL) == RDB_OK);
+    CHECK(rdb_add_partition(&m, "DH1", 200, RDB_DOSTYPE_FFS_INTL) == RDB_OK);
+
+    r = rdb_serialize(&m, ram_io, 0);
+    CHECK(r == RDB_OK);
+
+    /* RDSK lives at block 0 with a valid checksum */
+    CHECK(be_get32(g_ram[0] + 0) == 0x5244534Bu);          /* 'RDSK' */
+    CHECK(rdb_checksum_ok(g_ram[0], be_get32(g_ram[0] + 4)));
+
+    /* Parse it back */
+    r = rdb_parse(&back, ram_io, 0);
+    CHECK(r == RDB_OK);
+    CHECK(back.cylinders == 996);
+    CHECK(back.heads == 16);
+    CHECK(back.sectors == 63);
+    CHECK(back.num_parts == 2);
+    CHECK(strcmp(back.parts[0].name, "DH0") == 0);
+    CHECK(back.parts[0].low_cyl == 2);
+    CHECK(back.parts[0].high_cyl == 408);
+    CHECK(strcmp(back.parts[1].name, "DH1") == 0);
+    CHECK(back.parts[1].low_cyl == 409);
+    CHECK(back.parts[1].dos_type == RDB_DOSTYPE_FFS_INTL);
+}
+
 int main(void)
 {
     test_endian();
@@ -99,6 +144,7 @@ int main(void)
     test_geometry();
     test_init_model();
     test_add_partition();
+    test_serialize_parse();
     /* further test functions appended in later tasks */
     if (g_fail) { printf("%d CHECK(s) FAILED\n", g_fail); return 1; }
     printf("ALL TESTS PASSED\n");

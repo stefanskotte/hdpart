@@ -144,3 +144,219 @@ int rdb_validate(const RdbModel *m)
     }
     return RDB_OK;
 }
+
+/* ---- RDB on-disk constants (byte offsets within a 512-byte block) ---- */
+#define ID_RDSK 0x5244534Bu
+#define ID_PART 0x50415254u
+#define RDB_LOCATION_LIMIT 16u
+#define NULLPTR 0xFFFFFFFFu
+
+/* RigidDiskBlock field offsets */
+#define RDB_o_ID            0
+#define RDB_o_SummedLongs   4
+#define RDB_o_ChkSum        8
+#define RDB_o_HostID        12
+#define RDB_o_BlockBytes    16
+#define RDB_o_Flags         20
+#define RDB_o_BadBlockList  24
+#define RDB_o_PartitionList 28
+#define RDB_o_FileSysHdr    32
+#define RDB_o_DriveInit     36
+#define RDB_o_Cylinders     64
+#define RDB_o_Sectors       68
+#define RDB_o_Heads         72
+#define RDB_o_Interleave    76
+#define RDB_o_Park          80
+#define RDB_o_WritePreComp  96
+#define RDB_o_ReducedWrite  100
+#define RDB_o_StepRate      104
+#define RDB_o_RDBBlocksLo   128
+#define RDB_o_RDBBlocksHi   132
+#define RDB_o_LoCylinder    136
+#define RDB_o_HiCylinder    140
+#define RDB_o_CylBlocks     144
+#define RDB_o_AutoParkSecs  148
+#define RDB_o_HighRDSKBlock 152
+#define RDB_SUMMEDLONGS     64u
+
+/* PartitionBlock field offsets */
+#define PART_o_ID           0
+#define PART_o_SummedLongs  4
+#define PART_o_ChkSum       8
+#define PART_o_HostID       12
+#define PART_o_Next         16
+#define PART_o_Flags        20
+#define PART_o_DevFlags     32
+#define PART_o_DriveName    36   /* BSTR: length byte then chars */
+#define PART_o_Environment  128  /* DosEnvec, 20 longs */
+#define PART_SUMMEDLONGS    64u
+
+/* DosEnvec indices (longword index within pb_Environment) */
+#define DE_TableSize     0
+#define DE_SizeBlock     1
+#define DE_SecOrg        2
+#define DE_Surfaces      3
+#define DE_SectorPerBlk  4
+#define DE_BlocksPerTrk  5
+#define DE_Reserved      6
+#define DE_PreAlloc      7
+#define DE_Interleave    8
+#define DE_LowCyl        9
+#define DE_HighCyl       10
+#define DE_NumBuffers    11
+#define DE_BufMemType    12
+#define DE_MaxTransfer   13
+#define DE_Mask          14
+#define DE_BootPri       15
+#define DE_DosType       16
+
+static void env_put(uint8_t *blk, int idx, uint32_t v)
+{
+    be_put32(blk + PART_o_Environment + idx * 4, v);
+}
+static uint32_t env_get(const uint8_t *blk, int idx)
+{
+    return be_get32(blk + PART_o_Environment + idx * 4);
+}
+
+static void write_partition_block(uint8_t *blk, const RdbModel *m,
+                                  const RdbPartition *p, uint32_t next)
+{
+    int i, n;
+    memset(blk, 0, RDB_BLOCK_BYTES);
+    be_put32(blk + PART_o_ID, ID_PART);
+    be_put32(blk + PART_o_SummedLongs, PART_SUMMEDLONGS);
+    be_put32(blk + PART_o_HostID, 7);
+    be_put32(blk + PART_o_Next, next);
+    be_put32(blk + PART_o_Flags, p->bootable ? 1u : 0u); /* PBFF_BOOTABLE */
+    be_put32(blk + PART_o_DevFlags, 0);
+
+    /* pb_DriveName as BSTR: length byte then characters */
+    for (n = 0; n < RDB_NAME_LEN - 1 && p->name[n]; n++) ;
+    blk[PART_o_DriveName] = (uint8_t)n;
+    for (i = 0; i < n; i++) blk[PART_o_DriveName + 1 + i] = (uint8_t)p->name[i];
+
+    env_put(blk, DE_TableSize,    16);
+    env_put(blk, DE_SizeBlock,    m->block_bytes / 4);   /* longs per block */
+    env_put(blk, DE_SecOrg,       0);
+    env_put(blk, DE_Surfaces,     m->heads);
+    env_put(blk, DE_SectorPerBlk, 1);
+    env_put(blk, DE_BlocksPerTrk, m->sectors);
+    env_put(blk, DE_Reserved,     2);
+    env_put(blk, DE_PreAlloc,     0);
+    env_put(blk, DE_Interleave,   0);
+    env_put(blk, DE_LowCyl,       p->low_cyl);
+    env_put(blk, DE_HighCyl,      p->high_cyl);
+    env_put(blk, DE_NumBuffers,   p->num_buffers);
+    env_put(blk, DE_BufMemType,   0);
+    env_put(blk, DE_MaxTransfer,  0x7FFFFFFFu);
+    env_put(blk, DE_Mask,         0x7FFFFFFEu);
+    env_put(blk, DE_BootPri,      (uint32_t)p->boot_pri);
+    env_put(blk, DE_DosType,      p->dos_type);
+
+    rdb_set_checksum(blk, PART_SUMMEDLONGS, PART_o_ChkSum);
+}
+
+int rdb_serialize(const RdbModel *m, BlockIO io, void *ctx)
+{
+    uint8_t blk[RDB_BLOCK_BYTES];
+    uint32_t part_block_first, i;
+    int v = rdb_validate(m);
+    if (v != RDB_OK) return v;
+
+    /* PART blocks occupy blocks 1..num_parts (block 0 is RDSK). */
+    part_block_first = (m->num_parts > 0) ? 1u : NULLPTR;
+
+    /* Write RDSK */
+    memset(blk, 0, sizeof(blk));
+    be_put32(blk + RDB_o_ID, ID_RDSK);
+    be_put32(blk + RDB_o_SummedLongs, RDB_SUMMEDLONGS);
+    be_put32(blk + RDB_o_HostID, 7);
+    be_put32(blk + RDB_o_BlockBytes, m->block_bytes);
+    be_put32(blk + RDB_o_Flags, 0);
+    be_put32(blk + RDB_o_BadBlockList, NULLPTR);
+    be_put32(blk + RDB_o_PartitionList, part_block_first);
+    be_put32(blk + RDB_o_FileSysHdr, NULLPTR);
+    be_put32(blk + RDB_o_DriveInit, NULLPTR);
+    be_put32(blk + RDB_o_Cylinders, m->cylinders);
+    be_put32(blk + RDB_o_Sectors, m->sectors);
+    be_put32(blk + RDB_o_Heads, m->heads);
+    be_put32(blk + RDB_o_Interleave, 1);
+    be_put32(blk + RDB_o_Park, m->cylinders);
+    be_put32(blk + RDB_o_WritePreComp, m->cylinders);
+    be_put32(blk + RDB_o_ReducedWrite, m->cylinders);
+    be_put32(blk + RDB_o_StepRate, 3);
+    be_put32(blk + RDB_o_RDBBlocksLo, m->rdb_blocks_lo);
+    be_put32(blk + RDB_o_RDBBlocksHi, m->rdb_blocks_hi);
+    be_put32(blk + RDB_o_LoCylinder, m->lo_cyl);
+    be_put32(blk + RDB_o_HiCylinder, m->hi_cyl);
+    be_put32(blk + RDB_o_CylBlocks, m->cyl_blocks);
+    be_put32(blk + RDB_o_AutoParkSecs, 0);
+    be_put32(blk + RDB_o_HighRDSKBlock, m->num_parts > 0 ? (uint32_t)m->num_parts : 0u);
+    rdb_set_checksum(blk, RDB_SUMMEDLONGS, RDB_o_ChkSum);
+    if (io(ctx, 0, blk, 1)) return RDB_ERR_IO;
+
+    /* Write PART chain at blocks 1..num_parts */
+    for (i = 0; i < (uint32_t)m->num_parts; i++) {
+        uint32_t next = (i + 1 < (uint32_t)m->num_parts) ? (i + 2) : NULLPTR;
+        write_partition_block(blk, m, &m->parts[i], next);
+        if (io(ctx, 1 + i, blk, 1)) return RDB_ERR_IO;
+    }
+    return RDB_OK;
+}
+
+int rdb_parse(RdbModel *m, BlockIO io, void *ctx)
+{
+    uint8_t blk[RDB_BLOCK_BYTES];
+    uint32_t b, part_ptr;
+    int found = 0;
+
+    memset(m, 0, sizeof(*m));
+
+    for (b = 0; b < RDB_LOCATION_LIMIT; b++) {
+        if (io(ctx, b, blk, 0)) return RDB_ERR_IO;
+        if (be_get32(blk + RDB_o_ID) == ID_RDSK &&
+            rdb_checksum_ok(blk, be_get32(blk + RDB_o_SummedLongs))) {
+            found = 1;
+            break;
+        }
+    }
+    if (!found) return RDB_ERR_NO_RDB;
+
+    m->block_bytes   = be_get32(blk + RDB_o_BlockBytes);
+    if (m->block_bytes == 0) m->block_bytes = RDB_BLOCK_BYTES;
+    m->cylinders     = be_get32(blk + RDB_o_Cylinders);
+    m->sectors       = be_get32(blk + RDB_o_Sectors);
+    m->heads         = be_get32(blk + RDB_o_Heads);
+    m->cyl_blocks    = be_get32(blk + RDB_o_CylBlocks);
+    if (m->cyl_blocks == 0) m->cyl_blocks = m->heads * m->sectors;
+    m->lo_cyl        = be_get32(blk + RDB_o_LoCylinder);
+    m->hi_cyl        = be_get32(blk + RDB_o_HiCylinder);
+    m->rdb_blocks_lo = be_get32(blk + RDB_o_RDBBlocksLo);
+    m->rdb_blocks_hi = be_get32(blk + RDB_o_RDBBlocksHi);
+    part_ptr         = be_get32(blk + RDB_o_PartitionList);
+
+    while (part_ptr != NULLPTR && part_ptr != 0 && m->num_parts < RDB_MAX_PARTS) {
+        RdbPartition *p;
+        int len, i;
+        if (io(ctx, part_ptr, blk, 0)) return RDB_ERR_IO;
+        if (be_get32(blk + PART_o_ID) != ID_PART) break;
+        if (!rdb_checksum_ok(blk, be_get32(blk + PART_o_SummedLongs))) break;
+
+        p = &m->parts[m->num_parts++];
+        len = blk[PART_o_DriveName];
+        if (len > RDB_NAME_LEN - 1) len = RDB_NAME_LEN - 1;
+        for (i = 0; i < len; i++) p->name[i] = (char)blk[PART_o_DriveName + 1 + i];
+        p->name[len] = 0;
+
+        p->low_cyl     = env_get(blk, DE_LowCyl);
+        p->high_cyl    = env_get(blk, DE_HighCyl);
+        p->num_buffers = env_get(blk, DE_NumBuffers);
+        p->boot_pri    = (int32_t)env_get(blk, DE_BootPri);
+        p->dos_type    = env_get(blk, DE_DosType);
+        p->bootable    = (be_get32(blk + PART_o_Flags) & 1u) ? 1 : 0;
+
+        part_ptr = be_get32(blk + PART_o_Next);
+    }
+    return RDB_OK;
+}

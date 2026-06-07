@@ -66,4 +66,13 @@ int rdb_delete_partition(RdbModel *m, int index);
    unique names. Returns RDB_OK or first error found. */
 int rdb_validate(const RdbModel *m);
 
+/* Serialize the model to disk via io: writes RDSK at block 0 and a PART
+   chain in the reserved area. Returns RDB_OK or RDB_ERR_*. Validates first. */
+int rdb_serialize(const RdbModel *m, BlockIO io, void *ctx);
+
+/* Parse an existing RDB from disk via io: scans blocks 0..RDB_LOCATION_LIMIT
+   for RDSK, reads geometry, walks the PART chain. Returns RDB_OK,
+   RDB_ERR_NO_RDB, or RDB_ERR_IO. */
+int rdb_parse(RdbModel *m, BlockIO io, void *ctx);
+
 #endif
