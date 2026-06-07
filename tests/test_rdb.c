@@ -147,6 +147,41 @@ static void test_serialize_parse(void)
     CHECK(back.parts[1].dos_type == RDB_DOSTYPE_FFS_INTL);
 }
 
+static void test_geometry_large(void)
+{
+    /* Larger size must stay correct with 32-bit math (no overflow at these
+       sizes) and round up. 1024 MB @ cyl_blocks=1008, 512 b/blk:
+       blocks_per_mb=2048, total=2097152, ceil(2097152/1008)=2081. */
+    CHECK(rdb_mb_to_cyls(1024, 1008, 512) == 2081);
+    /* monotonic: bigger request -> at least as many cylinders */
+    CHECK(rdb_mb_to_cyls(2048, 1008, 512) >= rdb_mb_to_cyls(1024, 1008, 512));
+}
+
+static void test_validate_negative(void)
+{
+    RdbModel m;
+
+    /* overlap */
+    rdb_init_model(&m, 996, 16, 63);
+    CHECK(rdb_add_partition(&m, "DH0", 200, RDB_DOSTYPE_FFS_INTL) == RDB_OK);
+    CHECK(rdb_add_partition(&m, "DH1", 200, RDB_DOSTYPE_FFS_INTL) == RDB_OK);
+    CHECK(rdb_validate(&m) == RDB_OK);
+    m.parts[1].low_cyl = m.parts[0].high_cyl;      /* force overlap */
+    CHECK(rdb_validate(&m) == RDB_ERR_OVERLAP);
+
+    /* inverted range */
+    rdb_init_model(&m, 996, 16, 63);
+    CHECK(rdb_add_partition(&m, "DH0", 200, RDB_DOSTYPE_FFS_INTL) == RDB_OK);
+    m.parts[0].high_cyl = m.parts[0].low_cyl - 1;  /* low > high */
+    CHECK(rdb_validate(&m) == RDB_ERR_RANGE);
+
+    /* out of bounds (beyond hi_cyl) */
+    rdb_init_model(&m, 996, 16, 63);
+    CHECK(rdb_add_partition(&m, "DH0", 200, RDB_DOSTYPE_FFS_INTL) == RDB_OK);
+    m.parts[0].high_cyl = m.hi_cyl + 5;
+    CHECK(rdb_validate(&m) == RDB_ERR_NO_SPACE);
+}
+
 int main(int argc, char **argv)
 {
     if (argc >= 2 && strcmp(argv[1], "--emit") == 0) {
@@ -175,9 +210,11 @@ int main(int argc, char **argv)
     test_endian();
     test_checksum();
     test_geometry();
+    test_geometry_large();
     test_init_model();
     test_add_partition();
     test_serialize_parse();
+    test_validate_negative();
     if (g_fail) { printf("%d CHECK(s) FAILED\n", g_fail); return 1; }
     printf("ALL TESTS PASSED\n");
     return 0;

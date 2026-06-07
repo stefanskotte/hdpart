@@ -32,18 +32,29 @@ int rdb_checksum_ok(const uint8_t *blk, uint32_t summed_longs)
 
 uint32_t rdb_mb_to_cyls(uint32_t mb, uint32_t cyl_blocks, uint32_t block_bytes)
 {
-    /* Use 64-bit to avoid overflow on large sizes. */
-    uint64_t bytes      = (uint64_t)mb * 1024u * 1024u;
-    uint64_t cyl_bytes  = (uint64_t)cyl_blocks * block_bytes;
-    uint64_t cyls       = (bytes + cyl_bytes - 1) / cyl_bytes; /* ceil */
+    /* 1 MB = 1024*1024 bytes => (1024*1024)/block_bytes blocks per MB
+       (2048 for 512-byte blocks). Computed in 32-bit so the freestanding
+       m68000 build needs no libgcc 64-bit helpers. mb is capped well above
+       any real Amiga drive (~2 TB before 32-bit overflow). Rounds UP. */
+    uint32_t blocks_per_mb, total_blocks, cyls;
+    if (block_bytes == 0) block_bytes = RDB_BLOCK_BYTES;
+    if (cyl_blocks == 0)  return 1;
+    blocks_per_mb = (1024u * 1024u) / block_bytes;
+    total_blocks  = mb * blocks_per_mb;
+    cyls = (total_blocks + cyl_blocks - 1u) / cyl_blocks; /* ceil */
     if (cyls == 0) cyls = 1;
-    return (uint32_t)cyls;
+    return cyls;
 }
 
 uint32_t rdb_cyls_to_mb(uint32_t cyls, uint32_t cyl_blocks, uint32_t block_bytes)
 {
-    uint64_t bytes = (uint64_t)cyls * cyl_blocks * block_bytes;
-    return (uint32_t)(bytes / (1024u * 1024u)); /* floor */
+    /* Floor. Pure 32-bit (see rdb_mb_to_cyls). */
+    uint32_t blocks_per_mb, total_blocks;
+    if (block_bytes == 0) block_bytes = RDB_BLOCK_BYTES;
+    blocks_per_mb = (1024u * 1024u) / block_bytes;
+    if (blocks_per_mb == 0) return 0;
+    total_blocks = cyls * cyl_blocks;
+    return total_blocks / blocks_per_mb;
 }
 
 void rdb_init_model(RdbModel *m, uint32_t cyl, uint32_t heads, uint32_t sectors)
@@ -118,7 +129,7 @@ int rdb_add_partition(RdbModel *m, const char *name, uint32_t size_mb,
 int rdb_delete_partition(RdbModel *m, int index)
 {
     int i;
-    if (index < 0 || index >= m->num_parts) return RDB_ERR_BAD_NAME;
+    if (index < 0 || index >= m->num_parts) return RDB_ERR_RANGE;
     for (i = index; i < m->num_parts - 1; i++)
         m->parts[i] = m->parts[i + 1];
     m->num_parts--;
@@ -133,7 +144,7 @@ int rdb_validate(const RdbModel *m)
         if (a->low_cyl < m->lo_cyl || a->high_cyl > m->hi_cyl)
             return RDB_ERR_NO_SPACE;
         if (a->low_cyl > a->high_cyl)
-            return RDB_ERR_OVERLAP;
+            return RDB_ERR_RANGE;
         if (!a->name[0]) return RDB_ERR_BAD_NAME;
         for (j = i + 1; j < m->num_parts; j++) {
             const RdbPartition *b = &m->parts[j];

@@ -53,7 +53,8 @@ enum {
     RDB_ERR_BAD_NAME,
     RDB_ERR_OVERLAP,
     RDB_ERR_IO,
-    RDB_ERR_NO_RDB
+    RDB_ERR_NO_RDB,
+    RDB_ERR_RANGE
 };
 
 /* Append a partition sized in MB, placed immediately after the last one
