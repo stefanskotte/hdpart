@@ -22,7 +22,7 @@ void disc_bcpl_to_c(const unsigned char *bcpl, char *out, int outsz)
     out[len] = 0;
 }
 
-int disc_find(const DiscDisk list[], int count, const char *driver, ULONG unit)
+int disc_find(const DiscDisk list[], int count, const char *driver, uint32_t unit)
 {
     int i, j;
     for (i = 0; i < count; i++) {
@@ -33,9 +33,9 @@ int disc_find(const DiscDisk list[], int count, const char *driver, ULONG unit)
     return -1;
 }
 
-ULONG disc_blocks_to_mb(ULONG total_blocks, ULONG block_bytes)
+uint32_t disc_blocks_to_mb(uint32_t total_blocks, uint32_t block_bytes)
 {
-    ULONG blocks_per_mb;
+    uint32_t blocks_per_mb;
     if (block_bytes == 0) return 0;
     blocks_per_mb = (1024UL * 1024UL) / block_bytes;   /* 2048 for 512 */
     if (blocks_per_mb == 0) return 0;
@@ -56,7 +56,7 @@ static const char *const kProbeDrivers[] = {
 
 /* Add (driver,unit) if not present; return index or -1 if full. */
 static int add_unique(DiscDisk out[], int *count, int max,
-                      const char *driver, ULONG unit)
+                      const char *driver, uint32_t unit)
 {
     int idx = disc_find(out, *count, driver, unit);
     int n;
@@ -124,10 +124,12 @@ static void scan_dos_devices(DiscDisk out[], int *count, int max)
         if (idx < 0) continue;
         out[idx].status = DST_MOUNTED;
         if (out[idx].label[0] == 0) {
+            int n;
             disc_bcpl_to_c((const unsigned char *)BADDR(e->dol_Name),
                            dosname, sizeof(dosname));
-            { int n; for (n = 0; n < DISC_LABEL_LEN - 1 && dosname[n]; n++)
-                  out[idx].label[n] = dosname[n]; out[idx].label[n] = 0; }
+            for (n = 0; n < DISC_LABEL_LEN - 1 && dosname[n]; n++)
+                out[idx].label[n] = dosname[n];
+            out[idx].label[n] = 0;
         }
     }
     UnLockDosList(LDF_DEVICES | LDF_READ);

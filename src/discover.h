@@ -1,7 +1,7 @@
 #ifndef HDPART_DISCOVER_H
 #define HDPART_DISCOVER_H
 
-#include <exec/types.h>
+#include <stdint.h>
 
 #define DISC_MAX        32
 #define DISC_DRIVER_LEN 40
@@ -17,8 +17,8 @@ typedef enum {
 
 typedef struct {
     char       driver[DISC_DRIVER_LEN];  /* exec device name, e.g. "scsi.device" */
-    ULONG      unit;
-    ULONG      size_mb;                   /* from geometry, 0 if unknown */
+    uint32_t   unit;
+    uint32_t   size_mb;                   /* from geometry, 0 if unknown */
     DiskStatus status;
     char       label[DISC_LABEL_LEN];     /* model string / DOS name for display */
 } DiscDisk;
@@ -30,10 +30,10 @@ typedef struct {
 void disc_bcpl_to_c(const unsigned char *bcpl, char *out, int outsz);
 
 /* Find driver+unit in list; return index or -1. Case-sensitive on driver. */
-int disc_find(const DiscDisk list[], int count, const char *driver, ULONG unit);
+int disc_find(const DiscDisk list[], int count, const char *driver, uint32_t unit);
 
 /* Convert a block count + block size to whole MB (floor), 32-bit safe. */
-ULONG disc_blocks_to_mb(ULONG total_blocks, ULONG block_bytes);
+uint32_t disc_blocks_to_mb(uint32_t total_blocks, uint32_t block_bytes);
 
 /* ---- OS-bound entry point (implemented in discover.c) ---- */
 /* Fill out[] with up to `max` discovered disks; return the count. */
