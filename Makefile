@@ -7,7 +7,10 @@ ifdef OS
 endif
 
 CC    = m68k-amiga-elf-gcc
-OUT   = out/HDPart
+# `program` is overridable by the VSCode build task (passes program=${config:amiga.program}).
+# The Bartman amiga-debug extension runs <program>.exe and reads <program>.elf for symbols.
+program ?= out/HDPart
+OUT   = $(program)
 
 # Only compile our own sources under src/.
 c_sources := $(wildcard src/*.c)
@@ -26,11 +29,11 @@ CCFLAGS = -g -MP -MMD -m68000 -Os -nostdlib -ffreestanding -fomit-frame-pointer 
           -ffunction-sections -fdata-sections -Isrc
 LDFLAGS = -nostdlib -Wl,-e,_start,--emit-relocs,--gc-sections,-Map=$(OUT).map
 
-all: $(OUT)
+all: $(OUT).exe
 
-$(OUT): $(OUT).elf
+$(OUT).exe: $(OUT).elf
 	$(info Elf2Hunk $@)
-	@elf2hunk $(OUT).elf $(OUT)
+	@elf2hunk $(OUT).elf $(OUT).exe
 
 $(OUT).elf: $(c_objects)
 	$(info Linking $@)

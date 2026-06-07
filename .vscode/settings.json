@@ -1,0 +1,6 @@
+{
+    // The amiga-debug extension runs "<amiga.program>.exe" in the emulator
+    // and reads "<amiga.program>.elf" for source-level debug symbols.
+    // The Makefile builds both from this same base path.
+    "amiga.program": "out/HDPart"
+}
