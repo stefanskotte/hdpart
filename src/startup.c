@@ -3,6 +3,8 @@
  * launch, calls hdpart_main(), then cleans up and returns a DOS rc. */
 #include <exec/types.h>
 #include <exec/execbase.h>
+#include <exec/memory.h>
+#include <exec/tasks.h>
 #include <dos/dos.h>
 #include <dos/dosextens.h>
 #include <workbench/startup.h>
@@ -46,7 +48,24 @@ int _start(void)
         wbmsg = (struct WBStartup *)GetMsg(&proc->pr_MsgPort);
     }
 
-    rc = hdpart_main(wbmsg);
+    /* Run on a generous private stack: the GadTools GUI + library calls + the
+       ~1.8KB RdbModel would overflow the ~4KB default Shell stack. */
+    {
+        #define HDPART_STACK_SIZE (64UL * 1024UL)
+        APTR newstack = AllocMem(HDPART_STACK_SIZE, MEMF_CLEAR);
+        if (newstack) {
+            struct StackSwapStruct sss;
+            sss.stk_Lower   = newstack;
+            sss.stk_Upper   = (ULONG)newstack + HDPART_STACK_SIZE;
+            sss.stk_Pointer = (APTR)((ULONG)newstack + HDPART_STACK_SIZE);
+            StackSwap(&sss);
+            rc = hdpart_main(wbmsg);   /* runs on the new stack */
+            StackSwap(&sss);           /* restore the original stack */
+            FreeMem(newstack, HDPART_STACK_SIZE);
+        } else {
+            rc = hdpart_main(wbmsg);   /* fallback: original stack */
+        }
+    }
 
     if (wbmsg) {
         /* Must Forbid() before replying so we are not unloaded mid-reply. */
