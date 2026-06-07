@@ -18,9 +18,24 @@ static void test_endian(void)
     CHECK(be_get32(b) == 0x12345678u);
 }
 
+static void test_checksum(void)
+{
+    uint8_t blk[RDB_BLOCK_BYTES];
+    memset(blk, 0, sizeof(blk));
+    be_put32(blk + 0, 0x5244534Bu); /* 'RDSK' */
+    be_put32(blk + 4, 64);          /* summed longs */
+    /* checksum field at offset 8 left zero, then computed */
+    rdb_set_checksum(blk, 64, 8);
+    CHECK(rdb_checksum_ok(blk, 64));
+    /* corrupt a byte -> checksum must fail */
+    blk[20] ^= 0xFF;
+    CHECK(!rdb_checksum_ok(blk, 64));
+}
+
 int main(void)
 {
     test_endian();
+    test_checksum();
     /* further test functions appended in later tasks */
     if (g_fail) { printf("%d CHECK(s) FAILED\n", g_fail); return 1; }
     printf("ALL TESTS PASSED\n");
