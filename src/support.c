@@ -46,3 +46,49 @@ long __mulsi3(long a, long b)
     result = albl + ((albh + ahbl) << 16);
     return (long)result;
 }
+
+/* 32-bit software division/remainder. The 68000 has no 32/32-bit divide and
+ * this toolchain ships no libgcc, so GCC's calls to these helpers must be
+ * satisfied here. Shift-subtract long division. */
+unsigned int __udivsi3(unsigned int num, unsigned int den)
+{
+    unsigned int quot = 0;
+    unsigned int bit  = 1;
+    if (den == 0) return 0xFFFFFFFFu;            /* avoid hang on divide-by-0 */
+    while (den <= num && (den & 0x80000000u) == 0) { den <<= 1; bit <<= 1; }
+    while (bit) {
+        if (num >= den) { num -= den; quot |= bit; }
+        den >>= 1; bit >>= 1;
+    }
+    return quot;
+}
+
+unsigned int __umodsi3(unsigned int num, unsigned int den)
+{
+    unsigned int bit = 1;
+    if (den == 0) return num;
+    while (den <= num && (den & 0x80000000u) == 0) { den <<= 1; bit <<= 1; }
+    while (bit) {
+        if (num >= den) num -= den;
+        den >>= 1; bit >>= 1;
+    }
+    return num;
+}
+
+int __divsi3(int a, int b)
+{
+    int neg = 0;
+    unsigned int q;
+    if (a < 0) { a = -a; neg ^= 1; }
+    if (b < 0) { b = -b; neg ^= 1; }
+    q = __udivsi3((unsigned int)a, (unsigned int)b);
+    return neg ? -(int)q : (int)q;
+}
+
+int __modsi3(int a, int b)
+{
+    int neg = (a < 0);
+    unsigned int r = __umodsi3((unsigned int)(a < 0 ? -a : a),
+                               (unsigned int)(b < 0 ? -b : b));
+    return neg ? -(int)r : (int)r;
+}

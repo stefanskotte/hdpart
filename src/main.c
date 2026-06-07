@@ -25,21 +25,11 @@ static void put_str(BPTR fh, const char *s)
 }
 static void put_uint(BPTR fh, ULONG v)
 {
-    /* No libgcc on this toolchain: avoid % and / by repeated subtraction. */
-    static const ULONG pow10[10] = {
-        1000000000UL, 100000000UL, 10000000UL, 1000000UL,
-        100000UL, 10000UL, 1000UL, 100UL, 10UL, 1UL
-    };
-    char buf[12]; int n = 0, d, p;
-    int started = 0;
-    if (v == 0) { buf[n++] = '0'; buf[n] = 0; put_str(fh, buf); return; }
-    for (p = 0; p < 10; p++) {
-        d = 0;
-        while (v >= pow10[p]) { v -= pow10[p]; d++; }
-        if (d || started) { buf[n++] = (char)('0' + d); started = 1; }
-    }
-    buf[n] = 0;
-    put_str(fh, buf);
+    char buf[12]; int i = 11;
+    buf[i--] = 0;
+    if (v == 0) buf[i--] = '0';
+    while (v && i >= 0) { buf[i--] = (char)('0' + (v % 10)); v /= 10; }
+    put_str(fh, &buf[i + 1]);
 }
 static const char *status_name(DiskStatus s)
 {
