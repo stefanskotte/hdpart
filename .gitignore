@@ -1,0 +1,5 @@
+obj/
+out/
+.DS_Store
+.superpowers/
+*.hdf
