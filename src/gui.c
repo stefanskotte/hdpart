@@ -37,6 +37,7 @@ static const char *g_devlabels[DISC_MAX + 1];  /* for GTCY_Labels */
 static char     g_devtext[DISC_MAX][48];
 static RdbModel g_model;
 static int      g_have_model;
+static int      g_devmap[DISC_MAX];  /* cycle position -> g_disks index */
 static WORD     g_topb, g_leftb;     /* window border offsets (title bar / left edge);
                                         gadget coords are relative to the window's
                                         outer top-left, so all gadgets shift by these */
@@ -197,7 +198,46 @@ cleanup_libs:
     return 0;
 }
 
-/* Stubs replaced in later tasks (kept so 3a.1 builds/links and runs). */
-void gui_rescan(void) { }
+void gui_rescan(void)
+{
+    int i, n = 0;
+    g_ndisks = discover_disks(g_disks, DISC_MAX);
+
+    /* Build cycle labels from partitionable disks only. */
+    for (i = 0; i < g_ndisks && n < DISC_MAX; i++) {
+        DiscDisk *d = &g_disks[i];
+        char *t = g_devtext[n];
+        int p = 0, k;
+        if (!d->partitionable) continue;
+        g_devmap[n] = i;
+        for (k = 0; d->driver[k] && p < 30; k++) t[p++] = d->driver[k];
+        t[p++] = ' '; t[p++] = 'u';
+        /* unit as decimal */
+        { ULONG u = d->unit; char tmp[8]; int ti = 0;
+          if (u == 0) tmp[ti++] = '0';
+          while (u) { tmp[ti++] = (char)('0' + (u % 10)); u /= 10; }
+          while (ti > 0 && p < 44) t[p++] = tmp[--ti]; }
+        t[p++] = ' ';
+        /* size MB */
+        { ULONG s = d->size_mb; char tmp[8]; int ti = 0;
+          if (s == 0) tmp[ti++] = '0';
+          while (s) { tmp[ti++] = (char)('0' + (s % 10)); s /= 10; }
+          while (ti > 0 && p < 46) t[p++] = tmp[--ti];
+          t[p++] = 'M'; }
+        t[p] = 0;
+        g_devlabels[n] = t;
+        n++;
+    }
+    if (n == 0) { g_devlabels[0] = "(no disks found)"; g_devlabels[1] = 0; }
+    else g_devlabels[n] = 0;
+
+    if (g_win && g_gad[GID_DEVICE])
+        GT_SetGadgetAttrs(g_gad[GID_DEVICE], g_win, 0,
+                          GTCY_Labels, (ULONG)g_devlabels,
+                          GTCY_Active, 0, TAG_END);
+
+    if (n > 0) gui_select_device(0);
+}
+
 void gui_select_device(int idx) { (void)idx; }
 void gui_draw_bar(void) { }
