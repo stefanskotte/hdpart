@@ -1,0 +1,16 @@
+# HDPart device-I/O test: Kickstart 2.04 + Workbench 2.04, with two scratch
+# hardfiles attached as real block devices (uaehf.device). After WB boots,
+# open a Shell and run:  HDPart:HDPart scan
+# Expect both scratch disks to appear: one "blank", one "RDB" (DH4/DH5).
+# Then verify on the host:  rdbtool amiga_scratch/scratch_rdb.hdf info
+
+[fs-uae]
+amiga_model = A500+
+chip_memory = 2048
+kickstart_file = amiga-os-204.rom
+floppy_drive_0 = /Users/sfs/Downloads/WB204/Workbench v2.04 rev 37.67 (1991)(Commodore)(Disk 1 of 4)(Workbench).adf
+hard_drive_0 = /Users/sfs/Devel/party/amiga_hd
+hard_drive_0_label = HDPart
+hard_drive_1 = /Users/sfs/Devel/party/amiga_scratch/scratch_blank.hdf
+hard_drive_2 = /Users/sfs/Devel/party/amiga_scratch/scratch_rdb.hdf
+save_disk = 0
