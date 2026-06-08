@@ -193,30 +193,101 @@ static struct Gadget *build_gadgets(void)
     return g;
 }
 
-/* Yes/No confirm: returns 1 if the user chose the action (left) button. The
-   safe option (Cancel) is rightmost so EasyRequest returns 0 for it. */
-static int gui_confirm(const char *title, const char *body)
+/* Draw a multi-line ('\n'-separated) message into a window's RastPort. */
+static void gui_draw_text(struct Window *w, const char *body, int x, int y)
 {
-    struct EasyStruct es;
-    es.es_StructSize  = sizeof(es);
-    es.es_Flags       = 0;
-    es.es_Title       = (UBYTE *)title;
-    es.es_TextFormat  = (UBYTE *)body;
-    es.es_GadgetFormat= (UBYTE *)"Proceed|Cancel";
-    return (int)EasyRequest(g_win, &es, 0) == 1;
+    struct RastPort *rp = w->RPort;
+    const char *line = body, *p = body;
+    int ly = y + 7;                 /* first baseline */
+    SetAPen(rp, 1);
+    for (;;) {
+        if (*p == '\n' || *p == 0) {
+            Move(rp, x, ly);
+            Text(rp, (CONST_STRPTR)line, (LONG)(p - line));
+            ly += 10;
+            if (*p == 0) break;
+            line = p + 1;
+        }
+        p++;
+    }
 }
 
-/* Simple info message (single OK gadget). */
-static void gui_msg(const char *title, const char *body)
+/* Modal requester centered over the main window. twoButtons=1 -> Proceed/Cancel
+   (returns 1 for Proceed, 0 for Cancel/close); twoButtons=0 -> single OK. */
+static int gui_request(const char *title, const char *body, int twoButtons)
 {
-    struct EasyStruct es;
-    es.es_StructSize  = sizeof(es);
-    es.es_Flags       = 0;
-    es.es_Title       = (UBYTE *)title;
-    es.es_TextFormat  = (UBYTE *)body;
-    es.es_GadgetFormat= (UBYTE *)"OK";
-    EasyRequest(g_win, &es, 0);
+    struct Window *dw;
+    struct Gadget *glist = 0, *g;
+    struct NewGadget ng;
+    int dt = g_topb, dl = g_leftb;
+    int nlines = 1, maxw = 0, cur = 0;
+    int textW, dwW, dwH, dwL, dwT, btnY;
+    int done = 0, result = 0;
+    const char *p;
+
+    for (p = body; ; p++) {                 /* measure: lines + longest line */
+        if (*p == '\n' || *p == 0) {
+            if (cur > maxw) maxw = cur;
+            cur = 0;
+            if (*p == '\n') nlines++; else break;
+        } else cur++;
+    }
+    textW = maxw * 8; if (textW < 180) textW = 180;
+    btnY  = dt + 8 + nlines * 10 + 8;
+    dwW   = dl + textW + 24 + g_scr->WBorRight;
+    dwH   = btnY + 14 + 8 + g_scr->WBorBottom;
+    dwL   = g_win->LeftEdge + (g_win->Width  - dwW) / 2; if (dwL < 0) dwL = 0;
+    dwT   = g_win->TopEdge  + (g_win->Height - dwH) / 2; if (dwT < 0) dwT = 0;
+
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wincompatible-pointer-types"
+    g = CreateContext(&glist);
+#pragma GCC diagnostic pop
+    if (!g) return 0;
+    ng.ng_TextAttr = &g_font; ng.ng_VisualInfo = g_vi; ng.ng_Flags = 0;
+    ng.ng_TopEdge = btnY; ng.ng_Width = 90; ng.ng_Height = 14;
+    if (twoButtons) {
+        ng.ng_LeftEdge = dl + 12;  ng.ng_GadgetText = (UBYTE *)"Proceed"; ng.ng_GadgetID = 1;
+        g = CreateGadget(BUTTON_KIND, g, &ng, TAG_END);
+        ng.ng_LeftEdge = dl + textW + 12 - 90; ng.ng_GadgetText = (UBYTE *)"Cancel"; ng.ng_GadgetID = 0;
+        g = CreateGadget(BUTTON_KIND, g, &ng, TAG_END);
+    } else {
+        ng.ng_LeftEdge = dl + (textW + 24 - 90) / 2; ng.ng_GadgetText = (UBYTE *)"OK"; ng.ng_GadgetID = 1;
+        g = CreateGadget(BUTTON_KIND, g, &ng, TAG_END);
+    }
+    if (!g) { FreeGadgets(glist); return 0; }
+
+    dw = OpenWindowTags(0,
+        WA_Left, dwL, WA_Top, dwT, WA_Width, dwW, WA_Height, dwH,
+        WA_Title, (ULONG)title, WA_Gadgets, (ULONG)glist,
+        WA_IDCMP, IDCMP_CLOSEWINDOW | IDCMP_REFRESHWINDOW | BUTTONIDCMP,
+        WA_Flags, WFLG_DRAGBAR | WFLG_DEPTHGADGET | WFLG_ACTIVATE | WFLG_SMART_REFRESH,
+        g_pub ? WA_PubScreen : WA_CustomScreen, (ULONG)g_scr,
+        TAG_END);
+    if (!dw) { FreeGadgets(glist); return 0; }
+    GT_RefreshWindow(dw, 0);
+    gui_draw_text(dw, body, dl + 12, dt + 6);
+
+    while (!done) {
+        struct IntuiMessage *im;
+        WaitPort(dw->UserPort);
+        while ((im = GT_GetIMsg(dw->UserPort)) != 0) {
+            ULONG cl = im->Class;
+            struct Gadget *ig = (struct Gadget *)im->IAddress;
+            GT_ReplyIMsg(im);
+            if (cl == IDCMP_CLOSEWINDOW) { result = 0; done = 1; }
+            else if (cl == IDCMP_REFRESHWINDOW) {
+                GT_BeginRefresh(dw); gui_draw_text(dw, body, dl + 12, dt + 6); GT_EndRefresh(dw, TRUE);
+            } else if (cl == IDCMP_GADGETUP) { result = (ig->GadgetID == 1) ? 1 : 0; done = 1; }
+        }
+    }
+    CloseWindow(dw);
+    FreeGadgets(glist);
+    return result;
 }
+
+static int  gui_confirm(const char *title, const char *body) { return gui_request(title, body, 1); }
+static void gui_msg(const char *title, const char *body)      { (void)gui_request(title, body, 0); }
 
 static char g_msgbuf[120];
 
@@ -577,6 +648,11 @@ cleanup_libs:
 void gui_rescan(void)
 {
     int i, n = 0;
+    /* Discovery probes many devices/units and can take a moment; show progress
+       so the window doesn't look hung while the dropdown is empty. */
+    if (g_win && g_gad[GID_STATUS])
+        GT_SetGadgetAttrs(g_gad[GID_STATUS], g_win, 0,
+                          GTTX_Text, (ULONG)"Scanning for devices...", TAG_END);
     g_ndisks = discover_disks(g_disks, DISC_MAX);
 
     /* Build cycle labels from partitionable disks only. */
