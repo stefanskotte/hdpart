@@ -155,16 +155,18 @@ static struct Gadget *build_gadgets(void)
        (g_leftb,g_topb) since gadget coords are relative to the window origin. */
     ng.ng_TextAttr   = &g_font;
     ng.ng_VisualInfo = g_vi;
-    ng.ng_LeftEdge = 70 + g_leftb;  ng.ng_TopEdge = 6 + g_topb;  ng.ng_Width = 260; ng.ng_Height = 14;
+    ng.ng_LeftEdge = 70 + g_leftb;  ng.ng_TopEdge = 6 + g_topb;  ng.ng_Width = 236; ng.ng_Height = 14;
     ng.ng_GadgetText = (UBYTE *)"Disk:"; ng.ng_GadgetID = GID_DEVICE;
     ng.ng_Flags = 0;
     g_devlabels[0] = "(no disks)"; g_devlabels[1] = 0;
     g = CreateGadget(CYCLE_KIND, g, &ng, GTCY_Labels, (ULONG)g_devlabels, TAG_END);
     g_gad[GID_DEVICE] = g;
 
-    /* Driver... button (load a .device from file via ASL) */
-    ng.ng_LeftEdge = 336 + g_leftb; ng.ng_TopEdge = 6 + g_topb; ng.ng_Width = 60; ng.ng_Height = 14;
-    ng.ng_GadgetText = (UBYTE *)"Driver"; ng.ng_GadgetID = GID_DRIVER;
+    /* Driver... button (load a .device from file via ASL). "..." signals it
+       opens a file requester; widened to fit the 9-char ASCII label (Topaz
+       cannot render a UTF-8 ellipsis). */
+    ng.ng_LeftEdge = 312 + g_leftb; ng.ng_TopEdge = 6 + g_topb; ng.ng_Width = 84; ng.ng_Height = 14;
+    ng.ng_GadgetText = (UBYTE *)"Driver..."; ng.ng_GadgetID = GID_DRIVER;
     g = CreateGadget(BUTTON_KIND, g, &ng, GA_Disabled, (ULONG)(AslBase == 0), TAG_END);
     g_gad[GID_DRIVER] = g;
 
