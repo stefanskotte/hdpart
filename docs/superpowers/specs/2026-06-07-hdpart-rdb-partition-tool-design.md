@@ -179,6 +179,11 @@ geometry.
 - **Phase 2+:** bootable/boot-priority UI, selectable filesystem types and
   embedding custom filesystems (FSHD/LSEG), >4 GB / TD64, bad-block handling,
   mount-after-save, custom visual theme layer.
+- **Partition options in the editor (later):** the New/Edit dialog should expose
+  the per-partition `DosEnvec` options that belong to a partition — **bootable
+  flag**, **boot priority**, **mask**, **max transfer**, num buffers, and
+  filesystem/DosType selection beyond FFS-Intl. (Plan 3b's editor covers name +
+  size + FS type only; the engine already stores bootable/boot_pri/num_buffers.)
 - **Device driver sources (later):** drivers come in two forms — (a) **resident**
   in the exec device list already (ROM/autoconfig drivers, and controller-loaded
   ones such as `lide.device` that the controller's own ROM installs), which

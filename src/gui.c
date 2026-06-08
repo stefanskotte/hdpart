@@ -73,6 +73,8 @@ static void s_pad(char *o, int *p, int col) { while (*p < col) o[(*p)++] = ' '; 
 void gui_rescan(void);
 void gui_select_device(int idx);
 void gui_draw_bar(void);
+static void gui_set_selection(int idx);   /* select partition `idx` (or -1) + redraw */
+static int  gui_part_at_x(int mx, int my);/* partition under a window-relative point, or -1 */
 
 static void gui_update_buttons(void)
 {
@@ -296,10 +298,11 @@ static int gui_edit_dialog(int index)
 {
     struct Window *dw;
     struct Gadget *dglist = 0, *g;
-    struct Gadget *gName = 0, *gSize = 0, *gSlide = 0;
+    struct Gadget *gName = 0, *gSize = 0;
     struct NewGadget ng;
     RdbPartition *pt = &g_model.parts[index];
     static char nameBuf[32];
+    static char sizeMaxLabel[24];
     uint32_t startCyl = pt->low_cyl;
     uint32_t maxEndExclusive;   /* first cylinder not available to this part */
     uint32_t maxCyls, maxMB, curMB;
@@ -337,37 +340,46 @@ static int gui_edit_dialog(int index)
     g = CreateGadget(STRING_KIND, g, &ng, GTST_String, (ULONG)nameBuf, GTST_MaxChars, 31, TAG_END);
     gName = g;
 
-    ng.ng_TopEdge = dt + 24; ng.ng_Width = 80;
+    /* "max <N> MB" hint shown beside the size field */
+    { int p = 0; sizeMaxLabel[p++]='m'; sizeMaxLabel[p++]='a'; sizeMaxLabel[p++]='x'; sizeMaxLabel[p++]=' ';
+      p += u2s(sizeMaxLabel + p, maxMB); sizeMaxLabel[p++]=' '; sizeMaxLabel[p++]='M'; sizeMaxLabel[p++]='B';
+      sizeMaxLabel[p] = 0; }
+
+    ng.ng_LeftEdge = dl + 90; ng.ng_TopEdge = dt + 26; ng.ng_Width = 80; ng.ng_Height = 14;
     ng.ng_GadgetText = (UBYTE *)"Size (MB)"; ng.ng_GadgetID = 2;
     g = CreateGadget(INTEGER_KIND, g, &ng, GTIN_Number, curMB, GTIN_MaxChars, 7, TAG_END);
     gSize = g;
 
-    ng.ng_LeftEdge = dl + 90; ng.ng_TopEdge = dt + 42; ng.ng_Width = 180; ng.ng_Height = 12;
-    ng.ng_GadgetText = (UBYTE *)""; ng.ng_GadgetID = 3;
-    g = CreateGadget(SLIDER_KIND, g, &ng, GTSL_Min, 1, GTSL_Max, (ULONG)maxMB,
-                     GTSL_Level, (ULONG)curMB, TAG_END);
-    gSlide = g;
+    ng.ng_LeftEdge = dl + 180; ng.ng_Width = 110; ng.ng_GadgetText = 0; ng.ng_GadgetID = 0;
+    g = CreateGadget(TEXT_KIND, g, &ng, GTTX_Text, (ULONG)sizeMaxLabel, TAG_END);
 
-    ng.ng_TopEdge = dt + 58; ng.ng_Width = 180; ng.ng_Height = 14;
+    ng.ng_LeftEdge = dl + 90; ng.ng_TopEdge = dt + 48; ng.ng_Width = 180; ng.ng_Height = 14;
     ng.ng_GadgetText = (UBYTE *)"FS"; ng.ng_GadgetID = 4;
     g = CreateGadget(CYCLE_KIND, g, &ng, GTCY_Labels, (ULONG)kFsLabels, GTCY_Active, 0, TAG_END);
 
-    ng.ng_LeftEdge = dl + 10; ng.ng_TopEdge = dt + 80; ng.ng_Width = 70; ng.ng_Height = 14;
+    ng.ng_LeftEdge = dl + 10; ng.ng_TopEdge = dt + 70; ng.ng_Width = 70; ng.ng_Height = 14;
     ng.ng_GadgetText = (UBYTE *)"Ok"; ng.ng_GadgetID = 10;
     g = CreateGadget(BUTTON_KIND, g, &ng, TAG_END);
-    ng.ng_LeftEdge = dl + 200; ng.ng_GadgetText = (UBYTE *)"Cancel"; ng.ng_GadgetID = 11;
+    ng.ng_LeftEdge = dl + 210; ng.ng_GadgetText = (UBYTE *)"Cancel"; ng.ng_GadgetID = 11;
     g = CreateGadget(BUTTON_KIND, g, &ng, TAG_END);
     if (!g) { FreeGadgets(dglist); return 0; }
 
-    dw = OpenWindowTags(0,
-        WA_Left, 120, WA_Top, 60,
-        WA_Width, dl + 300 + g_scr->WBorRight, WA_Height, dt + 102 + g_scr->WBorBottom,
-        WA_Title, (ULONG)"Edit Partition",
-        WA_Gadgets, (ULONG)dglist,
-        WA_IDCMP, IDCMP_CLOSEWINDOW | IDCMP_REFRESHWINDOW | BUTTONIDCMP | STRINGIDCMP | INTEGERIDCMP | SLIDERIDCMP,
-        WA_Flags, WFLG_DRAGBAR | WFLG_DEPTHGADGET | WFLG_ACTIVATE | WFLG_SMART_REFRESH,
-        g_pub ? WA_PubScreen : WA_CustomScreen, (ULONG)g_scr,
-        TAG_END);
+    {   /* center the dialog over the main window */
+        int dwW = dl + 300 + g_scr->WBorRight;
+        int dwH = dt + 92 + g_scr->WBorBottom;
+        int dwL = g_win->LeftEdge + (g_win->Width  - dwW) / 2;
+        int dwT = g_win->TopEdge  + (g_win->Height - dwH) / 2;
+        if (dwL < 0) dwL = 0;
+        if (dwT < 0) dwT = 0;
+        dw = OpenWindowTags(0,
+            WA_Left, dwL, WA_Top, dwT, WA_Width, dwW, WA_Height, dwH,
+            WA_Title, (ULONG)"Edit Partition",
+            WA_Gadgets, (ULONG)dglist,
+            WA_IDCMP, IDCMP_CLOSEWINDOW | IDCMP_REFRESHWINDOW | BUTTONIDCMP | STRINGIDCMP | INTEGERIDCMP,
+            WA_Flags, WFLG_DRAGBAR | WFLG_DEPTHGADGET | WFLG_ACTIVATE | WFLG_SMART_REFRESH,
+            g_pub ? WA_PubScreen : WA_CustomScreen, (ULONG)g_scr,
+            TAG_END);
+    }
     if (!dw) { FreeGadgets(dglist); return 0; }
     GT_RefreshWindow(dw, 0);
 
@@ -375,22 +387,18 @@ static int gui_edit_dialog(int index)
         struct IntuiMessage *im;
         WaitPort(dw->UserPort);
         while ((im = GT_GetIMsg(dw->UserPort)) != 0) {
-            ULONG cl = im->Class; UWORD cd = im->Code;
+            ULONG cl = im->Class;
             struct Gadget *ig = (struct Gadget *)im->IAddress;
             GT_ReplyIMsg(im);
             if (cl == IDCMP_CLOSEWINDOW) { done = 1; }
             else if (cl == IDCMP_REFRESHWINDOW) { GT_BeginRefresh(dw); GT_EndRefresh(dw, TRUE); }
-            else if (cl == IDCMP_MOUSEMOVE || cl == IDCMP_GADGETDOWN || cl == IDCMP_GADGETUP) {
-                if (ig == gSlide) {
-                    /* slider level arrives in Code; mirror to the integer field */
-                    GT_SetGadgetAttrs(gSize, dw, 0, GTIN_Number, (ULONG)cd, TAG_END);
-                } else if (cl == IDCMP_GADGETUP && ig == gSize) {
-                    /* integer changed; clamp and mirror to the slider */
+            else if (cl == IDCMP_GADGETUP) {
+                if (ig == gSize) {
+                    /* clamp the typed size to [1, maxMB] */
                     LONG v = ((struct StringInfo *)gSize->SpecialInfo)->LongInt;
                     if (v < 1) v = 1; if ((ULONG)v > maxMB) v = (LONG)maxMB;
                     GT_SetGadgetAttrs(gSize, dw, 0, GTIN_Number, (ULONG)v, TAG_END);
-                    GT_SetGadgetAttrs(gSlide, dw, 0, GTSL_Level, (ULONG)v, TAG_END);
-                } else if (cl == IDCMP_GADGETUP && ig->GadgetID == 10) {        /* Ok */
+                } else if (ig->GadgetID == 10) {                                /* Ok */
                     LONG mb = ((struct StringInfo *)gSize->SpecialInfo)->LongInt;
                     char *nm = (char *)((struct StringInfo *)gName->SpecialInfo)->Buffer;
                     int r;
@@ -497,7 +505,7 @@ int gui_run(void)
         WA_Height, g_topb + 206 + g_scr->WBorBottom,
         WA_Title, (ULONG)"HDPart 0.1",
         WA_Gadgets, (ULONG)g_glist,
-        WA_IDCMP, IDCMP_CLOSEWINDOW | IDCMP_REFRESHWINDOW | CYCLEIDCMP | BUTTONIDCMP | LISTVIEWIDCMP,
+        WA_IDCMP, IDCMP_CLOSEWINDOW | IDCMP_REFRESHWINDOW | IDCMP_MOUSEBUTTONS | CYCLEIDCMP | BUTTONIDCMP | LISTVIEWIDCMP,
         WA_Flags, WFLG_DRAGBAR | WFLG_DEPTHGADGET | WFLG_CLOSEGADGET |
                   WFLG_ACTIVATE | WFLG_SMART_REFRESH,
         g_pub ? WA_PubScreen : WA_CustomScreen, (ULONG)g_scr,
@@ -515,6 +523,7 @@ int gui_run(void)
             ULONG cls = imsg->Class;
             struct Gadget *gad = (struct Gadget *)imsg->IAddress;
             UWORD code = imsg->Code;
+            WORD  mx = imsg->MouseX, my = imsg->MouseY;
             GT_ReplyIMsg(imsg);
             switch (cls) {
                 case IDCMP_CLOSEWINDOW:
@@ -525,10 +534,16 @@ int gui_run(void)
                     gui_draw_bar();
                     GT_EndRefresh(g_win, TRUE);
                     break;
+                case IDCMP_MOUSEBUTTONS:
+                    if (code == SELECTDOWN) {           /* click on the disk-map bar selects */
+                        int idx = gui_part_at_x((int)mx, (int)my);
+                        if (idx >= 0) gui_set_selection(idx);
+                    }
+                    break;
                 case IDCMP_GADGETUP:
                     if (gad->GadgetID == GID_DEVICE) gui_select_device((int)code);
                     else if (gad->GadgetID == GID_RESCAN) gui_rescan();
-                    else if (gad->GadgetID == GID_PARTS) { g_sel_part = (int)code; gui_update_buttons(); }
+                    else if (gad->GadgetID == GID_PARTS) gui_set_selection((int)code);
                     else if (gad->GadgetID == GID_SAVE) gui_save();
                     else if (gad->GadgetID == GID_INIT) gui_init_disk();
                     else if (gad->GadgetID == GID_DELETE) gui_delete();
@@ -635,22 +650,58 @@ void gui_select_device(int idx)
     gui_update_buttons();
 }
 
+/* The disk-map bar rectangle (window-relative). Shared by draw + hit-test. */
+static void gui_bar_rect(int *bx, int *by, int *bw, int *bh)
+{
+    *bx = 10 + g_leftb; *by = 26 + g_topb; *bw = 440; *bh = 16;
+}
+
+/* Return the partition index whose bar segment contains (mx,my), or -1. */
+static int gui_part_at_x(int mx, int my)
+{
+    int bx, by, bw, bh, i;
+    if (!g_have_model || g_model.cylinders == 0) return -1;
+    gui_bar_rect(&bx, &by, &bw, &bh);
+    if (mx < bx || mx >= bx + bw || my < by || my >= by + bh) return -1;
+    for (i = 0; i < g_model.num_parts && i < RDB_MAX_PARTS; i++) {
+        RdbPartition *pt = &g_model.parts[i];
+        int x0 = bx + (int)((pt->low_cyl      * (ULONG)bw) / g_model.cylinders);
+        int x1 = bx + (int)(((pt->high_cyl+1) * (ULONG)bw) / g_model.cylinders);
+        if (x1 <= x0) x1 = x0 + 1;
+        if (mx >= x0 && mx < x1) return i;
+    }
+    return -1;
+}
+
+/* Select partition `idx` (or -1 = none): syncs the listview highlight, redraws
+   the bar (with a selection outline), and updates the action buttons. */
+static void gui_set_selection(int idx)
+{
+    g_sel_part = idx;
+    if (g_win && g_gad[GID_PARTS])
+        GT_SetGadgetAttrs(g_gad[GID_PARTS], g_win, 0,
+                          GTLV_Selected, (ULONG)(idx >= 0 ? (ULONG)idx : ~0UL), TAG_END);
+    gui_draw_bar();
+    gui_update_buttons();
+}
+
 void gui_draw_bar(void)
 {
     struct RastPort *rp;
-    int bx = 10 + g_leftb, by = 26 + g_topb, bw = 440, bh = 16;   /* bar rectangle in the window */
-    int i;
+    int bx, by, bw, bh, i;
     if (!g_win) return;
     rp = g_win->RPort;
+    gui_bar_rect(&bx, &by, &bw, &bh);
 
-    /* frame + unused background (pen 2 = black border, pen 0 = bg) */
-    SetAPen(rp, 1); RectFill(rp, bx, by, bx + bw - 1, by + bh - 1);    /* fill light */
+    /* frame + unused background */
+    SetAPen(rp, 1); RectFill(rp, bx, by, bx + bw - 1, by + bh - 1);
     SetAPen(rp, 2); Move(rp, bx, by); Draw(rp, bx + bw - 1, by);
     Draw(rp, bx + bw - 1, by + bh - 1); Draw(rp, bx, by + bh - 1); Draw(rp, bx, by);
 
     if (!g_have_model || g_model.cylinders == 0) return;
 
-    /* each partition drawn proportional to its cylinder span over hi_cyl */
+    /* each partition drawn proportional to its cylinder span; the selected one
+       gets a contrasting outline so selection is clearly visible on the map. */
     for (i = 0; i < g_model.num_parts && i < RDB_MAX_PARTS; i++) {
         RdbPartition *pt = &g_model.parts[i];
         int x0 = bx + (int)((pt->low_cyl  * (ULONG)bw) / g_model.cylinders);
@@ -659,5 +710,10 @@ void gui_draw_bar(void)
         if (x1 > bx + bw - 1) x1 = bx + bw - 1;
         SetAPen(rp, (UBYTE)(3 - (i & 1)));   /* alternate pens 3/2 */
         RectFill(rp, x0, by + 1, x1 - 1, by + bh - 2);
+        if (i == g_sel_part) {
+            SetAPen(rp, 1);                  /* black selection outline */
+            Move(rp, x0, by + 1); Draw(rp, x1 - 1, by + 1);
+            Draw(rp, x1 - 1, by + bh - 2); Draw(rp, x0, by + bh - 2); Draw(rp, x0, by + 1);
+        }
     }
 }
