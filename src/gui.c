@@ -269,6 +269,19 @@ static void gui_init_disk(void)
     gui_update_buttons();
 }
 
+static void gui_delete(void)
+{
+    if (g_sel_part < 0 || g_sel_part >= g_model.num_parts) return;
+    if (!gui_confirm("Delete Partition",
+        "Remove the selected partition from the\nin-memory table? (Save to apply.)"))
+        return;
+    rdb_delete_partition(&g_model, g_sel_part);
+    g_sel_part = -1;
+    g_dirty = 1;
+    gui_refresh_parts();
+    gui_update_buttons();
+}
+
 int gui_run(void)
 {
     BOOL done = FALSE;
@@ -340,6 +353,7 @@ int gui_run(void)
                     else if (gad->GadgetID == GID_PARTS) { g_sel_part = (int)code; gui_update_buttons(); }
                     else if (gad->GadgetID == GID_SAVE) gui_save();
                     else if (gad->GadgetID == GID_INIT) gui_init_disk();
+                    else if (gad->GadgetID == GID_DELETE) gui_delete();
                     break;
             }
         }
