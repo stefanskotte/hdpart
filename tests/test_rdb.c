@@ -182,6 +182,33 @@ static void test_validate_negative(void)
     CHECK(rdb_validate(&m) == RDB_ERR_NO_SPACE);
 }
 
+static void test_largest_free_gap(void)
+{
+    RdbModel m;
+    uint32_t s = 0, e = 0;
+    rdb_init_model(&m, 996, 16, 63);            /* lo_cyl=2, hi_cyl=995 */
+    /* empty disk: whole partitionable area is the gap */
+    CHECK(rdb_largest_free_gap(&m, &s, &e) == 1);
+    CHECK(s == 2 && e == 995);
+    /* one partition at the front leaves the tail as the gap */
+    rdb_add_partition(&m, "DH0", 100, RDB_DOSTYPE_FFS_INTL);   /* 2..N */
+    CHECK(rdb_largest_free_gap(&m, &s, &e) == 1);
+    CHECK(s == m.parts[0].high_cyl + 1 && e == 995);
+    /* fill the rest; no gap remains — place DH1 directly to reach hi_cyl */
+    {
+        RdbPartition *p;
+        if (m.num_parts < RDB_MAX_PARTS) {
+            p = &m.parts[m.num_parts++];
+            p->low_cyl  = m.parts[0].high_cyl + 1;
+            p->high_cyl = m.hi_cyl;
+            p->dos_type = RDB_DOSTYPE_FFS_INTL;
+            p->num_buffers = 30; p->boot_pri = 0; p->bootable = 0;
+            { int _i; for (_i=0;_i<RDB_NAME_LEN-1&&"DH1"[_i];_i++) p->name[_i]="DH1"[_i]; p->name[_i]=0; }
+        }
+    }
+    CHECK(rdb_largest_free_gap(&m, &s, &e) == 0);
+}
+
 int main(int argc, char **argv)
 {
     if (argc >= 2 && strcmp(argv[1], "--emit") == 0) {
@@ -215,6 +242,7 @@ int main(int argc, char **argv)
     test_add_partition();
     test_serialize_parse();
     test_validate_negative();
+    test_largest_free_gap();
     if (g_fail) { printf("%d CHECK(s) FAILED\n", g_fail); return 1; }
     printf("ALL TESTS PASSED\n");
     return 0;

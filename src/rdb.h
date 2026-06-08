@@ -57,6 +57,11 @@ enum {
     RDB_ERR_RANGE
 };
 
+/* Find the largest unallocated cylinder range within [lo_cyl, hi_cyl].
+   On success writes start/end (inclusive) and returns 1; returns 0 if the
+   disk is full. Handles unsorted/overlapping partitions defensively. */
+int rdb_largest_free_gap(const RdbModel *m, uint32_t *start, uint32_t *end);
+
 /* Append a partition sized in MB, placed immediately after the last one
    (or at lo_cyl). Returns RDB_OK or an RDB_ERR_*. */
 int rdb_add_partition(RdbModel *m, const char *name, uint32_t size_mb,

@@ -99,6 +99,33 @@ static void copy_name(char *dst, const char *src)
     dst[i] = 0;
 }
 
+int rdb_largest_free_gap(const RdbModel *m, uint32_t *start, uint32_t *end)
+{
+    uint32_t cur = m->lo_cyl, best_s = 0, best_e = 0, best_len = 0;
+    while (cur <= m->hi_cyl) {
+        uint32_t next_start = m->hi_cyl + 1;
+        int covering = -1, i;
+        for (i = 0; i < m->num_parts; i++) {
+            const RdbPartition *p = &m->parts[i];
+            if (p->low_cyl <= cur && cur <= p->high_cyl) { covering = i; break; }
+            if (p->low_cyl > cur && p->low_cyl < next_start) next_start = p->low_cyl;
+        }
+        if (covering >= 0) { cur = m->parts[covering].high_cyl + 1; continue; }
+        {
+            uint32_t gs = cur, ge = (next_start > 0 ? next_start - 1 : 0);
+            if (ge > m->hi_cyl) ge = m->hi_cyl;
+            if (ge >= gs) {
+                uint32_t len = ge - gs + 1;
+                if (len > best_len) { best_len = len; best_s = gs; best_e = ge; }
+            }
+        }
+        cur = next_start;
+    }
+    if (best_len == 0) return 0;
+    *start = best_s; *end = best_e;
+    return 1;
+}
+
 int rdb_add_partition(RdbModel *m, const char *name, uint32_t size_mb,
                       uint32_t dos_type)
 {
