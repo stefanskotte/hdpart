@@ -162,9 +162,9 @@ static struct Gadget *build_gadgets(void)
     g = CreateGadget(CYCLE_KIND, g, &ng, GTCY_Labels, (ULONG)g_devlabels, TAG_END);
     g_gad[GID_DEVICE] = g;
 
-    /* Driver… button (load a .device from file via ASL) */
+    /* Driver... button (load a .device from file via ASL) */
     ng.ng_LeftEdge = 336 + g_leftb; ng.ng_TopEdge = 6 + g_topb; ng.ng_Width = 60; ng.ng_Height = 14;
-    ng.ng_GadgetText = (UBYTE *)"Driver…"; ng.ng_GadgetID = GID_DRIVER;
+    ng.ng_GadgetText = (UBYTE *)"Driver"; ng.ng_GadgetID = GID_DRIVER;
     g = CreateGadget(BUTTON_KIND, g, &ng, GA_Disabled, (ULONG)(AslBase == 0), TAG_END);
     g_gad[GID_DRIVER] = g;
 
@@ -565,7 +565,7 @@ int gui_run(void)
         if (GfxBase) CloseLibrary((struct Library *)GfxBase);
         return 20;
     }
-    AslBase = OpenLibrary("asl.library", 37);   /* optional: Driver… disabled if absent */
+    AslBase = OpenLibrary("asl.library", 37);   /* optional: Driver... disabled if absent */
 
     g_pub = LockPubScreen(0);
     if (g_pub) g_scr = g_pub;
@@ -735,7 +735,7 @@ static const char *drv_err_text(int code)
    media. Static buffers keep big arrays off the stack (project convention). */
 static void gui_load_driver(void)
 {
-    static struct FileRequester *fr;
+    struct FileRequester *fr;
     static char path[256];
     static char name[DRV_NAME_LEN];
     int rc, i, n, sel = -1;
