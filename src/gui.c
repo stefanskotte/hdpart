@@ -282,6 +282,129 @@ static void gui_delete(void)
     gui_update_buttons();
 }
 
+/* Filesystem cycle choices (phase 1: FFS Intl only; dos types parallel). */
+static const char *const kFsLabels[] = { "FFS International (DOS\\3)", 0 };
+static const uint32_t     kFsTypes[]  = { RDB_DOSTYPE_FFS_INTL };
+
+/* Edit partition `index` of g_model via a modal dialog. Returns 1 if applied. */
+static int gui_edit_dialog(int index)
+{
+    struct Window *dw;
+    struct Gadget *dglist = 0, *g;
+    struct Gadget *gName = 0, *gSize = 0, *gSlide = 0;
+    struct NewGadget ng;
+    RdbPartition *pt = &g_model.parts[index];
+    static char nameBuf[32];
+    uint32_t startCyl = pt->low_cyl;
+    uint32_t maxEndExclusive;   /* first cylinder not available to this part */
+    uint32_t maxCyls, maxMB, curMB;
+    int done = 0, applied = 0;
+    int dt = g_topb, dl = g_leftb;
+    int i, k;
+
+    /* compute the space available to this partition (start..next part start-1 or hi_cyl) */
+    maxEndExclusive = g_model.hi_cyl + 1;
+    for (i = 0; i < g_model.num_parts; i++) {
+        if (i == index) continue;
+        if (g_model.parts[i].low_cyl >= startCyl &&
+            g_model.parts[i].low_cyl < maxEndExclusive)
+            maxEndExclusive = g_model.parts[i].low_cyl;
+    }
+    maxCyls = (maxEndExclusive > startCyl) ? (maxEndExclusive - startCyl) : 1;
+    maxMB   = rdb_cyls_to_mb(maxCyls, g_model.cyl_blocks, g_model.block_bytes);
+    if (maxMB < 1) maxMB = 1;
+    curMB   = rdb_cyls_to_mb(pt->high_cyl - pt->low_cyl + 1, g_model.cyl_blocks, g_model.block_bytes);
+    if (curMB < 1) curMB = 1;
+    if (curMB > maxMB) curMB = maxMB;
+
+    for (k = 0; k < 31 && pt->name[k]; k++) nameBuf[k] = pt->name[k];
+    nameBuf[k] = 0;
+
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wincompatible-pointer-types"
+    g = CreateContext(&dglist);
+#pragma GCC diagnostic pop
+    if (!g) return 0;
+    ng.ng_TextAttr = &g_font; ng.ng_VisualInfo = g_vi; ng.ng_Flags = 0;
+
+    ng.ng_LeftEdge = dl + 90; ng.ng_TopEdge = dt + 6; ng.ng_Width = 180; ng.ng_Height = 14;
+    ng.ng_GadgetText = (UBYTE *)"Name"; ng.ng_GadgetID = 1;
+    g = CreateGadget(STRING_KIND, g, &ng, GTST_String, (ULONG)nameBuf, GTST_MaxChars, 31, TAG_END);
+    gName = g;
+
+    ng.ng_TopEdge = dt + 24; ng.ng_Width = 80;
+    ng.ng_GadgetText = (UBYTE *)"Size (MB)"; ng.ng_GadgetID = 2;
+    g = CreateGadget(INTEGER_KIND, g, &ng, GTIN_Number, curMB, GTIN_MaxChars, 7, TAG_END);
+    gSize = g;
+
+    ng.ng_LeftEdge = dl + 90; ng.ng_TopEdge = dt + 42; ng.ng_Width = 180; ng.ng_Height = 12;
+    ng.ng_GadgetText = (UBYTE *)""; ng.ng_GadgetID = 3;
+    g = CreateGadget(SLIDER_KIND, g, &ng, GTSL_Min, 1, GTSL_Max, (ULONG)maxMB,
+                     GTSL_Level, (ULONG)curMB, TAG_END);
+    gSlide = g;
+
+    ng.ng_TopEdge = dt + 58; ng.ng_Width = 180; ng.ng_Height = 14;
+    ng.ng_GadgetText = (UBYTE *)"FS"; ng.ng_GadgetID = 4;
+    g = CreateGadget(CYCLE_KIND, g, &ng, GTCY_Labels, (ULONG)kFsLabels, GTCY_Active, 0, TAG_END);
+
+    ng.ng_LeftEdge = dl + 10; ng.ng_TopEdge = dt + 80; ng.ng_Width = 70; ng.ng_Height = 14;
+    ng.ng_GadgetText = (UBYTE *)"Ok"; ng.ng_GadgetID = 10;
+    g = CreateGadget(BUTTON_KIND, g, &ng, TAG_END);
+    ng.ng_LeftEdge = dl + 200; ng.ng_GadgetText = (UBYTE *)"Cancel"; ng.ng_GadgetID = 11;
+    g = CreateGadget(BUTTON_KIND, g, &ng, TAG_END);
+    if (!g) { FreeGadgets(dglist); return 0; }
+
+    dw = OpenWindowTags(0,
+        WA_Left, 120, WA_Top, 60,
+        WA_Width, dl + 300 + g_scr->WBorRight, WA_Height, dt + 102 + g_scr->WBorBottom,
+        WA_Title, (ULONG)"Edit Partition",
+        WA_Gadgets, (ULONG)dglist,
+        WA_IDCMP, IDCMP_CLOSEWINDOW | IDCMP_REFRESHWINDOW | BUTTONIDCMP | STRINGIDCMP | INTEGERIDCMP | SLIDERIDCMP,
+        WA_Flags, WFLG_DRAGBAR | WFLG_DEPTHGADGET | WFLG_ACTIVATE | WFLG_SMART_REFRESH,
+        g_pub ? WA_PubScreen : WA_CustomScreen, (ULONG)g_scr,
+        TAG_END);
+    if (!dw) { FreeGadgets(dglist); return 0; }
+    GT_RefreshWindow(dw, 0);
+
+    while (!done) {
+        struct IntuiMessage *im;
+        WaitPort(dw->UserPort);
+        while ((im = GT_GetIMsg(dw->UserPort)) != 0) {
+            ULONG cl = im->Class; UWORD cd = im->Code;
+            struct Gadget *ig = (struct Gadget *)im->IAddress;
+            GT_ReplyIMsg(im);
+            if (cl == IDCMP_CLOSEWINDOW) { done = 1; }
+            else if (cl == IDCMP_REFRESHWINDOW) { GT_BeginRefresh(dw); GT_EndRefresh(dw, TRUE); }
+            else if (cl == IDCMP_MOUSEMOVE || cl == IDCMP_GADGETDOWN || cl == IDCMP_GADGETUP) {
+                if (ig == gSlide) {
+                    /* slider level arrives in Code; mirror to the integer field */
+                    GT_SetGadgetAttrs(gSize, dw, 0, GTIN_Number, (ULONG)cd, TAG_END);
+                } else if (cl == IDCMP_GADGETUP && ig == gSize) {
+                    /* integer changed; clamp and mirror to the slider */
+                    LONG v = ((struct StringInfo *)gSize->SpecialInfo)->LongInt;
+                    if (v < 1) v = 1; if ((ULONG)v > maxMB) v = (LONG)maxMB;
+                    GT_SetGadgetAttrs(gSize, dw, 0, GTIN_Number, (ULONG)v, TAG_END);
+                    GT_SetGadgetAttrs(gSlide, dw, 0, GTSL_Level, (ULONG)v, TAG_END);
+                } else if (cl == IDCMP_GADGETUP && ig->GadgetID == 10) {        /* Ok */
+                    LONG mb = ((struct StringInfo *)gSize->SpecialInfo)->LongInt;
+                    char *nm = (char *)((struct StringInfo *)gName->SpecialInfo)->Buffer;
+                    if (mb < 1) mb = 1; if ((ULONG)mb > maxMB) mb = (LONG)maxMB;
+                    if (rdb_set_partition(&g_model, index, nm, (uint32_t)mb, kFsTypes[0]) == RDB_OK) {
+                        applied = 1; done = 1;
+                    } else {
+                        gui_msg("Edit", "Invalid name or size (overlaps / out of range).");
+                    }
+                } else if (cl == IDCMP_GADGETUP && ig->GadgetID == 11) { done = 1; } /* Cancel */
+            }
+        }
+    }
+
+    CloseWindow(dw);
+    FreeGadgets(dglist);
+    if (applied) g_dirty = 1;
+    return applied;
+}
+
 int gui_run(void)
 {
     BOOL done = FALSE;
@@ -354,6 +477,13 @@ int gui_run(void)
                     else if (gad->GadgetID == GID_SAVE) gui_save();
                     else if (gad->GadgetID == GID_INIT) gui_init_disk();
                     else if (gad->GadgetID == GID_DELETE) gui_delete();
+                    else if (gad->GadgetID == GID_EDIT) {
+                        if (g_sel_part >= 0 && g_sel_part < g_model.num_parts) {
+                            gui_edit_dialog(g_sel_part);
+                            gui_refresh_parts();
+                            gui_update_buttons();
+                        }
+                    }
                     break;
             }
         }
