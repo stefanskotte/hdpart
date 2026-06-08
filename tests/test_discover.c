@@ -77,6 +77,28 @@ static void test_is_partitionable(void)
     CHECK(disc_is_partitionable("scsi.device", 0) == 0);
 }
 
+static void test_extra_driver_registry(void)
+{
+    /* Starts empty; dedups; respects the cap of 8. */
+    CHECK(disc_extra_count() == 0);
+    disc_add_extra_driver("lide.device");
+    CHECK(disc_extra_count() == 1);
+    disc_add_extra_driver("lide.device");          /* duplicate */
+    CHECK(disc_extra_count() == 1);
+    disc_add_extra_driver("");                      /* ignored */
+    CHECK(disc_extra_count() == 1);
+    disc_add_extra_driver("a.device");
+    disc_add_extra_driver("b.device");
+    disc_add_extra_driver("c.device");
+    disc_add_extra_driver("d.device");
+    disc_add_extra_driver("e.device");
+    disc_add_extra_driver("f.device");
+    disc_add_extra_driver("g.device");             /* 8th distinct -> at cap */
+    CHECK(disc_extra_count() == 8);
+    disc_add_extra_driver("h.device");             /* over cap -> ignored */
+    CHECK(disc_extra_count() == 8);
+}
+
 int main(void)
 {
     test_bcpl_to_c();
@@ -84,6 +106,7 @@ int main(void)
     test_blocks_to_mb();
     test_is_device_name();
     test_is_partitionable();
+    test_extra_driver_registry();
     if (g_fail) { printf("%d CHECK(s) FAILED\n", g_fail); return 1; }
     printf("DISCOVER TESTS PASSED\n");
     return 0;

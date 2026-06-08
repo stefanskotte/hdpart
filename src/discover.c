@@ -70,6 +70,28 @@ int disc_is_partitionable(const char *driver, uint32_t total_blocks)
     return 1;
 }
 
+/* ---- user-loaded driver registry (plain C; shared by host + target) ---- */
+#define DISC_EXTRA_MAX 8
+static char g_extra[DISC_EXTRA_MAX][DISC_DRIVER_LEN];
+static int  g_extra_n = 0;
+
+void disc_add_extra_driver(const char *name)
+{
+    int i, n;
+    if (!name || !name[0]) return;
+    for (i = 0; i < g_extra_n; i++) {            /* dedup (exact match) */
+        for (n = 0; name[n] && g_extra[i][n] == name[n]; n++) ;
+        if (name[n] == 0 && g_extra[i][n] == 0) return;
+    }
+    if (g_extra_n >= DISC_EXTRA_MAX) return;      /* silently ignore overflow */
+    for (n = 0; n < DISC_DRIVER_LEN - 1 && name[n]; n++)
+        g_extra[g_extra_n][n] = name[n];
+    g_extra[g_extra_n][n] = 0;
+    g_extra_n++;
+}
+
+int disc_extra_count(void) { return g_extra_n; }
+
 #ifdef HDPART_AMIGA
 
 /* Curated list of common block-device drivers to probe (units 0..PROBE_UNITS-1).
@@ -189,6 +211,15 @@ static void scan_probe(DiscDisk out[], int *count, int max)
             add_unique(out, count, max, kProbeDrivers[di], u);
         }
     }
+    for (di = 0; di < g_extra_n; di++) {
+        ULONG u;
+        for (u = 0; u < PROBE_UNITS; u++) {
+            DeviceHandle *h = dev_open(g_extra[di], u);
+            if (!h) continue;
+            dev_close(h);
+            add_unique(out, count, max, g_extra[di], u);
+        }
+    }
 }
 
 int discover_disks(DiscDisk out[], int max)
@@ -200,6 +231,23 @@ int discover_disks(DiscDisk out[], int max)
     for (i = 0; i < count; i++)
         probe_one(&out[i]);
     return count;
+}
+
+int discover_probe_driver(DiscDisk out[], int *count, int max, const char *driver)
+{
+    int before = *count;
+    ULONG u;
+    int i;
+    for (u = 0; u < PROBE_UNITS; u++) {
+        DeviceHandle *h = dev_open(driver, u);
+        if (!h) continue;          /* unit not present */
+        dev_close(h);
+        add_unique(out, count, max, driver, u);
+    }
+    /* Classify only the entries we just added. */
+    for (i = before; i < *count; i++)
+        probe_one(&out[i]);
+    return *count - before;
 }
 
 #endif /* HDPART_AMIGA */

@@ -49,4 +49,18 @@ int disc_is_partitionable(const char *driver, uint32_t total_blocks);
 /* Fill out[] with up to `max` discovered disks; return the count. */
 int discover_disks(DiscDisk out[], int max);
 
+/* Register a user-loaded driver name so the curated probe (scan_probe) also
+   probes it on every subsequent discover_disks(). Deduped; ignored past
+   capacity. Plain C (no OS calls) so it is host-testable. */
+void disc_add_extra_driver(const char *name);
+
+/* Number of registered extra drivers (for tests / introspection). */
+int disc_extra_count(void);
+
+/* Targeted probe of ONE driver: open units 0..PROBE_UNITS-1, add the ones that
+   open to out[] (starting at *count, capacity max), classify just those new
+   entries (geometry + RDB). *count is updated in place. Returns the number of
+   entries added. OS-bound. */
+int discover_probe_driver(DiscDisk out[], int *count, int max, const char *driver);
+
 #endif /* HDPART_DISCOVER_H */
