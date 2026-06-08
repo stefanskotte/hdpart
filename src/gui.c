@@ -29,11 +29,8 @@ extern struct DosLibrary *DOSBase;   /* opened in startup.c (for AddPart) */
 
 /* Gadget IDs */
 enum { GID_DEVICE = 1, GID_SCAN, GID_DRIVER, GID_PARTS, GID_NEW, GID_DELETE,
-       GID_EDIT, GID_INIT, GID_SAVE, GID_STATUS };
-
-/* Dropdown entry kinds: a heading prompt, a driver name (a Scan target), or a
-   disk found by a previous Scan. g_entkind/g_entref describe each cycle index. */
-enum { ENT_PROMPT, ENT_DRIVER, ENT_DISK };
+       GID_EDIT, GID_INIT, GID_SAVE, GID_STATUS, GID_UNIT };
+/* GID_DEVICE is the Driver cycle; GID_UNIT is the Unit cycle. */
 
 /* Module state for one GUI session. */
 static struct Screen  *g_scr;        /* screen we render on (pub or own) */
@@ -48,8 +45,9 @@ static struct TextAttr g_font_bold = { (STRPTR)"topaz.font", 8, FSF_BOLD, 0 };
 /* Discovery + current selection (static: keep off the stack). */
 static DiscDisk g_disks[DISC_MAX];
 static int      g_ndisks;
-static const char *g_devlabels[DISC_MAX * 2 + 2];  /* prompt + drivers + disks */
-static char     g_devtext[DISC_MAX][48];           /* disk labels, by disk index */
+static const char *g_drvlabels[DISC_MAX + 2];   /* Driver cycle: prompt + names */
+static const char *g_unitlabels[DISC_MAX + 2];  /* Unit cycle: placeholder or u<n> size */
+static char     g_unittext[DISC_MAX][16];        /* storage for unit-cycle labels */
 static RdbModel g_model;
 static int      g_have_model;
 static int      g_dirty;            /* unsaved edits in g_model */
@@ -57,8 +55,8 @@ static DeviceInfo g_geo;            /* geometry of the selected device */
 static char     g_cur_driver[40];   /* selected device driver/unit (for Save) */
 static uint32_t g_cur_unit;
 static int      g_sel_part = -1;    /* selected partition index, or -1 */
-static int      g_entkind[DISC_MAX * 2 + 2]; /* ENT_* per cycle index */
-static int      g_entref [DISC_MAX * 2 + 2]; /* ENT_DISK: g_disks idx; else unused */
+static int      g_unitmap[DISC_MAX + 1]; /* Unit cycle index -> g_disks index (-1 = none) */
+static int      g_nunits;           /* number of real disk entries in the Unit cycle */
 static char     g_target_driver[40];/* driver the Scan button will probe ("" = none) */
 static WORD     g_topb, g_leftb;     /* window border offsets (title bar / left edge);
                                         gadget coords are relative to the window's
@@ -86,9 +84,9 @@ static void s_pad(char *o, int *p, int col) { while (*p < col) o[(*p)++] = ' '; 
 /* Forward decls. */
 static void gui_load_driver(void);
 static void gui_init_picker(void);            /* no-probe startup picker */
-static void gui_select_entry(int cycleIdx);   /* act on a dropdown selection */
+static void gui_select_driver(int drvIdx);    /* Driver cycle: pick a scan target (resets) */
+static void gui_select_unit(int unitIdx);     /* Unit cycle: show that disk's partitions */
 static void gui_scan_selected(void);          /* probe the target driver (Scan button) */
-static int  gui_rebuild_devlabels(void);
 void gui_draw_bar(void);
 static void gui_draw_partheader(void);    /* column headings above the listview */
 static void gui_set_selection(int idx);   /* select partition `idx` (or -1) + redraw */
@@ -183,15 +181,15 @@ static struct Gadget *build_gadgets(void)
 #pragma GCC diagnostic pop
     if (!g) return 0;
 
-    /* Device cycle gadget. All ng positions are offset by the window border
-       (g_leftb,g_topb) since gadget coords are relative to the window origin. */
+    /* Driver cycle gadget (row 1). All ng positions are offset by the window
+       border (g_leftb,g_topb) since gadget coords are relative to the origin. */
     ng.ng_TextAttr   = &g_font;
     ng.ng_VisualInfo = g_vi;
     ng.ng_LeftEdge = 70 + g_leftb;  ng.ng_TopEdge = 6 + g_topb;  ng.ng_Width = 236; ng.ng_Height = 14;
-    ng.ng_GadgetText = (UBYTE *)"Disk:"; ng.ng_GadgetID = GID_DEVICE;
+    ng.ng_GadgetText = (UBYTE *)"Driver:"; ng.ng_GadgetID = GID_DEVICE;
     ng.ng_Flags = 0;
-    g_devlabels[0] = "(no disks)"; g_devlabels[1] = 0;
-    g = CreateGadget(CYCLE_KIND, g, &ng, GTCY_Labels, (ULONG)g_devlabels, TAG_END);
+    g_drvlabels[0] = "Select or load a driver"; g_drvlabels[1] = 0;
+    g = CreateGadget(CYCLE_KIND, g, &ng, GTCY_Labels, (ULONG)g_drvlabels, TAG_END);
     g_gad[GID_DEVICE] = g;
 
     /* Driver... button (load a .device from file via ASL). "..." signals it
@@ -210,8 +208,18 @@ static struct Gadget *build_gadgets(void)
     g_gad[GID_SCAN] = g;
     ng.ng_TextAttr = &g_font;            /* restore default for later gadgets */
 
-    /* Partition listview */
-    ng.ng_LeftEdge = 10 + g_leftb; ng.ng_TopEdge = 72 + g_topb; ng.ng_Width = 440; ng.ng_Height = 90;
+    /* Unit cycle gadget (row 2): the disks found on the selected driver after a
+       Scan. Starts disabled with a placeholder until a Scan populates it. */
+    ng.ng_LeftEdge = 70 + g_leftb; ng.ng_TopEdge = 26 + g_topb; ng.ng_Width = 236; ng.ng_Height = 14;
+    ng.ng_GadgetText = (UBYTE *)"Unit:"; ng.ng_GadgetID = GID_UNIT;
+    g_unitlabels[0] = "(press Scan)"; g_unitlabels[1] = 0;
+    g = CreateGadget(CYCLE_KIND, g, &ng, GTCY_Labels, (ULONG)g_unitlabels,
+                     GA_Disabled, TRUE, TAG_END);
+    g_gad[GID_UNIT] = g;
+
+    /* Partition listview (shifted down for the unit row; ~2 rows shorter so the
+       window keeps its height). */
+    ng.ng_LeftEdge = 10 + g_leftb; ng.ng_TopEdge = 74 + g_topb; ng.ng_Width = 440; ng.ng_Height = 66;
     ng.ng_GadgetText = 0; ng.ng_GadgetID = GID_PARTS;
     /* GTLV_ShowSelected (NULL) makes this a SELECTION listview: the clicked row
        stays highlighted, rather than a scroll-only list with momentary highlight. */
@@ -664,7 +672,8 @@ int gui_run(void)
                     }
                     break;
                 case IDCMP_GADGETUP:
-                    if (gad->GadgetID == GID_DEVICE) gui_select_entry((int)code);
+                    if (gad->GadgetID == GID_DEVICE) gui_select_driver((int)code);
+                    else if (gad->GadgetID == GID_UNIT) gui_select_unit((int)code);
                     else if (gad->GadgetID == GID_SCAN) gui_scan_selected();
                     else if (gad->GadgetID == GID_DRIVER) gui_load_driver();
                     else if (gad->GadgetID == GID_PARTS) gui_set_selection((int)code);
@@ -699,140 +708,155 @@ cleanup_libs:
     return 0;
 }
 
-/* Rebuild the dropdown from disc_candidate_drivers() + the probed disks in
-   g_disks[]. Entries are typed via g_entkind/g_entref: index 0 is the prompt,
-   then one per candidate driver NAME, then one per partitionable disk found so
-   far. Returns the number of cycle entries. */
-static int gui_rebuild_devlabels(void)
+/* Build the Driver cycle labels: prompt at 0, then the candidate driver names
+   (curated + loaded). Returns the entry count. Labels point at static storage. */
+static int gui_build_drivers(void)
 {
     const char *cand[DISC_MAX];
-    int ncand = disc_candidate_drivers(cand, DISC_MAX);
-    int n = 0, i, j;
-
-    g_entkind[n] = ENT_PROMPT; g_entref[n] = -1;
-    g_devlabels[n] = "Select or load a driver";
-    n++;
-
-    for (j = 0; j < ncand && n < DISC_MAX * 2; j++) {
-        g_entkind[n] = ENT_DRIVER; g_entref[n] = j;
-        g_devlabels[n] = cand[j];            /* points at static storage */
-        n++;
-    }
-
-    for (i = 0; i < g_ndisks && n < DISC_MAX * 2; i++) {
-        DiscDisk *d = &g_disks[i];
-        char *t = g_devtext[i];              /* disk i -> g_devtext[i] */
-        int p = 0, k;
-        if (!d->partitionable) continue;
-        for (k = 0; d->driver[k] && p < 30; k++) t[p++] = d->driver[k];
-        t[p++] = ' '; t[p++] = 'u';
-        { ULONG u = d->unit; char tmp[12]; int ti = 0;
-          if (u == 0) tmp[ti++] = '0';
-          while (u) { tmp[ti++] = (char)('0' + (u % 10)); u /= 10; }
-          while (ti > 0 && p < 44) t[p++] = tmp[--ti]; }
-        t[p++] = ' ';
-        { ULONG s = d->size_mb; char tmp[12]; int ti = 0;
-          if (s == 0) tmp[ti++] = '0';
-          while (s) { tmp[ti++] = (char)('0' + (s % 10)); s /= 10; }
-          while (ti > 0 && p < 46) t[p++] = tmp[--ti];
-          t[p++] = 'M'; }
-        t[p] = 0;
-        g_entkind[n] = ENT_DISK; g_entref[n] = i;
-        g_devlabels[n] = t;
-        n++;
-    }
-    g_devlabels[n] = 0;
+    int nc = disc_candidate_drivers(cand, DISC_MAX), n = 0, j;
+    g_drvlabels[n++] = "Select or load a driver";
+    for (j = 0; j < nc && n < DISC_MAX + 1; j++) g_drvlabels[n++] = cand[j];
+    g_drvlabels[n] = 0;
     return n;
 }
 
-/* No-probe startup: build the picker (prompt + driver names), select the
-   prompt. Touches no hardware. */
-static void gui_init_picker(void)
+/* Set the Unit cycle to a single placeholder with no real units (used on every
+   driver change so a stale unit/size can never linger). */
+static void gui_clear_units(const char *text)
 {
-    g_ndisks = 0;
-    gui_rebuild_devlabels();
-    if (g_win && g_gad[GID_DEVICE])
-        GT_SetGadgetAttrs(g_gad[GID_DEVICE], g_win, 0,
-                          GTCY_Labels, (ULONG)g_devlabels, GTCY_Active, 0, TAG_END);
-    gui_select_entry(0);
+    g_nunits = 0;
+    g_unitlabels[0] = text; g_unitmap[0] = -1; g_unitlabels[1] = 0;
 }
 
-/* Act on a dropdown selection. PROMPT/DRIVER clear the partition view without
-   touching hardware; DISK opens the disk and reads its RDB to show partitions. */
-static void gui_select_entry(int idx)
+/* Build the Unit cycle from the disks in g_disks[] that belong to the target
+   driver. Returns the number of real units; sets a placeholder when none. */
+static int gui_build_units(const char *emptyText)
+{
+    int i, n = 0;
+    for (i = 0; i < g_ndisks && n < DISC_MAX; i++) {
+        DiscDisk *d = &g_disks[i];
+        char *t = g_unittext[n];
+        int p = 0;
+        if (!d->partitionable || !streq(d->driver, g_target_driver)) continue;
+        t[p++] = 'u';
+        { ULONG u = d->unit; char tmp[12]; int ti = 0;
+          if (u == 0) tmp[ti++] = '0';
+          while (u) { tmp[ti++] = (char)('0' + (u % 10)); u /= 10; }
+          while (ti > 0 && p < 4) t[p++] = tmp[--ti]; }
+        t[p++] = ' '; t[p++] = ' ';
+        { ULONG s = d->size_mb; char tmp[12]; int ti = 0;
+          if (s == 0) tmp[ti++] = '0';
+          while (s) { tmp[ti++] = (char)('0' + (s % 10)); s /= 10; }
+          while (ti > 0 && p < 13) t[p++] = tmp[--ti];
+          t[p++] = 'M'; }
+        t[p] = 0;
+        g_unitmap[n] = i;
+        g_unitlabels[n] = t;
+        n++;
+    }
+    g_nunits = n;
+    if (n == 0) { g_unitlabels[0] = emptyText; g_unitmap[0] = -1; g_unitlabels[1] = 0; }
+    else g_unitlabels[n] = 0;
+    return n;
+}
+
+/* Push the Unit cycle labels to the gadget; disabled when there are no real
+   units (only a placeholder). */
+static void gui_set_unit_cycle(int active)
+{
+    if (g_win && g_gad[GID_UNIT])
+        GT_SetGadgetAttrs(g_gad[GID_UNIT], g_win, 0,
+                          GTCY_Labels, (ULONG)g_unitlabels,
+                          GTCY_Active, (ULONG)active,
+                          GA_Disabled, (ULONG)(g_nunits == 0),
+                          TAG_END);
+}
+
+/* Driver cycle handler. ANY driver change fully resets state — model, edit
+   flags, partition selection, current disk, AND the Unit cycle (back to its
+   placeholder at index 0) — so nothing from the previous driver lingers. */
+static void gui_select_driver(int idx)
 {
     g_have_model = 0; g_dirty = 0; g_sel_part = -1; g_geo.has_media = 0;
-    g_cur_driver[0] = 0;
+    g_cur_driver[0] = 0; g_cur_unit = 0;
 
-    if (idx < 0 || g_entkind[idx] == ENT_PROMPT) {
+    if (idx <= 0) {                               /* the prompt */
         g_target_driver[0] = 0;
+        gui_clear_units("(no driver)");
+        gui_set_unit_cycle(0);
         gui_refresh_parts(); gui_update_buttons();
         gui_status("Select a driver, or load one from disk, then press Scan.");
         return;
     }
-    if (g_entkind[idx] == ENT_DRIVER) {
-        const char *nm = g_devlabels[idx];
-        int k; for (k = 0; k < 39 && nm[k]; k++) g_target_driver[k] = nm[k];
-        g_target_driver[k] = 0;
-        gui_refresh_parts(); gui_update_buttons();
-        gui_status("Press Scan to query this driver.");
-        return;
-    }
-    /* ENT_DISK: show this disk's partitions (reads its RDB). */
-    {
-        DeviceHandle *h;
-        DiscDisk *d = &g_disks[g_entref[idx]];
-        int k;
-        for (k = 0; k < 39 && d->driver[k]; k++) {
-            g_cur_driver[k] = d->driver[k]; g_target_driver[k] = d->driver[k];
-        }
-        g_cur_driver[k] = 0; g_target_driver[k] = 0;
-        g_cur_unit = d->unit;
-        h = dev_open(d->driver, d->unit);
-        if (h) {
-            dev_geometry(h, &g_geo);
-            if (rdb_parse(&g_model, dev_block_io, h) == RDB_OK) g_have_model = 1;
-            dev_close(h);
-        }
-        gui_refresh_parts(); gui_update_buttons();   /* status set by refresh */
-    }
+    { const char *nm = g_drvlabels[idx]; int k;
+      for (k = 0; k < 39 && nm[k]; k++) g_target_driver[k] = nm[k];
+      g_target_driver[k] = 0; }
+    gui_clear_units("(press Scan)");
+    gui_set_unit_cycle(0);
+    gui_refresh_parts(); gui_update_buttons();
+    gui_status("Press Scan to query this driver.");
 }
 
-/* Scan button: probe the target driver's units, append the disks it finds, then
-   auto-select the first one (showing its partitions). */
+/* Unit cycle handler: show the selected disk's partitions (reads its RDB). */
+static void gui_select_unit(int uidx)
+{
+    DeviceHandle *h; DiscDisk *d; int k;
+
+    g_have_model = 0; g_dirty = 0; g_sel_part = -1; g_geo.has_media = 0;
+    g_cur_driver[0] = 0;
+
+    if (uidx < 0 || uidx >= g_nunits || g_unitmap[uidx] < 0) {
+        gui_refresh_parts(); gui_update_buttons();
+        return;
+    }
+    d = &g_disks[g_unitmap[uidx]];
+    for (k = 0; k < 39 && d->driver[k]; k++) g_cur_driver[k] = d->driver[k];
+    g_cur_driver[k] = 0;
+    g_cur_unit = d->unit;
+    h = dev_open(d->driver, d->unit);
+    if (h) {
+        dev_geometry(h, &g_geo);
+        if (rdb_parse(&g_model, dev_block_io, h) == RDB_OK) g_have_model = 1;
+        dev_close(h);
+    }
+    gui_refresh_parts(); gui_update_buttons();
+}
+
+/* Scan button: probe the target driver's units, fill the Unit cycle with the
+   disks found, and auto-select the first (showing its partitions). */
 static void gui_scan_selected(void)
 {
-    int n, i, sel = -1, drvIdx = -1;
+    int real;
     if (!g_target_driver[0]) return;
 
     gui_status("Scanning...");
     discover_probe_driver(g_disks, &g_ndisks, DISC_MAX, g_target_driver);
-    n = gui_rebuild_devlabels();
+    real = gui_build_units("(no disk found)");
+    gui_set_unit_cycle(0);
 
-    for (i = 0; i < n; i++) {
-        if (g_entkind[i] == ENT_DRIVER && drvIdx < 0 &&
-            streq(g_devlabels[i], g_target_driver))
-            drvIdx = i;
-        if (g_entkind[i] == ENT_DISK &&
-            streq(g_disks[g_entref[i]].driver, g_target_driver) &&
-            g_disks[g_entref[i]].partitionable) { sel = i; break; }
-    }
-
-    if (g_win && g_gad[GID_DEVICE])
-        GT_SetGadgetAttrs(g_gad[GID_DEVICE], g_win, 0,
-                          GTCY_Labels, (ULONG)g_devlabels,
-                          GTCY_Active,
-                          (ULONG)(sel >= 0 ? sel : (drvIdx >= 0 ? drvIdx : 0)),
-                          TAG_END);
-    if (sel >= 0) {
-        gui_select_entry(sel);
+    if (real > 0) {
+        gui_select_unit(0);
     } else {
         char m[64]; int p = 0, q = 0; const char *a = "No disk found on ";
+        g_have_model = 0; g_sel_part = -1; g_geo.has_media = 0; g_cur_driver[0] = 0;
         gui_refresh_parts(); gui_update_buttons();
         while (a[p]) { m[p] = a[p]; p++; }
         while (g_target_driver[q] && p < 62) m[p++] = g_target_driver[q++];
         m[p] = 0; gui_status(m);
     }
+}
+
+/* No-probe startup: build the Driver cycle, select the prompt (which clears the
+   Unit cycle and shows guidance). Touches no hardware. */
+static void gui_init_picker(void)
+{
+    g_ndisks = 0;
+    g_target_driver[0] = 0;
+    gui_build_drivers();
+    if (g_win && g_gad[GID_DEVICE])
+        GT_SetGadgetAttrs(g_gad[GID_DEVICE], g_win, 0,
+                          GTCY_Labels, (ULONG)g_drvlabels, GTCY_Active, 0, TAG_END);
+    gui_select_driver(0);
 }
 
 /* Map a DRVL_* failure code to a user-facing message. */
@@ -847,8 +871,8 @@ static const char *drv_err_text(int code)
     }
 }
 
-/* Ask for a .device file, load it, add it to the dropdown as a driver entry,
-   and select it. No probe — the user presses Scan to query it. */
+/* Ask for a .device file, load it, add it to the Driver cycle, and select it.
+   No probe — the user presses Scan to query it. */
 static void gui_load_driver(void)
 {
     struct FileRequester *fr;
@@ -878,25 +902,25 @@ static void gui_load_driver(void)
     rc = driver_load_file(path, name, sizeof(name));
     if (rc != DRVL_OK) { gui_msg("Driver", drv_err_text(rc)); return; }
 
-    /* Register the driver and show it as a dropdown entry — no probe yet. */
+    /* Register the driver and show it as a Driver-cycle entry — no probe yet. */
     disc_add_extra_driver(name);
-    n = gui_rebuild_devlabels();
-    for (i = 0; i < n; i++)
-        if (g_entkind[i] == ENT_DRIVER && streq(g_devlabels[i], name)) { sel = i; break; }
+    n = gui_build_drivers();
+    for (i = 1; i < n; i++)
+        if (streq(g_drvlabels[i], name)) { sel = i; break; }
     if (sel < 0) sel = 0;
 
     if (g_win && g_gad[GID_DEVICE])
         GT_SetGadgetAttrs(g_gad[GID_DEVICE], g_win, 0,
-                          GTCY_Labels, (ULONG)g_devlabels,
+                          GTCY_Labels, (ULONG)g_drvlabels,
                           GTCY_Active, (ULONG)sel, TAG_END);
-    gui_select_entry(sel);
+    gui_select_driver(sel);
     gui_status("Driver loaded - press Scan to query it.");
 }
 
 /* The disk-map bar rectangle (window-relative). Shared by draw + hit-test. */
 static void gui_bar_rect(int *bx, int *by, int *bw, int *bh)
 {
-    *bx = 10 + g_leftb; *by = 26 + g_topb; *bw = 440; *bh = 16;
+    *bx = 10 + g_leftb; *by = 48 + g_topb; *bw = 440; *bh = 16;
 }
 
 /* Return the partition index whose bar segment contains (mx,my), or -1. */
@@ -990,7 +1014,7 @@ static void gui_draw_partheader(void)
     s_cat(hdr, &p, "End");   s_pad(hdr, &p, 38);
     s_cat(hdr, &p, "Size");  hdr[p] = 0;
     lx = 10 + g_leftb + 4;               /* match the listview's text inset */
-    ly = 72 + g_topb - 2;                /* baseline just above the listview */
+    ly = 74 + g_topb - 2;                /* baseline just above the listview */
     SetAPen(rp, 1);
     Move(rp, lx, ly);
     Text(rp, (CONST_STRPTR)hdr, (LONG)p);
