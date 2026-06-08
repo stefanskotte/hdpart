@@ -182,6 +182,31 @@ static void test_validate_negative(void)
     CHECK(rdb_validate(&m) == RDB_ERR_NO_SPACE);
 }
 
+static void test_add_at_and_set(void)
+{
+    RdbModel m;
+    int r, idx;
+    rdb_init_model(&m, 996, 16, 63);
+    /* add at an explicit start cylinder */
+    idx = rdb_add_partition_at(&m, "DH0", 100, 50, RDB_DOSTYPE_FFS_INTL);
+    CHECK(idx == 0);
+    CHECK(m.parts[0].low_cyl == 100);
+    CHECK(m.parts[0].high_cyl == 100 + rdb_mb_to_cyls(50, m.cyl_blocks, m.block_bytes) - 1);
+    /* resize partition 0 to 30 MB, keeping its start */
+    r = rdb_set_partition(&m, 0, "WORK", 30, RDB_DOSTYPE_FFS_INTL);
+    CHECK(r == RDB_OK);
+    CHECK(m.parts[0].low_cyl == 100);
+    CHECK(strcmp(m.parts[0].name, "WORK") == 0);
+    CHECK(m.parts[0].high_cyl == 100 + rdb_mb_to_cyls(30, m.cyl_blocks, m.block_bytes) - 1);
+    /* a resize that would overflow the disk is rejected, leaving the model valid */
+    r = rdb_set_partition(&m, 0, "WORK", 100000, RDB_DOSTYPE_FFS_INTL);
+    CHECK(r == RDB_ERR_NO_SPACE);
+    CHECK(rdb_validate(&m) == RDB_OK);
+    /* add_at that overlaps an existing partition is rejected */
+    idx = rdb_add_partition_at(&m, "DH1", 100, 10, RDB_DOSTYPE_FFS_INTL);
+    CHECK(idx == RDB_ERR_OVERLAP);
+}
+
 static void test_largest_free_gap(void)
 {
     RdbModel m;
@@ -242,6 +267,7 @@ int main(int argc, char **argv)
     test_add_partition();
     test_serialize_parse();
     test_validate_negative();
+    test_add_at_and_set();
     test_largest_free_gap();
     if (g_fail) { printf("%d CHECK(s) FAILED\n", g_fail); return 1; }
     printf("ALL TESTS PASSED\n");

@@ -66,6 +66,19 @@ int rdb_largest_free_gap(const RdbModel *m, uint32_t *start, uint32_t *end);
    (or at lo_cyl). Returns RDB_OK or an RDB_ERR_*. */
 int rdb_add_partition(RdbModel *m, const char *name, uint32_t size_mb,
                       uint32_t dos_type);
+
+/* Add a partition at an explicit start cylinder, size in MB. Returns the new
+   index (>=0) or a negative RDB_ERR_* (e.g. RDB_ERR_OVERLAP / RDB_ERR_NO_SPACE
+   / RDB_ERR_DUP_NAME / RDB_ERR_TOO_MANY). */
+int rdb_add_partition_at(RdbModel *m, const char *name, uint32_t start_cyl,
+                         uint32_t size_mb, uint32_t dos_type);
+
+/* Update partition `index` in place: rename, set dos_type, and resize to
+   size_mb keeping its low_cyl fixed (high_cyl recomputed). Validates the whole
+   model afterward; on a validation failure the partition is restored and an
+   RDB_ERR_* is returned. RDB_OK on success. */
+int rdb_set_partition(RdbModel *m, int index, const char *name,
+                      uint32_t size_mb, uint32_t dos_type);
 /* Remove partition by index, shifting the rest down. */
 int rdb_delete_partition(RdbModel *m, int index);
 /* Validate all partitions: bounds within [lo_cyl,hi_cyl], no overlaps,

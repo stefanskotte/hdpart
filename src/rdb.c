@@ -126,6 +126,50 @@ int rdb_largest_free_gap(const RdbModel *m, uint32_t *start, uint32_t *end)
     return 1;
 }
 
+int rdb_add_partition_at(RdbModel *m, const char *name, uint32_t start_cyl,
+                         uint32_t size_mb, uint32_t dos_type)
+{
+    uint32_t cyls, end;
+    RdbPartition *p;
+    if (m->num_parts >= RDB_MAX_PARTS) return RDB_ERR_TOO_MANY;
+    if (!name || !name[0])             return RDB_ERR_BAD_NAME;
+    if (name_taken(m, name, -1))       return RDB_ERR_DUP_NAME;
+    cyls = rdb_mb_to_cyls(size_mb, m->cyl_blocks, m->block_bytes);
+    if (cyls == 0) cyls = 1;
+    end = start_cyl + cyls - 1;
+    if (start_cyl < m->lo_cyl || end > m->hi_cyl) return RDB_ERR_NO_SPACE;
+
+    p = &m->parts[m->num_parts];        /* tentative */
+    copy_name(p->name, name);
+    p->low_cyl = start_cyl; p->high_cyl = end;
+    p->dos_type = dos_type; p->num_buffers = 30; p->boot_pri = 0; p->bootable = 0;
+    m->num_parts++;
+    if (rdb_validate(m) != RDB_OK) { m->num_parts--; return RDB_ERR_OVERLAP; }
+    return m->num_parts - 1;
+}
+
+int rdb_set_partition(RdbModel *m, int index, const char *name,
+                      uint32_t size_mb, uint32_t dos_type)
+{
+    RdbPartition saved, *p;
+    uint32_t cyls;
+    int v;
+    if (index < 0 || index >= m->num_parts) return RDB_ERR_RANGE;
+    if (!name || !name[0])                  return RDB_ERR_BAD_NAME;
+    if (name_taken(m, name, index))         return RDB_ERR_DUP_NAME;
+    p = &m->parts[index];
+    saved = *p;
+    cyls = rdb_mb_to_cyls(size_mb, m->cyl_blocks, m->block_bytes);
+    if (cyls == 0) cyls = 1;
+    copy_name(p->name, name);
+    p->dos_type = dos_type;
+    p->high_cyl = p->low_cyl + cyls - 1;
+    if (p->high_cyl > m->hi_cyl) { *p = saved; return RDB_ERR_NO_SPACE; }
+    v = rdb_validate(m);
+    if (v != RDB_OK) { *p = saved; return v; }
+    return RDB_OK;
+}
+
 int rdb_add_partition(RdbModel *m, const char *name, uint32_t size_mb,
                       uint32_t dos_type)
 {
