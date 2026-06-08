@@ -312,9 +312,10 @@ void gui_rescan(void)
                           GTCY_Labels, (ULONG)g_devlabels,
                           GTCY_Active, 0, TAG_END);
 
-    if (n > 0) gui_select_device(0);
-    else { g_have_model = 0; gui_update_buttons(); }
-    gui_update_buttons();
+    /* gui_select_device(idx) fully resets edit state (model/dirty/sel/geo) and
+       updates the buttons; pass -1 when there are no partitionable disks so we
+       never leave stale selection/geometry enabling Delete/Edit/Init. */
+    gui_select_device(n > 0 ? 0 : -1);
 }
 
 void gui_select_device(int idx)
