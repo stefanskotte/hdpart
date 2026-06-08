@@ -11,18 +11,24 @@
 #include <proto/intuition.h>
 #include <proto/gadtools.h>
 #include <proto/graphics.h>
+#include <libraries/asl.h>
+#include <proto/asl.h>
+#include <proto/dos.h>
 #include "gui.h"
 #include "discover.h"
 #include "device.h"
+#include "driver.h"
 #include "rdb.h"
 
 extern struct IntuitionBase *IntuitionBase;   /* opened in main.c */
 struct Library *GadToolsBase = 0;
 struct GfxBase *GfxBase = 0;
+struct Library *AslBase = 0;
+extern struct DosLibrary *DOSBase;   /* opened in startup.c (for AddPart) */
 
 /* Gadget IDs */
-enum { GID_DEVICE = 1, GID_RESCAN, GID_PARTS, GID_NEW, GID_DELETE, GID_EDIT,
-       GID_INIT, GID_SAVE, GID_STATUS };
+enum { GID_DEVICE = 1, GID_RESCAN, GID_DRIVER, GID_PARTS, GID_NEW, GID_DELETE,
+       GID_EDIT, GID_INIT, GID_SAVE, GID_STATUS };
 
 /* Module state for one GUI session. */
 static struct Screen  *g_scr;        /* screen we render on (pub or own) */
@@ -71,6 +77,7 @@ static void s_pad(char *o, int *p, int col) { while (*p < col) o[(*p)++] = ' '; 
 
 /* Forward decls. */
 void gui_rescan(void);
+static void gui_load_driver(void);
 void gui_select_device(int idx);
 void gui_draw_bar(void);
 static void gui_set_selection(int idx);   /* select partition `idx` (or -1) + redraw */
@@ -148,15 +155,21 @@ static struct Gadget *build_gadgets(void)
        (g_leftb,g_topb) since gadget coords are relative to the window origin. */
     ng.ng_TextAttr   = &g_font;
     ng.ng_VisualInfo = g_vi;
-    ng.ng_LeftEdge = 70 + g_leftb;  ng.ng_TopEdge = 6 + g_topb;  ng.ng_Width = 300; ng.ng_Height = 14;
+    ng.ng_LeftEdge = 70 + g_leftb;  ng.ng_TopEdge = 6 + g_topb;  ng.ng_Width = 260; ng.ng_Height = 14;
     ng.ng_GadgetText = (UBYTE *)"Disk:"; ng.ng_GadgetID = GID_DEVICE;
     ng.ng_Flags = 0;
     g_devlabels[0] = "(no disks)"; g_devlabels[1] = 0;
     g = CreateGadget(CYCLE_KIND, g, &ng, GTCY_Labels, (ULONG)g_devlabels, TAG_END);
     g_gad[GID_DEVICE] = g;
 
+    /* Driver… button (load a .device from file via ASL) */
+    ng.ng_LeftEdge = 336 + g_leftb; ng.ng_TopEdge = 6 + g_topb; ng.ng_Width = 60; ng.ng_Height = 14;
+    ng.ng_GadgetText = (UBYTE *)"Driver…"; ng.ng_GadgetID = GID_DRIVER;
+    g = CreateGadget(BUTTON_KIND, g, &ng, GA_Disabled, (ULONG)(AslBase == 0), TAG_END);
+    g_gad[GID_DRIVER] = g;
+
     /* Rescan button */
-    ng.ng_LeftEdge = 380 + g_leftb; ng.ng_TopEdge = 6 + g_topb; ng.ng_Width = 70; ng.ng_Height = 14;
+    ng.ng_LeftEdge = 400 + g_leftb; ng.ng_TopEdge = 6 + g_topb; ng.ng_Width = 56; ng.ng_Height = 14;
     ng.ng_GadgetText = (UBYTE *)"Rescan"; ng.ng_GadgetID = GID_RESCAN;
     g = CreateGadget(BUTTON_KIND, g, &ng, TAG_END);
     g_gad[GID_RESCAN] = g;
@@ -552,6 +565,7 @@ int gui_run(void)
         if (GfxBase) CloseLibrary((struct Library *)GfxBase);
         return 20;
     }
+    AslBase = OpenLibrary("asl.library", 37);   /* optional: Driver… disabled if absent */
 
     g_pub = LockPubScreen(0);
     if (g_pub) g_scr = g_pub;
@@ -616,6 +630,7 @@ int gui_run(void)
                 case IDCMP_GADGETUP:
                     if (gad->GadgetID == GID_DEVICE) gui_select_device((int)code);
                     else if (gad->GadgetID == GID_RESCAN) gui_rescan();
+                    else if (gad->GadgetID == GID_DRIVER) gui_load_driver();
                     else if (gad->GadgetID == GID_PARTS) gui_set_selection((int)code);
                     else if (gad->GadgetID == GID_SAVE) gui_save();
                     else if (gad->GadgetID == GID_INIT) gui_init_disk();
@@ -642,22 +657,18 @@ cleanup_scr:
     if (g_pub) UnlockPubScreen(0, g_pub);
     g_scr = 0; g_pub = 0;
 cleanup_libs:
+    if (AslBase) { CloseLibrary(AslBase); AslBase = 0; }
     CloseLibrary((struct Library *)GfxBase);
     CloseLibrary(GadToolsBase);
     return 0;
 }
 
-void gui_rescan(void)
+/* Rebuild g_devlabels/g_devmap/g_devtext from the current g_disks[] (the
+   partitionable ones). Returns the number of cycle entries. Shared by the full
+   rescan and the load-driver path. */
+static int gui_rebuild_devlabels(void)
 {
     int i, n = 0;
-    /* Discovery probes many devices/units and can take a moment; show progress
-       so the window doesn't look hung while the dropdown is empty. */
-    if (g_win && g_gad[GID_STATUS])
-        GT_SetGadgetAttrs(g_gad[GID_STATUS], g_win, 0,
-                          GTTX_Text, (ULONG)"Scanning for devices...", TAG_END);
-    g_ndisks = discover_disks(g_disks, DISC_MAX);
-
-    /* Build cycle labels from partitionable disks only. */
     for (i = 0; i < g_ndisks && n < DISC_MAX; i++) {
         DiscDisk *d = &g_disks[i];
         char *t = g_devtext[n];
@@ -666,13 +677,11 @@ void gui_rescan(void)
         g_devmap[n] = i;
         for (k = 0; d->driver[k] && p < 30; k++) t[p++] = d->driver[k];
         t[p++] = ' '; t[p++] = 'u';
-        /* unit as decimal (tmp[12]: a uint32 is up to 10 digits) */
         { ULONG u = d->unit; char tmp[12]; int ti = 0;
           if (u == 0) tmp[ti++] = '0';
           while (u) { tmp[ti++] = (char)('0' + (u % 10)); u /= 10; }
           while (ti > 0 && p < 44) t[p++] = tmp[--ti]; }
         t[p++] = ' ';
-        /* size MB */
         { ULONG s = d->size_mb; char tmp[12]; int ti = 0;
           if (s == 0) tmp[ti++] = '0';
           while (s) { tmp[ti++] = (char)('0' + (s % 10)); s /= 10; }
@@ -684,6 +693,20 @@ void gui_rescan(void)
     }
     if (n == 0) { g_devlabels[0] = "(no disks found)"; g_devlabels[1] = 0; }
     else g_devlabels[n] = 0;
+    return n;
+}
+
+void gui_rescan(void)
+{
+    int n;
+    /* Discovery probes many devices/units and can take a moment; show progress
+       so the window doesn't look hung while the dropdown is empty. */
+    if (g_win && g_gad[GID_STATUS])
+        GT_SetGadgetAttrs(g_gad[GID_STATUS], g_win, 0,
+                          GTTX_Text, (ULONG)"Scanning for devices...", TAG_END);
+    g_ndisks = discover_disks(g_disks, DISC_MAX);
+
+    n = gui_rebuild_devlabels();
 
     if (g_win && g_gad[GID_DEVICE])
         GT_SetGadgetAttrs(g_gad[GID_DEVICE], g_win, 0,
@@ -694,6 +717,80 @@ void gui_rescan(void)
        updates the buttons; pass -1 when there are no partitionable disks so we
        never leave stale selection/geometry enabling Delete/Edit/Init. */
     gui_select_device(n > 0 ? 0 : -1);
+}
+
+/* Map a DRVL_* failure code to a user-facing message. */
+static const char *drv_err_text(int code)
+{
+    switch (code) {
+        case DRVL_ELOAD:      return "Could not load that file as a driver.";
+        case DRVL_ENOROMTAG:  return "That file has no driver (no Resident tag).";
+        case DRVL_ENOTDEVICE: return "That file is not a .device driver.";
+        case DRVL_EINIT:      return "Driver loaded but failed to initialise.";
+        default:              return "Could not load that driver.";
+    }
+}
+
+/* Ask for a .device file, load it, probe it, and preselect its first unit with
+   media. Static buffers keep big arrays off the stack (project convention). */
+static void gui_load_driver(void)
+{
+    static struct FileRequester *fr;
+    static char path[256];
+    static char name[DRV_NAME_LEN];
+    int rc, i, n, sel = -1;
+
+    if (!AslBase) return;   /* button is disabled, but guard anyway */
+
+    fr = (struct FileRequester *)AllocAslRequestTags(ASL_FileRequest,
+            ASLFR_TitleText,     (ULONG)"Select a device driver",
+            ASLFR_InitialDrawer, (ULONG)"DEVS:",
+            ASLFR_DoPatterns,    TRUE,
+            ASLFR_InitialPattern,(ULONG)"#?.device",
+            TAG_END);
+    if (!fr) { gui_msg("Driver", "Could not open the file requester."); return; }
+
+    if (!AslRequest(fr, 0)) { FreeAslRequest(fr); return; }   /* cancelled */
+
+    /* Join drawer + file into path[] (AddPart inserts any needed separator). */
+    { int j = 0; const char *d = (const char *)fr->fr_Drawer;
+      while (d && d[j] && j < (int)sizeof(path) - 1) { path[j] = d[j]; j++; }
+      path[j] = 0; }
+    AddPart((STRPTR)path, (CONST_STRPTR)fr->fr_File, sizeof(path));
+    FreeAslRequest(fr);
+
+    rc = driver_load_file(path, name, sizeof(name));
+    if (rc != DRVL_OK) { gui_msg("Driver", drv_err_text(rc)); return; }
+
+    /* Remember it for later full rescans, then probe just this driver now. */
+    disc_add_extra_driver(name);
+    discover_probe_driver(g_disks, &g_ndisks, DISC_MAX, name);
+
+    n = gui_rebuild_devlabels();
+
+    /* Preselect the first partitionable entry belonging to the loaded driver.
+       Bound by n (when n==0 the label array holds only a sentinel and g_devmap
+       is stale, so never index it). */
+    for (i = 0; i < n; i++) {
+        DiscDisk *d = &g_disks[g_devmap[i]];
+        int k; for (k = 0; d->driver[k] && name[k] && d->driver[k] == name[k]; k++) ;
+        if (d->driver[k] == 0 && name[k] == 0 && d->partitionable) { sel = i; break; }
+    }
+
+    if (g_win && g_gad[GID_DEVICE])
+        GT_SetGadgetAttrs(g_gad[GID_DEVICE], g_win, 0,
+                          GTCY_Labels, (ULONG)g_devlabels,
+                          GTCY_Active, (ULONG)(sel >= 0 ? sel : 0), TAG_END);
+
+    if (sel >= 0) {
+        gui_select_device(sel);
+    } else {
+        gui_select_device(-1);
+        if (g_win && g_gad[GID_STATUS])
+            GT_SetGadgetAttrs(g_gad[GID_STATUS], g_win, 0,
+                              GTTX_Text, (ULONG)"Driver loaded; no media on units 0-7",
+                              TAG_END);
+    }
 }
 
 void gui_select_device(int idx)
