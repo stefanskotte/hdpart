@@ -207,6 +207,27 @@ static void test_add_at_and_set(void)
     CHECK(idx == RDB_ERR_OVERLAP);
 }
 
+static void test_add_cyl_and_rename(void)
+{
+    RdbModel m;
+    int idx, r;
+    rdb_init_model(&m, 996, 16, 63);          /* lo_cyl=2, hi_cyl=995 */
+    /* add an exact cylinder range (fills a gap with NO MB rounding loss) */
+    idx = rdb_add_partition_cyl(&m, "DH0", 2, 500, RDB_DOSTYPE_FFS_INTL);
+    CHECK(idx == 0);
+    CHECK(m.parts[0].low_cyl == 2 && m.parts[0].high_cyl == 500);   /* exact, not MB-rounded */
+    /* rename keeps the exact cylinder range untouched */
+    r = rdb_rename_partition(&m, 0, "SYSTEM", RDB_DOSTYPE_FFS_INTL);
+    CHECK(r == RDB_OK);
+    CHECK(strcmp(m.parts[0].name, "SYSTEM") == 0);
+    CHECK(m.parts[0].low_cyl == 2 && m.parts[0].high_cyl == 500);   /* unchanged */
+    /* out-of-bounds / overlap rejected; model stays valid */
+    CHECK(rdb_add_partition_cyl(&m, "X", 400, 600, RDB_DOSTYPE_FFS_INTL) == RDB_ERR_OVERLAP);
+    CHECK(rdb_add_partition_cyl(&m, "Y", 900, 1000, RDB_DOSTYPE_FFS_INTL) == RDB_ERR_NO_SPACE);
+    CHECK(rdb_rename_partition(&m, 0, "SYSTEM", RDB_DOSTYPE_FFS_INTL) == RDB_OK); /* self-rename ok */
+    CHECK(rdb_validate(&m) == RDB_OK);
+}
+
 static void test_largest_free_gap(void)
 {
     RdbModel m;
@@ -278,6 +299,7 @@ int main(int argc, char **argv)
     test_serialize_parse();
     test_validate_negative();
     test_add_at_and_set();
+    test_add_cyl_and_rename();
     test_largest_free_gap();
     if (g_fail) { printf("%d CHECK(s) FAILED\n", g_fail); return 1; }
     printf("ALL TESTS PASSED\n");

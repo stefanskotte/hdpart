@@ -117,7 +117,10 @@ static void gui_refresh_parts(void)
         int p = 0; s_cat(g_statusbuf, &p, "no valid RDB on this disk"); g_statusbuf[p] = 0;
     }
     if (g_win && g_gad[GID_PARTS])
-        GT_SetGadgetAttrs(g_gad[GID_PARTS], g_win, 0, GTLV_Labels, (ULONG)&g_partlist, TAG_END);
+        GT_SetGadgetAttrs(g_gad[GID_PARTS], g_win, 0,
+                          GTLV_Labels, (ULONG)&g_partlist,
+                          GTLV_Selected, (ULONG)(g_sel_part >= 0 ? (ULONG)g_sel_part : ~0UL),
+                          TAG_END);
     if (g_win && g_gad[GID_STATUS])
         GT_SetGadgetAttrs(g_gad[GID_STATUS], g_win, 0, GTTX_Text, (ULONG)g_statusbuf, TAG_END);
     gui_draw_bar();
@@ -159,7 +162,9 @@ static struct Gadget *build_gadgets(void)
     /* Partition listview */
     ng.ng_LeftEdge = 10 + g_leftb; ng.ng_TopEdge = 72 + g_topb; ng.ng_Width = 440; ng.ng_Height = 90;
     ng.ng_GadgetText = 0; ng.ng_GadgetID = GID_PARTS;
-    g = CreateGadget(LISTVIEW_KIND, g, &ng, GTLV_Labels, 0, TAG_END);
+    /* GTLV_ShowSelected (NULL) makes this a SELECTION listview: the clicked row
+       stays highlighted, rather than a scroll-only list with momentary highlight. */
+    g = CreateGadget(LISTVIEW_KIND, g, &ng, GTLV_Labels, 0, GTLV_ShowSelected, 0, TAG_END);
     g_gad[GID_PARTS] = g;
 
     /* Read-only status text */
@@ -283,7 +288,7 @@ static void gui_delete(void)
 }
 
 /* Filesystem cycle choices (phase 1: FFS Intl only; dos types parallel). */
-static const char *const kFsLabels[] = { "FFS International (DOS\\3)", 0 };
+static const char *const kFsLabels[] = { "FFS Intl (DOS\\3)", 0 };
 static const uint32_t     kFsTypes[]  = { RDB_DOSTYPE_FFS_INTL };
 
 /* Edit partition `index` of g_model via a modal dialog. Returns 1 if applied. */
@@ -388,8 +393,17 @@ static int gui_edit_dialog(int index)
                 } else if (cl == IDCMP_GADGETUP && ig->GadgetID == 10) {        /* Ok */
                     LONG mb = ((struct StringInfo *)gSize->SpecialInfo)->LongInt;
                     char *nm = (char *)((struct StringInfo *)gName->SpecialInfo)->Buffer;
+                    int r;
                     if (mb < 1) mb = 1; if ((ULONG)mb > maxMB) mb = (LONG)maxMB;
-                    if (rdb_set_partition(&g_model, index, nm, (uint32_t)mb, kFsTypes[0]) == RDB_OK) {
+                    /* If the MB field is unchanged from what the dialog opened
+                       with, keep the EXACT cylinder range (so a gap-filling
+                       partition isn't silently shrunk by MB re-rounding); only
+                       resize when the user actually changed the size. */
+                    if ((uint32_t)mb == curMB)
+                        r = rdb_rename_partition(&g_model, index, nm, kFsTypes[0]);
+                    else
+                        r = rdb_set_partition(&g_model, index, nm, (uint32_t)mb, kFsTypes[0]);
+                    if (r == RDB_OK) {
                         applied = 1; done = 1;
                     } else {
                         gui_msg("Edit", "Invalid name or size (overlaps / out of range).");
@@ -426,7 +440,7 @@ static void gui_auto_name(char *out)
 
 static void gui_new(void)
 {
-    uint32_t gs = 0, ge = 0, mb;
+    uint32_t gs = 0, ge = 0;
     char name[32];
     int idx;
     if (!g_have_model) return;
@@ -434,9 +448,9 @@ static void gui_new(void)
         gui_msg("New Partition", "No free space on this disk."); return;
     }
     gui_auto_name(name);
-    mb = rdb_cyls_to_mb(ge - gs + 1, g_model.cyl_blocks, g_model.block_bytes);
-    if (mb < 1) mb = 1;
-    idx = rdb_add_partition_at(&g_model, name, gs, mb, RDB_DOSTYPE_FFS_INTL);
+    /* Fill the whole free gap exactly (by cylinder) — converting to MB and back
+       would floor away the fractional cylinders and waste space. */
+    idx = rdb_add_partition_cyl(&g_model, name, gs, ge, RDB_DOSTYPE_FFS_INTL);
     if (idx < 0) { gui_msg("New Partition", "Could not add the partition."); return; }
     g_sel_part = idx;
     g_dirty = 1;

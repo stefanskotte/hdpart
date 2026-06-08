@@ -82,6 +82,18 @@ int rdb_add_partition_at(RdbModel *m, const char *name, uint32_t start_cyl,
    RDB_ERR_* is returned. RDB_OK on success. */
 int rdb_set_partition(RdbModel *m, int index, const char *name,
                       uint32_t size_mb, uint32_t dos_type);
+
+/* Add a partition spanning an exact cylinder range [start_cyl, end_cyl]
+   (inclusive). Use this to fill a free gap precisely without MB rounding loss.
+   Returns the new index (>=0) or a negative RDB_ERR_*. */
+int rdb_add_partition_cyl(RdbModel *m, const char *name, uint32_t start_cyl,
+                          uint32_t end_cyl, uint32_t dos_type);
+
+/* Change only a partition's name + dos_type, leaving its cylinder range exactly
+   as-is (so editing a gap-filling partition without changing its size does not
+   re-round it). Returns RDB_OK or a negative RDB_ERR_*. */
+int rdb_rename_partition(RdbModel *m, int index, const char *name, uint32_t dos_type);
+
 /* Remove partition by index, shifting the rest down. */
 int rdb_delete_partition(RdbModel *m, int index);
 /* Validate all partitions: bounds within [lo_cyl,hi_cyl], no overlaps,
