@@ -467,13 +467,15 @@ static int gui_edit_dialog(int index)
                 if (ig == gSize) {
                     /* clamp the typed size to [1, maxMB] */
                     LONG v = ((struct StringInfo *)gSize->SpecialInfo)->LongInt;
-                    if (v < 1) v = 1; if ((ULONG)v > maxMB) v = (LONG)maxMB;
+                    if (v < 1) v = 1;
+                    if ((ULONG)v > maxMB) v = (LONG)maxMB;
                     GT_SetGadgetAttrs(gSize, dw, 0, GTIN_Number, (ULONG)v, TAG_END);
                 } else if (ig->GadgetID == 10) {                                /* Ok */
                     LONG mb = ((struct StringInfo *)gSize->SpecialInfo)->LongInt;
                     char *nm = (char *)((struct StringInfo *)gName->SpecialInfo)->Buffer;
                     int r;
-                    if (mb < 1) mb = 1; if ((ULONG)mb > maxMB) mb = (LONG)maxMB;
+                    if (mb < 1) mb = 1;
+                    if ((ULONG)mb > maxMB) mb = (LONG)maxMB;
                     /* If the MB field is unchanged from what the dialog opened
                        with, keep the EXACT cylinder range (so a gap-filling
                        partition isn't silently shrunk by MB re-rounding); only

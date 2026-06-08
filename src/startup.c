@@ -51,8 +51,13 @@ int _start(void)
     struct WBStartup *wbmsg = 0;
     int rc = RETURN_FAIL;
 
-    /* exec library base lives at absolute address 4 */
+    /* exec library base lives at absolute address 4. GCC's -Warray-bounds
+       false-positives on this well-known absolute-address read; suppress it
+       just here. */
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Warray-bounds"
     SysBase = *(struct ExecBase **)4UL;
+#pragma GCC diagnostic pop
 
     DOSBase = (struct DosLibrary *)OpenLibrary("dos.library", 37);
     if (!DOSBase)

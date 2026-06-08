@@ -3,7 +3,8 @@ out/
 .DS_Store
 .superpowers/
 *.hdf
-amiga_hd/HDPart
+amiga_hd/*
+!amiga_hd/README
 amiga-exe/
 amiga_boot/
 amiga_scratch/
