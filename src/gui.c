@@ -80,6 +80,7 @@ void gui_rescan(void);
 static void gui_load_driver(void);
 void gui_select_device(int idx);
 void gui_draw_bar(void);
+static void gui_draw_partheader(void);    /* column headings above the listview */
 static void gui_set_selection(int idx);   /* select partition `idx` (or -1) + redraw */
 static int  gui_part_at_x(int mx, int my);/* partition under a window-relative point, or -1 */
 
@@ -106,10 +107,16 @@ static void gui_refresh_parts(void)
             RdbPartition *pt = &g_model.parts[i];
             char *row = g_partrows[i];
             int p = 0;
-            s_cat(row, &p, pt->name);                 s_pad(row, &p, 8);
-            s_cat(row, &p, "FFS");                     s_pad(row, &p, 14);
-            p += u2s(row + p, pt->low_cyl);            s_pad(row, &p, 22);
-            p += u2s(row + p, pt->high_cyl);           s_pad(row, &p, 30);
+            int k;
+            /* Fixed char columns so the heading row (gui_draw_partheader) lines
+               up: #@0 Name@4 Type@16 Start@22 End@30 Size@38. The 1-based # ties
+               each row to its numbered disk-map segment. */
+            p += u2s(row + p, (ULONG)(i + 1));         s_pad(row, &p, 4);
+            for (k = 0; pt->name[k] && k < 11; k++) row[p++] = pt->name[k];
+            s_pad(row, &p, 16);
+            s_cat(row, &p, "FFS");                     s_pad(row, &p, 22);
+            p += u2s(row + p, pt->low_cyl);            s_pad(row, &p, 30);
+            p += u2s(row + p, pt->high_cyl);           s_pad(row, &p, 38);
             { ULONG cyls = pt->high_cyl - pt->low_cyl + 1;
               ULONG mb = disc_blocks_to_mb(cyls * g_model.cyl_blocks, g_model.block_bytes);
               p += u2s(row + p, mb); s_cat(row, &p, "MB"); }
@@ -875,6 +882,8 @@ void gui_draw_bar(void)
     SetAPen(rp, 2); Move(rp, bx, by); Draw(rp, bx + bw - 1, by);
     Draw(rp, bx + bw - 1, by + bh - 1); Draw(rp, bx, by + bh - 1); Draw(rp, bx, by);
 
+    gui_draw_partheader();   /* column headings, shown even for an empty list */
+
     if (!g_have_model || g_model.cylinders == 0) return;
 
     /* each partition drawn proportional to its cylinder span; the selected one
@@ -892,5 +901,38 @@ void gui_draw_bar(void)
             Move(rp, x0, by + 1); Draw(rp, x1 - 1, by + 1);
             Draw(rp, x1 - 1, by + bh - 2); Draw(rp, x0, by + bh - 2); Draw(rp, x0, by + 1);
         }
+        /* 1-based partition number centered on the segment (matches the list's
+           # column); drawn only when the slice is wide enough to fit the digits. */
+        { char num[6]; int nl = u2s(num, (ULONG)(i + 1));
+          int tw = nl * 8, segw = x1 - x0;
+          if (segw >= tw + 2) {
+              SetAPen(rp, 1);                /* black: contrasts pens 2/3 */
+              Move(rp, x0 + (segw - tw) / 2, by + 11);
+              Text(rp, (CONST_STRPTR)num, (LONG)nl);
+          } }
     }
+}
+
+/* Column headings drawn just above the listview, aligned to the row columns
+   built in gui_refresh_parts. Manual text (like the bar), so it is redrawn
+   whenever the bar is. The left inset (+4) approximates GadTools' listview text
+   origin; nudge it if the columns look a pixel or two off against the rows. */
+static void gui_draw_partheader(void)
+{
+    struct RastPort *rp;
+    static char hdr[48];
+    int p = 0, lx, ly;
+    if (!g_win) return;
+    rp = g_win->RPort;
+    s_cat(hdr, &p, "#");     s_pad(hdr, &p, 4);
+    s_cat(hdr, &p, "Name");  s_pad(hdr, &p, 16);
+    s_cat(hdr, &p, "Type");  s_pad(hdr, &p, 22);
+    s_cat(hdr, &p, "Start"); s_pad(hdr, &p, 30);
+    s_cat(hdr, &p, "End");   s_pad(hdr, &p, 38);
+    s_cat(hdr, &p, "Size");  hdr[p] = 0;
+    lx = 10 + g_leftb + 4;               /* match the listview's text inset */
+    ly = 72 + g_topb - 2;                /* baseline just above the listview */
+    SetAPen(rp, 1);
+    Move(rp, lx, ly);
+    Text(rp, (CONST_STRPTR)hdr, (LONG)p);
 }
