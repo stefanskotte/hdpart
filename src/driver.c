@@ -38,3 +38,85 @@ int drv_find_romtag(const unsigned char *base, uint32_t size,
     }
     return 0;
 }
+
+#ifdef HDPART_AMIGA
+
+/* Copy a C string into out (<= outsz), NUL-terminated. */
+static void copy_name(char *out, int outsz, const char *src)
+{
+    int n = 0;
+    if (outsz <= 0) return;
+    while (n < outsz - 1 && src && src[n]) { out[n] = src[n]; n++; }
+    out[n] = 0;
+}
+
+/* True if a device of this name is already in exec's device list. */
+static int device_resident(const char *name)
+{
+    struct Node *n;
+    int found = 0;
+    Forbid();
+    n = FindName(&SysBase->DeviceList, (CONST_STRPTR)name);
+    found = (n != 0);
+    Permit();
+    return found;
+}
+
+int driver_load_file(const char *path, char *name_out, int name_sz)
+{
+    BPTR seglist, s;
+    const struct Resident *dev = 0;   /* first NT_DEVICE romtag found */
+    int any_romtag = 0;
+    char name[DRV_NAME_LEN];
+
+    seglist = LoadSeg((CONST_STRPTR)path);
+    if (!seglist) return DRVL_ELOAD;
+
+    /* Walk each segment's data for romtags. Segment layout (LoadSeg):
+       [size longword][next BPTR][data...]; BADDR(s) points at the next BPTR,
+       size is the longword before it, data starts 4 bytes after BADDR(s). */
+    for (s = seglist; s; s = *(BPTR *)BADDR(s)) {
+        ULONG *hdr = (ULONG *)BADDR(s);
+        ULONG total = hdr[-1];
+        const unsigned char *data = (const unsigned char *)(hdr + 1);
+        uint32_t dlen = (total >= 8) ? (uint32_t)(total - 8) : 0;
+        uint32_t off = 0;
+        int type = 0;
+        while (drv_find_romtag(data, dlen, off, &off, &type)) {
+            any_romtag = 1;
+            if (type == DRV_NT_DEVICE) {
+                dev = (const struct Resident *)(data + off);
+                break;
+            }
+            off += 2;   /* keep scanning this segment for an NT_DEVICE romtag */
+        }
+        if (dev) break;
+    }
+
+    if (!dev) {
+        UnLoadSeg(seglist);
+        return any_romtag ? DRVL_ENOTDEVICE : DRVL_ENOROMTAG;
+    }
+
+    copy_name(name, sizeof(name), (const char *)dev->rt_Name);
+
+    /* Already loaded (e.g. previously loaded by us, or by the controller ROM)?
+       Don't re-init; just hand back the name and drop our redundant copy. */
+    if (device_resident(name)) {
+        UnLoadSeg(seglist);
+        copy_name(name_out, name_sz, name);
+        return DRVL_OK;
+    }
+
+    /* For an RTF_AUTOINIT device this MakeLibrary+AddDevice's it into exec's
+       device list. We must NOT UnLoadSeg afterwards: the live device owns it. */
+    InitResident((struct Resident *)dev, seglist);
+
+    if (!device_resident(name))
+        return DRVL_EINIT;     /* segment stays loaded; nothing safe to undo */
+
+    copy_name(name_out, name_sz, name);
+    return DRVL_OK;
+}
+
+#endif /* HDPART_AMIGA */
