@@ -92,17 +92,37 @@ void disc_add_extra_driver(const char *name)
 
 int disc_extra_count(void) { return g_extra_n; }
 
-#ifdef HDPART_AMIGA
-
-/* Curated list of common block-device drivers to probe (units 0..PROBE_UNITS-1).
+/* Curated list of common block-device drivers (units 0..PROBE_UNITS-1).
    uaehf.device covers FS-UAE/WinUAE hardfiles; scsi.device is the A600/A1200
-   built-in IDE and most controllers; the rest are common 3rd-party controllers. */
+   built-in IDE and most controllers; the rest are common 3rd-party controllers.
+   Plain C (no OS dependency) so disc_candidate_drivers is host-testable. */
 static const char *const kProbeDrivers[] = {
     "scsi.device", "2nd.scsi.device", "uaehf.device", "lide.device",
     "ide.device", "oktagon.device", "gvpscsi.device", "omniscsi.device",
     "a4091.device", "a3000scsi.device", "z3scsi.device", 0
 };
 #define PROBE_UNITS 8
+
+static int disc_name_eq(const char *a, const char *b)
+{
+    int n; for (n = 0; a[n] && a[n] == b[n]; n++) ;
+    return a[n] == 0 && b[n] == 0;
+}
+
+int disc_candidate_drivers(const char *out[], int max)
+{
+    int n = 0, i, j;
+    for (i = 0; kProbeDrivers[i] && n < max; i++) out[n++] = kProbeDrivers[i];
+    for (i = 0; i < g_extra_n && n < max; i++) {       /* extras, deduped vs curated */
+        int dup = 0;
+        for (j = 0; kProbeDrivers[j]; j++)
+            if (disc_name_eq(g_extra[i], kProbeDrivers[j])) { dup = 1; break; }
+        if (!dup) out[n++] = g_extra[i];
+    }
+    return n;
+}
+
+#ifdef HDPART_AMIGA
 
 /* Add (driver,unit) if not present; return index or -1 if full. */
 static int add_unique(DiscDisk out[], int *count, int max,
