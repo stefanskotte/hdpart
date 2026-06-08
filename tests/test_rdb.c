@@ -219,6 +219,16 @@ static void test_largest_free_gap(void)
     rdb_add_partition(&m, "DH0", 100, RDB_DOSTYPE_FFS_INTL);   /* 2..N */
     CHECK(rdb_largest_free_gap(&m, &s, &e) == 1);
     CHECK(s == m.parts[0].high_cyl + 1 && e == 995);
+    /* tiny partitions at front and tail leave the big MIDDLE gap as the largest */
+    {
+        RdbModel m2;
+        uint32_t s2 = 0, e2 = 0;
+        rdb_init_model(&m2, 996, 16, 63);
+        CHECK(rdb_add_partition_at(&m2, "A", 2,   1, RDB_DOSTYPE_FFS_INTL) == 0);
+        CHECK(rdb_add_partition_at(&m2, "B", 990, 1, RDB_DOSTYPE_FFS_INTL) == 1);
+        CHECK(rdb_largest_free_gap(&m2, &s2, &e2) == 1);
+        CHECK(s2 == m2.parts[0].high_cyl + 1 && e2 == 989);
+    }
     /* fill the rest; no gap remains — place DH1 directly to reach hi_cyl */
     {
         RdbPartition *p;

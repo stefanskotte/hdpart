@@ -45,16 +45,19 @@ typedef struct {
 
 void rdb_init_model(RdbModel *m, uint32_t cyl, uint32_t heads, uint32_t sectors);
 
+/* Error codes are NEGATIVE so that functions returning a non-negative index on
+   success (rdb_add_partition_at) can signal errors unambiguously via `< 0`.
+   Status-returning functions still test `== RDB_OK` / `!= RDB_OK` correctly. */
 enum {
     RDB_OK = 0,
-    RDB_ERR_NO_SPACE,
-    RDB_ERR_DUP_NAME,
-    RDB_ERR_TOO_MANY,
-    RDB_ERR_BAD_NAME,
-    RDB_ERR_OVERLAP,
-    RDB_ERR_IO,
-    RDB_ERR_NO_RDB,
-    RDB_ERR_RANGE
+    RDB_ERR_NO_SPACE = -1,
+    RDB_ERR_DUP_NAME = -2,
+    RDB_ERR_TOO_MANY = -3,
+    RDB_ERR_BAD_NAME = -4,
+    RDB_ERR_OVERLAP  = -5,
+    RDB_ERR_IO       = -6,
+    RDB_ERR_NO_RDB   = -7,
+    RDB_ERR_RANGE    = -8
 };
 
 /* Find the largest unallocated cylinder range within [lo_cyl, hi_cyl].
