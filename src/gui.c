@@ -186,6 +186,89 @@ static struct Gadget *build_gadgets(void)
     return g;
 }
 
+/* Yes/No confirm: returns 1 if the user chose the action (left) button. The
+   safe option (Cancel) is rightmost so EasyRequest returns 0 for it. */
+static int gui_confirm(const char *title, const char *body)
+{
+    struct EasyStruct es;
+    es.es_StructSize  = sizeof(es);
+    es.es_Flags       = 0;
+    es.es_Title       = (UBYTE *)title;
+    es.es_TextFormat  = (UBYTE *)body;
+    es.es_GadgetFormat= (UBYTE *)"Proceed|Cancel";
+    return (int)EasyRequest(g_win, &es, 0) == 1;
+}
+
+/* Simple info message (single OK gadget). */
+static void gui_msg(const char *title, const char *body)
+{
+    struct EasyStruct es;
+    es.es_StructSize  = sizeof(es);
+    es.es_Flags       = 0;
+    es.es_Title       = (UBYTE *)title;
+    es.es_TextFormat  = (UBYTE *)body;
+    es.es_GadgetFormat= (UBYTE *)"OK";
+    EasyRequest(g_win, &es, 0);
+}
+
+static char g_msgbuf[120];
+
+static int gui_save(void)
+{
+    DeviceHandle *h;
+    static RdbModel chk;          /* static: keep off the stack */
+    int ok = 0, p = 0;
+
+    if (!g_have_model) return 0;
+    if (rdb_validate(&g_model) != RDB_OK) { gui_msg("Save", "Partition layout is invalid."); return 0; }
+
+    /* Build a confirm message naming the device (no % in the string). */
+    s_cat(g_msgbuf, &p, "Write the partition table to\n");
+    { int k; for (k = 0; g_cur_driver[k] && p < 100; k++) g_msgbuf[p++] = g_cur_driver[k]; }
+    s_cat(g_msgbuf, &p, " unit ");
+    p += u2s(g_msgbuf + p, g_cur_unit);
+    s_cat(g_msgbuf, &p, " ?\nThis overwrites the disk's RDB.");
+    g_msgbuf[p] = 0;
+    if (!gui_confirm("Save", g_msgbuf)) return 0;
+
+    h = dev_open(g_cur_driver, g_cur_unit);
+    if (!h) { gui_msg("Save", "Could not open the device."); return 0; }
+    if (rdb_serialize(&g_model, dev_block_io, h) == RDB_OK) {
+        /* read back and verify the partition count + first/last cylinders */
+        if (rdb_parse(&chk, dev_block_io, h) == RDB_OK &&
+            chk.num_parts == g_model.num_parts) {
+            int i; ok = 1;
+            for (i = 0; i < chk.num_parts; i++)
+                if (chk.parts[i].low_cyl  != g_model.parts[i].low_cyl ||
+                    chk.parts[i].high_cyl != g_model.parts[i].high_cyl) { ok = 0; break; }
+        }
+    }
+    dev_close(h);
+
+    if (ok) { g_dirty = 0; gui_msg("Save", "Saved and verified."); }
+    else      gui_msg("Save", "WRITE FAILED or verify mismatch.\nThe disk RDB may be inconsistent.");
+    gui_refresh_parts();
+    gui_update_buttons();
+    return ok;
+}
+
+static void gui_init_disk(void)
+{
+    if (!g_geo.has_media || g_geo.cylinders == 0) {
+        gui_msg("Init Disk", "No media / geometry on this device."); return;
+    }
+    if (!gui_confirm("Init Disk",
+        "Replace the in-memory partition table with a\nfresh empty one for this disk?\n"
+        "(Nothing is written until you press Save.)"))
+        return;
+    rdb_init_model(&g_model, g_geo.cylinders, g_geo.heads, g_geo.sectors);
+    g_have_model = 1;
+    g_dirty = 1;
+    g_sel_part = -1;
+    gui_refresh_parts();
+    gui_update_buttons();
+}
+
 int gui_run(void)
 {
     BOOL done = FALSE;
@@ -255,6 +338,8 @@ int gui_run(void)
                     if (gad->GadgetID == GID_DEVICE) gui_select_device((int)code);
                     else if (gad->GadgetID == GID_RESCAN) gui_rescan();
                     else if (gad->GadgetID == GID_PARTS) { g_sel_part = (int)code; gui_update_buttons(); }
+                    else if (gad->GadgetID == GID_SAVE) gui_save();
+                    else if (gad->GadgetID == GID_INIT) gui_init_disk();
                     break;
             }
         }
