@@ -40,7 +40,12 @@ static const char *g_devlabels[DISC_MAX + 1];  /* for GTCY_Labels */
 static char     g_devtext[DISC_MAX][48];
 static RdbModel g_model;
 static int      g_have_model;
-static int      g_devmap[DISC_MAX];  /* cycle position -> g_disks index */
+static int      g_dirty;            /* unsaved edits in g_model */
+static DeviceInfo g_geo;            /* geometry of the selected device */
+static char     g_cur_driver[40];   /* selected device driver/unit (for Save) */
+static uint32_t g_cur_unit;
+static int      g_sel_part = -1;    /* selected partition index, or -1 */
+static int      g_devmap[DISC_MAX]; /* cycle position -> g_disks index */
 static WORD     g_topb, g_leftb;     /* window border offsets (title bar / left edge);
                                         gadget coords are relative to the window's
                                         outer top-left, so all gadgets shift by these */
@@ -64,10 +69,59 @@ static int u2s(char *o, ULONG v)   /* write decimal, return length */
 static void s_cat(char *o, int *p, const char *s) { while (*s) o[(*p)++] = *s++; }
 static void s_pad(char *o, int *p, int col) { while (*p < col) o[(*p)++] = ' '; }
 
-/* Forward decls (implemented in later tasks). */
+/* Forward decls. */
 void gui_rescan(void);
 void gui_select_device(int idx);
 void gui_draw_bar(void);
+
+static void gui_update_buttons(void)
+{
+    int hasModel = g_have_model;
+    int hasGeo   = g_geo.has_media;
+    int hasSel   = (g_sel_part >= 0 && g_sel_part < g_model.num_parts);
+    if (!g_win) return;
+    GT_SetGadgetAttrs(g_gad[GID_SAVE],   g_win, 0, GA_Disabled, (ULONG)!(hasModel && g_dirty), TAG_END);
+    GT_SetGadgetAttrs(g_gad[GID_NEW],    g_win, 0, GA_Disabled, (ULONG)!hasModel, TAG_END);
+    GT_SetGadgetAttrs(g_gad[GID_INIT],   g_win, 0, GA_Disabled, (ULONG)!hasGeo,   TAG_END);
+    GT_SetGadgetAttrs(g_gad[GID_DELETE], g_win, 0, GA_Disabled, (ULONG)!hasSel,   TAG_END);
+    GT_SetGadgetAttrs(g_gad[GID_EDIT],   g_win, 0, GA_Disabled, (ULONG)!hasSel,   TAG_END);
+}
+
+/* Rebuild the partition listview + status text + bar from g_model. */
+static void gui_refresh_parts(void)
+{
+    int i;
+    NewList(&g_partlist);
+    if (g_have_model) {
+        for (i = 0; i < g_model.num_parts && i < RDB_MAX_PARTS; i++) {
+            RdbPartition *pt = &g_model.parts[i];
+            char *row = g_partrows[i];
+            int p = 0;
+            s_cat(row, &p, pt->name);                 s_pad(row, &p, 8);
+            s_cat(row, &p, "FFS");                     s_pad(row, &p, 14);
+            p += u2s(row + p, pt->low_cyl);            s_pad(row, &p, 22);
+            p += u2s(row + p, pt->high_cyl);           s_pad(row, &p, 30);
+            { ULONG cyls = pt->high_cyl - pt->low_cyl + 1;
+              ULONG mb = disc_blocks_to_mb(cyls * g_model.cyl_blocks, g_model.block_bytes);
+              p += u2s(row + p, mb); s_cat(row, &p, "MB"); }
+            row[p] = 0;
+            g_partnodes[i].ln_Name = row;
+            AddTail(&g_partlist, &g_partnodes[i]);
+        }
+        { int p = 0; s_cat(g_statusbuf, &p, g_dirty ? "MODIFIED  " : "RDB OK  ");
+          p += u2s(g_statusbuf + p, (ULONG)g_model.num_parts);
+          s_cat(g_statusbuf, &p, " partitions  ");
+          p += u2s(g_statusbuf + p, g_model.cylinders); s_cat(g_statusbuf, &p, " cyl");
+          g_statusbuf[p] = 0; }
+    } else {
+        int p = 0; s_cat(g_statusbuf, &p, "no valid RDB on this disk"); g_statusbuf[p] = 0;
+    }
+    if (g_win && g_gad[GID_PARTS])
+        GT_SetGadgetAttrs(g_gad[GID_PARTS], g_win, 0, GTLV_Labels, (ULONG)&g_partlist, TAG_END);
+    if (g_win && g_gad[GID_STATUS])
+        GT_SetGadgetAttrs(g_gad[GID_STATUS], g_win, 0, GTTX_Text, (ULONG)g_statusbuf, TAG_END);
+    gui_draw_bar();
+}
 
 static struct Gadget *build_gadgets(void)
 {
@@ -105,7 +159,7 @@ static struct Gadget *build_gadgets(void)
     /* Partition listview */
     ng.ng_LeftEdge = 10 + g_leftb; ng.ng_TopEdge = 72 + g_topb; ng.ng_Width = 440; ng.ng_Height = 90;
     ng.ng_GadgetText = 0; ng.ng_GadgetID = GID_PARTS;
-    g = CreateGadget(LISTVIEW_KIND, g, &ng, GTLV_Labels, 0, GTLV_ReadOnly, TRUE, TAG_END);
+    g = CreateGadget(LISTVIEW_KIND, g, &ng, GTLV_Labels, 0, TAG_END);
     g_gad[GID_PARTS] = g;
 
     /* Read-only status text */
@@ -200,6 +254,7 @@ int gui_run(void)
                 case IDCMP_GADGETUP:
                     if (gad->GadgetID == GID_DEVICE) gui_select_device((int)code);
                     else if (gad->GadgetID == GID_RESCAN) gui_rescan();
+                    else if (gad->GadgetID == GID_PARTS) { g_sel_part = (int)code; gui_update_buttons(); }
                     break;
             }
         }
@@ -258,66 +313,40 @@ void gui_rescan(void)
                           GTCY_Active, 0, TAG_END);
 
     if (n > 0) gui_select_device(0);
+    else { g_have_model = 0; gui_update_buttons(); }
+    gui_update_buttons();
 }
 
 void gui_select_device(int idx)
 {
     DeviceHandle *h;
     DiscDisk *d;
-    int i, di;
+    int di, n;
 
     g_have_model = 0;
-    NewList(&g_partlist);
+    g_dirty = 0;
+    g_sel_part = -1;
+    g_geo.has_media = 0;
 
     if (g_ndisks == 0 || idx < 0) {
-        { int p = 0; s_cat(g_statusbuf, &p, "no disk selected"); g_statusbuf[p] = 0; }
-        if (g_win && g_gad[GID_PARTS])
-            GT_SetGadgetAttrs(g_gad[GID_PARTS], g_win, 0, GTLV_Labels, (ULONG)&g_partlist, TAG_END);
-        if (g_win && g_gad[GID_STATUS])
-            GT_SetGadgetAttrs(g_gad[GID_STATUS], g_win, 0, GTTX_Text, (ULONG)g_statusbuf, TAG_END);
-        gui_draw_bar();
+        gui_refresh_parts();
+        gui_update_buttons();
         return;
     }
     di = g_devmap[idx];
     d  = &g_disks[di];
+    for (n = 0; n < 40 && d->driver[n]; n++) g_cur_driver[n] = d->driver[n];
+    g_cur_driver[n] = 0;
+    g_cur_unit = d->unit;
 
     h = dev_open(d->driver, d->unit);
     if (h) {
+        dev_geometry(h, &g_geo);                       /* for Init + display */
         if (rdb_parse(&g_model, dev_block_io, h) == RDB_OK) g_have_model = 1;
         dev_close(h);
     }
-
-    if (g_have_model) {
-        for (i = 0; i < g_model.num_parts && i < RDB_MAX_PARTS; i++) {
-            RdbPartition *pt = &g_model.parts[i];
-            char *row = g_partrows[i];
-            int p = 0;
-            s_cat(row, &p, pt->name);                 s_pad(row, &p, 8);
-            s_cat(row, &p, "FFS");                     s_pad(row, &p, 14);
-            p += u2s(row + p, pt->low_cyl);            s_pad(row, &p, 22);
-            p += u2s(row + p, pt->high_cyl);           s_pad(row, &p, 30);
-            { ULONG cyls = pt->high_cyl - pt->low_cyl + 1;
-              ULONG mb = disc_blocks_to_mb(cyls * g_model.cyl_blocks, g_model.block_bytes);
-              p += u2s(row + p, mb); s_cat(row, &p, "MB"); }
-            row[p] = 0;
-            g_partnodes[i].ln_Name = row;
-            AddTail(&g_partlist, &g_partnodes[i]);
-        }
-        { int p = 0; s_cat(g_statusbuf, &p, "RDB OK  ");
-          p += u2s(g_statusbuf + p, (ULONG)g_model.num_parts);
-          s_cat(g_statusbuf, &p, " partitions  ");
-          p += u2s(g_statusbuf + p, g_model.cylinders); s_cat(g_statusbuf, &p, " cyl");
-          g_statusbuf[p] = 0; }
-    } else {
-        const char *m = "no valid RDB on this disk";
-        int p = 0; s_cat(g_statusbuf, &p, m); g_statusbuf[p] = 0;
-    }
-
-    if (g_win && g_gad[GID_PARTS])
-        GT_SetGadgetAttrs(g_gad[GID_PARTS], g_win, 0, GTLV_Labels, (ULONG)&g_partlist, TAG_END);
-    if (g_win && g_gad[GID_STATUS])
-        GT_SetGadgetAttrs(g_gad[GID_STATUS], g_win, 0, GTTX_Text, (ULONG)g_statusbuf, TAG_END);
-    gui_draw_bar();
+    gui_refresh_parts();
+    gui_update_buttons();
 }
 
 void gui_draw_bar(void)
