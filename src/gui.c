@@ -22,7 +22,7 @@ struct GfxBase *GfxBase = 0;
 
 /* Gadget IDs */
 enum { GID_DEVICE = 1, GID_RESCAN, GID_PARTS, GID_NEW, GID_DELETE, GID_EDIT,
-       GID_INIT, GID_SAVE };
+       GID_INIT, GID_SAVE, GID_STATUS };
 
 /* Module state for one GUI session. */
 static struct Screen  *g_scr;        /* screen we render on (pub or own) */
@@ -110,9 +110,9 @@ static struct Gadget *build_gadgets(void)
 
     /* Read-only status text */
     ng.ng_LeftEdge = 70 + g_leftb; ng.ng_TopEdge = 168 + g_topb; ng.ng_Width = 380; ng.ng_Height = 12;
-    ng.ng_GadgetText = (UBYTE *)"Status:"; ng.ng_GadgetID = 0;
+    ng.ng_GadgetText = (UBYTE *)"Status:"; ng.ng_GadgetID = GID_STATUS;
     g = CreateGadget(TEXT_KIND, g, &ng, GTTX_Text, (ULONG)"no disk selected", TAG_END);
-    /* not tracked; informational */
+    g_gad[GID_STATUS] = g;
 
     /* Ghosted action buttons (enabled in Plan 3b) */
     {
@@ -270,8 +270,11 @@ void gui_select_device(int idx)
     NewList(&g_partlist);
 
     if (g_ndisks == 0 || idx < 0) {
+        { int p = 0; s_cat(g_statusbuf, &p, "no disk selected"); g_statusbuf[p] = 0; }
         if (g_win && g_gad[GID_PARTS])
             GT_SetGadgetAttrs(g_gad[GID_PARTS], g_win, 0, GTLV_Labels, (ULONG)&g_partlist, TAG_END);
+        if (g_win && g_gad[GID_STATUS])
+            GT_SetGadgetAttrs(g_gad[GID_STATUS], g_win, 0, GTTX_Text, (ULONG)g_statusbuf, TAG_END);
         gui_draw_bar();
         return;
     }
@@ -312,6 +315,8 @@ void gui_select_device(int idx)
 
     if (g_win && g_gad[GID_PARTS])
         GT_SetGadgetAttrs(g_gad[GID_PARTS], g_win, 0, GTLV_Labels, (ULONG)&g_partlist, TAG_END);
+    if (g_win && g_gad[GID_STATUS])
+        GT_SetGadgetAttrs(g_gad[GID_STATUS], g_win, 0, GTTX_Text, (ULONG)g_statusbuf, TAG_END);
     gui_draw_bar();
 }
 
