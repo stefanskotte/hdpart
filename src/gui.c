@@ -405,6 +405,47 @@ static int gui_edit_dialog(int index)
     return applied;
 }
 
+/* Pick the lowest unused "DH<n>" name into out[32]. */
+static void gui_auto_name(char *out)
+{
+    int n, i, used, p;
+    for (n = 0; n < 100; n++) {
+        used = 0;
+        for (i = 0; i < g_model.num_parts; i++) {
+            const char *nm = g_model.parts[i].name;
+            /* compare nm == "DH<n>" */
+            char cand[8]; int cp = 0;
+            cand[cp++]='D'; cand[cp++]='H'; cp += u2s(cand + cp, (ULONG)n); cand[cp]=0;
+            { int j=0; while (cand[j] && nm[j] && cand[j]==nm[j]) j++;
+              if (cand[j]==0 && nm[j]==0) { used = 1; break; } }
+        }
+        if (!used) break;
+    }
+    p = 0; out[p++]='D'; out[p++]='H'; p += u2s(out + p, (ULONG)n); out[p]=0;
+}
+
+static void gui_new(void)
+{
+    uint32_t gs = 0, ge = 0, mb;
+    char name[32];
+    int idx;
+    if (!g_have_model) return;
+    if (!rdb_largest_free_gap(&g_model, &gs, &ge)) {
+        gui_msg("New Partition", "No free space on this disk."); return;
+    }
+    gui_auto_name(name);
+    mb = rdb_cyls_to_mb(ge - gs + 1, g_model.cyl_blocks, g_model.block_bytes);
+    if (mb < 1) mb = 1;
+    idx = rdb_add_partition_at(&g_model, name, gs, mb, RDB_DOSTYPE_FFS_INTL);
+    if (idx < 0) { gui_msg("New Partition", "Could not add the partition."); return; }
+    g_sel_part = idx;
+    g_dirty = 1;
+    gui_refresh_parts();
+    gui_edit_dialog(idx);            /* let the user adjust size/name immediately */
+    gui_refresh_parts();
+    gui_update_buttons();
+}
+
 int gui_run(void)
 {
     BOOL done = FALSE;
@@ -477,6 +518,7 @@ int gui_run(void)
                     else if (gad->GadgetID == GID_SAVE) gui_save();
                     else if (gad->GadgetID == GID_INIT) gui_init_disk();
                     else if (gad->GadgetID == GID_DELETE) gui_delete();
+                    else if (gad->GadgetID == GID_NEW) gui_new();
                     else if (gad->GadgetID == GID_EDIT) {
                         if (g_sel_part >= 0 && g_sel_part < g_model.num_parts) {
                             gui_edit_dialog(g_sel_part);
