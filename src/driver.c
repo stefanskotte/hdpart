@@ -16,7 +16,9 @@
 #define RT_MATCHTAG  2    /* APTR  */
 #define RT_TYPE      12   /* UBYTE */
 #define RT_SIZE      26   /* sizeof(struct Resident) */
+#ifndef RTC_MATCHWORD
 #define RTC_MATCHWORD 0x4AFCu
+#endif
 
 int drv_find_romtag(const unsigned char *base, uint32_t size,
                     uint32_t start_off, uint32_t *off_out, int *type_out)

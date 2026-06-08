@@ -97,6 +97,6 @@ int main(void)
     test_respects_bounds();
     test_finds_second_when_start_advanced();
     if (g_fail) { printf("%d driver test(s) FAILED\n", g_fail); return 1; }
-    printf("all driver tests passed\n");
+    printf("DRIVER TESTS PASSED\n");
     return 0;
 }
