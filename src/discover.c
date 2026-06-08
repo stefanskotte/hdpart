@@ -235,9 +235,11 @@ int discover_disks(DiscDisk out[], int max)
 
 int discover_probe_driver(DiscDisk out[], int *count, int max, const char *driver)
 {
-    int before = *count;
+    int before;
     ULONG u;
     int i;
+    if (!driver || !driver[0] || !count) return 0;
+    before = *count;
     for (u = 0; u < PROBE_UNITS; u++) {
         DeviceHandle *h = dev_open(driver, u);
         if (!h) continue;          /* unit not present */
