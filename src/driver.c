@@ -100,6 +100,14 @@ int driver_load_file(const char *path, char *name_out, int name_sz)
 
     copy_name(name, sizeof(name), (const char *)dev->rt_Name);
 
+    /* A romtag with no usable name can't be opened by OpenDevice and is unsafe
+       to InitResident (NULL/empty rt_Name corrupts the device list). Reject it
+       like a non-device file rather than loading it. */
+    if (name[0] == 0) {
+        UnLoadSeg(seglist);
+        return DRVL_ENOTDEVICE;
+    }
+
     /* Already loaded (e.g. previously loaded by us, or by the controller ROM)?
        Don't re-init; just hand back the name and drop our redundant copy. */
     if (device_resident(name)) {
