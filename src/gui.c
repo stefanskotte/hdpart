@@ -1107,13 +1107,13 @@ static void gui_draw_partheader(void)
 static void gui_draw_easter(void)
 {
     struct RastPort *rp;
-    int px = 451 + g_leftb, py = 189 + g_topb;
+    int px = 452 + g_leftb, py = 200 + g_topb;   /* bottom-right, below the buttons */
     if (!g_win) return;
     rp = g_win->RPort;
     SetAPen(rp, 1);
-    Move(rp, px,     py);     Draw(rp, px + 7, py);       /* top bar */
-    Move(rp, px + 1, py + 1); Draw(rp, px + 1, py + 8);   /* left leg */
-    Move(rp, px + 6, py + 1); Draw(rp, px + 6, py + 8);   /* right leg */
+    Move(rp, px,     py);     Draw(rp, px + 5, py);       /* top bar (half height) */
+    Move(rp, px + 1, py);     Draw(rp, px + 1, py + 4);   /* left leg */
+    Move(rp, px + 4, py);     Draw(rp, px + 4, py + 4);   /* right leg */
 }
 
 /* True if (mx,my) is in the bottom-right corner where the pi glyph lives. Only
@@ -1121,5 +1121,5 @@ static void gui_draw_easter(void)
    rect won't conflict with the Save button to its left. */
 static int gui_hit_easter(int mx, int my)
 {
-    return mx >= 448 + g_leftb && my >= 184 + g_topb;
+    return mx >= 446 + g_leftb && my >= 196 + g_topb;
 }
