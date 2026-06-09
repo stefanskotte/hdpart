@@ -3,6 +3,8 @@
 #ifdef HDPART_AMIGA
 #include <exec/types.h>
 #include <exec/memory.h>
+#include <exec/execbase.h>
+#include <exec/nodes.h>
 #include <dos/dosextens.h>
 #include <dos/filehandler.h>
 #include <proto/exec.h>
@@ -92,10 +94,12 @@ void disc_add_extra_driver(const char *name)
 
 int disc_extra_count(void) { return g_extra_n; }
 
-/* Curated list of common block-device drivers (units 0..PROBE_UNITS-1).
+#ifdef HDPART_AMIGA
+
+/* Curated list of common block-device driver names (probed units 0..PROBE_UNITS-1).
    uaehf.device covers FS-UAE/WinUAE hardfiles; scsi.device is the A600/A1200
    built-in IDE and most controllers; the rest are common 3rd-party controllers.
-   Plain C (no OS dependency) so disc_candidate_drivers is host-testable. */
+   disc_candidate_drivers() lists only the ones actually resident in memory. */
 static const char *const kProbeDrivers[] = {
     "scsi.device", "2nd.scsi.device", "uaehf.device", "lide.device",
     "ide.device", "oktagon.device", "gvpscsi.device", "omniscsi.device",
@@ -109,20 +113,35 @@ static int disc_name_eq(const char *a, const char *b)
     return a[n] == 0 && b[n] == 0;
 }
 
+/* True if a device of this name is currently in exec's device list. */
+static int driver_is_resident(const char *name)
+{
+    struct Node *nd;
+    int found;
+    Forbid();
+    nd = FindName(&SysBase->DeviceList, (CONST_STRPTR)name);
+    found = (nd != 0);
+    Permit();
+    return found;
+}
+
+/* Curated disk drivers that are RESIDENT in exec's device list, plus the
+   user-loaded extras (resident after InitResident). Drivers that are neither
+   curated-and-resident nor loaded simply do not appear — the user loads them
+   from disk via the GUI's Driver... button. */
 int disc_candidate_drivers(const char *out[], int max)
 {
     int n = 0, i, j;
-    for (i = 0; kProbeDrivers[i] && n < max; i++) out[n++] = kProbeDrivers[i];
-    for (i = 0; i < g_extra_n && n < max; i++) {       /* extras, deduped vs curated */
+    for (i = 0; kProbeDrivers[i] && n < max; i++)
+        if (driver_is_resident(kProbeDrivers[i])) out[n++] = kProbeDrivers[i];
+    for (i = 0; i < g_extra_n && n < max; i++) {       /* extras, deduped vs above */
         int dup = 0;
-        for (j = 0; kProbeDrivers[j]; j++)
-            if (disc_name_eq(g_extra[i], kProbeDrivers[j])) { dup = 1; break; }
+        for (j = 0; j < n; j++)
+            if (disc_name_eq(g_extra[i], out[j])) { dup = 1; break; }
         if (!dup) out[n++] = g_extra[i];
     }
     return n;
 }
-
-#ifdef HDPART_AMIGA
 
 /* Add (driver,unit) if not present; return index or -1 if full. */
 static int add_unique(DiscDisk out[], int *count, int max,

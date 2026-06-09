@@ -99,34 +99,6 @@ static void test_extra_driver_registry(void)
     CHECK(disc_extra_count() == 8);
 }
 
-/* Count occurrences of `name` in the first `n` entries of list[]. */
-static int names_count(const char *list[], int n, const char *name)
-{
-    int i, c = 0;
-    for (i = 0; i < n; i++) if (strcmp(list[i], name) == 0) c++;
-    return c;
-}
-
-/* Runs AFTER test_extra_driver_registry, which leaves the extras registry =
-   { lide.device (a curated dup), a.device .. g.device }. */
-static void test_candidate_drivers(void)
-{
-    const char *names[40];
-    int c = disc_candidate_drivers(names, 40);
-
-    CHECK(c >= 11);                                       /* >= curated count */
-    CHECK(names_count(names, c, "scsi.device")  == 1);   /* curated present */
-    CHECK(names_count(names, c, "uaehf.device") == 1);
-    CHECK(names_count(names, c, "lide.device")  == 1);    /* curated+extra -> deduped */
-    CHECK(names_count(names, c, "a.device")     == 1);    /* novel extra appears */
-    CHECK(names_count(names, c, "g.device")     == 1);
-    CHECK(names_count(names, c, "h.device")     == 0);    /* never registered (cap) */
-
-    /* capacity clamp */
-    CHECK(disc_candidate_drivers(names, 5) == 5);
-    CHECK(disc_candidate_drivers(names, 0) == 0);
-}
-
 int main(void)
 {
     test_bcpl_to_c();
@@ -135,7 +107,6 @@ int main(void)
     test_is_device_name();
     test_is_partitionable();
     test_extra_driver_registry();
-    test_candidate_drivers();
     if (g_fail) { printf("%d CHECK(s) FAILED\n", g_fail); return 1; }
     printf("DISCOVER TESTS PASSED\n");
     return 0;

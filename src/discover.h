@@ -57,10 +57,10 @@ void disc_add_extra_driver(const char *name);
 /* Number of registered extra drivers (for tests / introspection). */
 int disc_extra_count(void);
 
-/* Fill out[] with candidate driver NAMES for the picker: the curated probe list
-   followed by user-loaded extras (deduped against the curated names). Returns
-   the count (<= max). Pointers reference static storage; do not free or modify.
-   Plain C, no hardware access — host-testable. */
+/* Fill out[] with candidate driver NAMES for the picker: the curated disk
+   drivers that are RESIDENT in exec's device list, plus user-loaded extras
+   (deduped). Returns the count (<= max). Pointers reference static storage; do
+   not free or modify. OS-bound (reads exec's device list); not host-testable. */
 int disc_candidate_drivers(const char *out[], int max);
 
 /* Targeted probe of ONE driver: open units 0..PROBE_UNITS-1, add the ones that
