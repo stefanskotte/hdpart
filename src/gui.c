@@ -131,15 +131,19 @@ static void gui_refresh_parts(void)
             char *row = g_partrows[i];
             int p = 0;
             int k;
-            /* Fixed char columns so the heading row (gui_draw_partheader) lines
-               up: #@0 Name@4 Type@16 Start@22 End@30 Size@38. The 1-based # ties
-               each row to its numbered disk-map segment. */
-            p += u2s(row + p, (ULONG)(i + 1));         s_pad(row, &p, 4);
+            /* col 0 is a selection marker ('>' = selected) so the choice STICKS
+               in the list on every OS version — GadTools GTLV_Selected highlight
+               is V39+ only, a no-op on the V37 baseline. Fixed char columns so
+               the heading (gui_draw_partheader) lines up:
+               mark@0 #@2 Name@6 Type@18 Start@24 End@32 Size@40. */
+            row[p++] = (i == g_sel_part) ? '>' : ' ';
+            row[p++] = ' ';
+            p += u2s(row + p, (ULONG)(i + 1));         s_pad(row, &p, 6);
             for (k = 0; pt->name[k] && k < 11; k++) row[p++] = pt->name[k];
-            s_pad(row, &p, 16);
-            s_cat(row, &p, "FFS");                     s_pad(row, &p, 22);
-            p += u2s(row + p, pt->low_cyl);            s_pad(row, &p, 30);
-            p += u2s(row + p, pt->high_cyl);           s_pad(row, &p, 38);
+            s_pad(row, &p, 18);
+            s_cat(row, &p, "FFS");                     s_pad(row, &p, 24);
+            p += u2s(row + p, pt->low_cyl);            s_pad(row, &p, 32);
+            p += u2s(row + p, pt->high_cyl);           s_pad(row, &p, 40);
             { ULONG cyls = pt->high_cyl - pt->low_cyl + 1;
               ULONG mb = disc_blocks_to_mb(cyls * g_model.cyl_blocks, g_model.block_bytes);
               p += u2s(row + p, mb); s_cat(row, &p, "MB"); }
@@ -945,10 +949,10 @@ static int gui_part_at_x(int mx, int my)
 static void gui_set_selection(int idx)
 {
     g_sel_part = idx;
-    if (g_win && g_gad[GID_PARTS])
-        GT_SetGadgetAttrs(g_gad[GID_PARTS], g_win, 0,
-                          GTLV_Selected, (ULONG)(idx >= 0 ? (ULONG)idx : ~0UL), TAG_END);
-    gui_draw_bar();
+    /* Re-render the rows so the '>' marker moves to the new selection (sticky on
+       V37). gui_refresh_parts also re-applies GTLV_Selected (V39 highlight) and
+       redraws the disk-map bar outline. */
+    gui_refresh_parts();
     gui_update_buttons();
 }
 
@@ -1007,11 +1011,12 @@ static void gui_draw_partheader(void)
     int p = 0, lx, ly;
     if (!g_win) return;
     rp = g_win->RPort;
-    s_cat(hdr, &p, "#");     s_pad(hdr, &p, 4);
-    s_cat(hdr, &p, "Name");  s_pad(hdr, &p, 16);
-    s_cat(hdr, &p, "Type");  s_pad(hdr, &p, 22);
-    s_cat(hdr, &p, "Start"); s_pad(hdr, &p, 30);
-    s_cat(hdr, &p, "End");   s_pad(hdr, &p, 38);
+    s_pad(hdr, &p, 2);                            /* blank selection-marker column */
+    s_cat(hdr, &p, "#");     s_pad(hdr, &p, 6);
+    s_cat(hdr, &p, "Name");  s_pad(hdr, &p, 18);
+    s_cat(hdr, &p, "Type");  s_pad(hdr, &p, 24);
+    s_cat(hdr, &p, "Start"); s_pad(hdr, &p, 32);
+    s_cat(hdr, &p, "End");   s_pad(hdr, &p, 40);
     s_cat(hdr, &p, "Size");  hdr[p] = 0;
     lx = 10 + g_leftb + 4;               /* match the listview's text inset */
     ly = 74 + g_topb - 2;                /* baseline just above the listview */
