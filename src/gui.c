@@ -151,13 +151,13 @@ static void gui_refresh_parts(void)
             g_partnodes[i].ln_Name = row;
             AddTail(&g_partlist, &g_partnodes[i]);
         }
-        { int p = 0; s_cat(g_statusbuf, &p, g_dirty ? "MODIFIED  " : "RDB OK  ");
+        { int p = 0; s_cat(g_statusbuf, &p, g_dirty ? "Modified  " : "RDB OK  ");
           p += u2s(g_statusbuf + p, (ULONG)g_model.num_parts);
-          s_cat(g_statusbuf, &p, " partitions  ");
+          s_cat(g_statusbuf, &p, " parts  ");
           p += u2s(g_statusbuf + p, g_model.cylinders); s_cat(g_statusbuf, &p, " cyl");
           g_statusbuf[p] = 0; }
     } else {
-        int p = 0; s_cat(g_statusbuf, &p, "no valid RDB on this disk"); g_statusbuf[p] = 0;
+        int p = 0; s_cat(g_statusbuf, &p, "No RDB on this disk"); g_statusbuf[p] = 0;
     }
     if (g_win && g_gad[GID_PARTS])
         GT_SetGadgetAttrs(g_gad[GID_PARTS], g_win, 0,
@@ -662,7 +662,10 @@ int gui_run(void)
             GT_ReplyIMsg(imsg);
             switch (cls) {
                 case IDCMP_CLOSEWINDOW:
-                    done = TRUE;
+                    /* Guard against losing in-memory edits that were never saved. */
+                    if (!g_dirty ||
+                        gui_confirm("Quit HDPart", "Discard unsaved changes and quit?"))
+                        done = TRUE;
                     break;
                 case IDCMP_REFRESHWINDOW:
                     GT_BeginRefresh(g_win);
@@ -789,7 +792,7 @@ static void gui_select_driver(int idx)
         gui_clear_units("(no driver)");
         gui_set_unit_cycle(0);
         gui_refresh_parts(); gui_update_buttons();
-        gui_status("Select a driver, or load one from disk, then press Scan.");
+        gui_status("Select a driver, then Scan.");
         return;
     }
     { const char *nm = g_drvlabels[idx]; int k;
@@ -798,7 +801,7 @@ static void gui_select_driver(int idx)
     gui_clear_units("(press Scan)");
     gui_set_unit_cycle(0);
     gui_refresh_parts(); gui_update_buttons();
-    gui_status("Press Scan to query this driver.");
+    gui_status("Press Scan to query driver.");
 }
 
 /* Unit cycle handler: show the selected disk's partitions (reads its RDB). */
@@ -918,7 +921,7 @@ static void gui_load_driver(void)
                           GTCY_Labels, (ULONG)g_drvlabels,
                           GTCY_Active, (ULONG)sel, TAG_END);
     gui_select_driver(sel);
-    gui_status("Driver loaded - press Scan to query it.");
+    gui_status("Driver loaded - press Scan.");
 }
 
 /* The disk-map bar rectangle (window-relative). Shared by draw + hit-test. */
