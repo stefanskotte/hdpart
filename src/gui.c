@@ -196,11 +196,10 @@ static struct Gadget *build_gadgets(void)
     g = CreateGadget(CYCLE_KIND, g, &ng, GTCY_Labels, (ULONG)g_drvlabels, TAG_END);
     g_gad[GID_DEVICE] = g;
 
-    /* Driver... button (load a .device from file via ASL). "..." signals it
-       opens a file requester; widened to fit the 9-char ASCII label (Topaz
-       cannot render a UTF-8 ellipsis). */
-    ng.ng_LeftEdge = 312 + g_leftb; ng.ng_TopEdge = 6 + g_topb; ng.ng_Width = 84; ng.ng_Height = 14;
-    ng.ng_GadgetText = (UBYTE *)"Driver..."; ng.ng_GadgetID = GID_DRIVER;
+    /* "..." button (load a .device from file via ASL) sits right after the
+       Driver cycle; "..." signals it opens a file requester. */
+    ng.ng_LeftEdge = 312 + g_leftb; ng.ng_TopEdge = 6 + g_topb; ng.ng_Width = 40; ng.ng_Height = 14;
+    ng.ng_GadgetText = (UBYTE *)"..."; ng.ng_GadgetID = GID_DRIVER;
     g = CreateGadget(BUTTON_KIND, g, &ng, GA_Disabled, (ULONG)(AslBase == 0), TAG_END);
     g_gad[GID_DRIVER] = g;
 
