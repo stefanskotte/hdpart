@@ -504,7 +504,7 @@ static int gui_edit_dialog(int index)
     if (!g) return 0;
     ng.ng_TextAttr = &g_font; ng.ng_VisualInfo = g_vi; ng.ng_Flags = 0;
 
-    ng.ng_LeftEdge = dl + 90; ng.ng_TopEdge = dt + 6; ng.ng_Width = 180; ng.ng_Height = 14;
+    ng.ng_LeftEdge = dl + 110; ng.ng_TopEdge = dt + 6; ng.ng_Width = 180; ng.ng_Height = 14;
     ng.ng_GadgetText = (UBYTE *)"Name"; ng.ng_GadgetID = 1;
     g = CreateGadget(STRING_KIND, g, &ng, GTST_String, (ULONG)nameBuf, GTST_MaxChars, 31, TAG_END);
     gName = g;
@@ -514,20 +514,20 @@ static int gui_edit_dialog(int index)
       p += u2s(sizeMaxLabel + p, maxMB); sizeMaxLabel[p++]=' '; sizeMaxLabel[p++]='M'; sizeMaxLabel[p++]='B';
       sizeMaxLabel[p] = 0; }
 
-    ng.ng_LeftEdge = dl + 90; ng.ng_TopEdge = dt + 26; ng.ng_Width = 80; ng.ng_Height = 14;
+    ng.ng_LeftEdge = dl + 110; ng.ng_TopEdge = dt + 26; ng.ng_Width = 80; ng.ng_Height = 14;
     ng.ng_GadgetText = (UBYTE *)"Size (MB)"; ng.ng_GadgetID = 2;
     g = CreateGadget(INTEGER_KIND, g, &ng, GTIN_Number, curMB, GTIN_MaxChars, 7, TAG_END);
     gSize = g;
 
-    ng.ng_LeftEdge = dl + 180; ng.ng_Width = 110; ng.ng_GadgetText = 0; ng.ng_GadgetID = 0;
+    ng.ng_LeftEdge = dl + 200; ng.ng_Width = 110; ng.ng_GadgetText = 0; ng.ng_GadgetID = 0;
     g = CreateGadget(TEXT_KIND, g, &ng, GTTX_Text, (ULONG)sizeMaxLabel, TAG_END);
 
-    ng.ng_LeftEdge = dl + 90; ng.ng_TopEdge = dt + 48; ng.ng_Width = 180; ng.ng_Height = 14;
+    ng.ng_LeftEdge = dl + 110; ng.ng_TopEdge = dt + 48; ng.ng_Width = 180; ng.ng_Height = 14;
     ng.ng_GadgetText = (UBYTE *)"FS"; ng.ng_GadgetID = 4;
     g = CreateGadget(CYCLE_KIND, g, &ng, GTCY_Labels, (ULONG)kFsLabels, GTCY_Active, 0, TAG_END);
 
     /* Bootable (checkbox) + Boot Pri (integer) share a row. */
-    ng.ng_LeftEdge = dl + 90; ng.ng_TopEdge = dt + 70; ng.ng_Width = 26; ng.ng_Height = 11;
+    ng.ng_LeftEdge = dl + 110; ng.ng_TopEdge = dt + 70; ng.ng_Width = 26; ng.ng_Height = 11;
     ng.ng_GadgetText = (UBYTE *)"Bootable"; ng.ng_GadgetID = 5;
     g = CreateGadget(CHECKBOX_KIND, g, &ng, GTCB_Checked, (ULONG)(pt->bootable ? TRUE : FALSE), TAG_END);
     gBoot = g;
@@ -537,12 +537,12 @@ static int gui_edit_dialog(int index)
     g = CreateGadget(INTEGER_KIND, g, &ng, GTIN_Number, (ULONG)(LONG)pt->boot_pri, GTIN_MaxChars, 6, TAG_END);
     gPri = g;
 
-    ng.ng_LeftEdge = dl + 90; ng.ng_TopEdge = dt + 92; ng.ng_Width = 120; ng.ng_Height = 14;
+    ng.ng_LeftEdge = dl + 110; ng.ng_TopEdge = dt + 92; ng.ng_Width = 120; ng.ng_Height = 14;
     ng.ng_GadgetText = (UBYTE *)"MaxTransfer"; ng.ng_GadgetID = 7;
     g = CreateGadget(STRING_KIND, g, &ng, GTST_String, (ULONG)maxtBuf, GTST_MaxChars, 11, TAG_END);
     gMaxT = g;
 
-    ng.ng_LeftEdge = dl + 90; ng.ng_TopEdge = dt + 114; ng.ng_Width = 120; ng.ng_Height = 14;
+    ng.ng_LeftEdge = dl + 110; ng.ng_TopEdge = dt + 114; ng.ng_Width = 120; ng.ng_Height = 14;
     ng.ng_GadgetText = (UBYTE *)"Mask"; ng.ng_GadgetID = 8;
     g = CreateGadget(STRING_KIND, g, &ng, GTST_String, (ULONG)maskBuf, GTST_MaxChars, 11, TAG_END);
     gMask = g;
@@ -555,7 +555,7 @@ static int gui_edit_dialog(int index)
     if (!g) { FreeGadgets(dglist); return 0; }
 
     {   /* center the dialog over the main window */
-        int dwW = dl + 300 + g_scr->WBorRight;
+        int dwW = dl + 320 + g_scr->WBorRight;
         int dwH = dt + 158 + g_scr->WBorBottom;
         int dwL = g_win->LeftEdge + (g_win->Width  - dwW) / 2;
         int dwT = g_win->TopEdge  + (g_win->Height - dwH) / 2;
