@@ -203,9 +203,11 @@ static struct Gadget *build_gadgets(void)
     g = CreateGadget(BUTTON_KIND, g, &ng, GA_Disabled, (ULONG)(AslBase == 0), TAG_END);
     g_gad[GID_DRIVER] = g;
 
-    /* Scan button (bold: it is the primary action — query the chosen driver). */
+    /* Scan button (bold: it is the primary action — query the chosen driver).
+       Double height: spans both the Driver (y6) and Unit (y26) rows to balance
+       the two dropdowns. */
     ng.ng_TextAttr = &g_font_bold;
-    ng.ng_LeftEdge = 400 + g_leftb; ng.ng_TopEdge = 6 + g_topb; ng.ng_Width = 56; ng.ng_Height = 14;
+    ng.ng_LeftEdge = 386 + g_leftb; ng.ng_TopEdge = 6 + g_topb; ng.ng_Width = 70; ng.ng_Height = 34;
     ng.ng_GadgetText = (UBYTE *)"Scan"; ng.ng_GadgetID = GID_SCAN;
     g = CreateGadget(BUTTON_KIND, g, &ng, TAG_END);
     g_gad[GID_SCAN] = g;
