@@ -47,7 +47,7 @@ static DiscDisk g_disks[DISC_MAX];
 static int      g_ndisks;
 static const char *g_drvlabels[DISC_MAX + 2];   /* Driver cycle: prompt + names */
 static const char *g_unitlabels[DISC_MAX + 2];  /* Unit cycle: placeholder or u<n> size */
-static char     g_unittext[DISC_MAX][16];        /* storage for unit-cycle labels */
+static char     g_unittext[DISC_MAX][24];        /* storage for unit-cycle labels */
 static RdbModel g_model;
 static int      g_have_model;
 static int      g_dirty;            /* unsaved edits in g_model */
@@ -745,17 +745,12 @@ static int gui_build_units(const char *emptyText)
         char *t = g_unittext[n];
         int p = 0;
         if (!d->partitionable || !streq(d->driver, g_target_driver)) continue;
-        t[p++] = 'u';
-        { ULONG u = d->unit; char tmp[12]; int ti = 0;
-          if (u == 0) tmp[ti++] = '0';
-          while (u) { tmp[ti++] = (char)('0' + (u % 10)); u /= 10; }
-          while (ti > 0 && p < 4) t[p++] = tmp[--ti]; }
-        t[p++] = ' '; t[p++] = ' ';
-        { ULONG s = d->size_mb; char tmp[12]; int ti = 0;
-          if (s == 0) tmp[ti++] = '0';
-          while (s) { tmp[ti++] = (char)('0' + (s % 10)); s /= 10; }
-          while (ti > 0 && p < 13) t[p++] = tmp[--ti];
-          t[p++] = 'M'; }
+        /* "Unit <n> (<size> MB)" */
+        s_cat(t, &p, "Unit ");
+        p += u2s(t + p, (ULONG)d->unit);
+        s_cat(t, &p, " (");
+        p += u2s(t + p, (ULONG)d->size_mb);
+        s_cat(t, &p, " MB)");
         t[p] = 0;
         g_unitmap[n] = i;
         g_unitlabels[n] = t;
