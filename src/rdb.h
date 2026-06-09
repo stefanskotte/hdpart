@@ -27,7 +27,9 @@ typedef struct {
     uint32_t dos_type;           /* e.g. 0x444F5303 = DOS\3 (FFS Intl) */
     uint32_t num_buffers;
     int32_t  boot_pri;
-    uint8_t  bootable;           /* 0/1 (UI greyed in phase 1) */
+    uint8_t  bootable;           /* 0/1 */
+    uint32_t maxtransfer;        /* DOSEnvVec de_MaxTransfer */
+    uint32_t mask;               /* DOSEnvVec de_Mask */
 } RdbPartition;
 
 typedef struct {
@@ -42,6 +44,8 @@ typedef struct {
 
 #define RDB_RESERVED_CYLS 2u     /* cylinders reserved for RDB metadata */
 #define RDB_DOSTYPE_FFS_INTL 0x444F5303u
+#define RDB_DEFAULT_MAXTRANSFER 0x7FFFFFFFu  /* DOSEnvVec de_MaxTransfer default */
+#define RDB_DEFAULT_MASK        0x7FFFFFFEu  /* DOSEnvVec de_Mask default */
 
 void rdb_init_model(RdbModel *m, uint32_t cyl, uint32_t heads, uint32_t sectors);
 

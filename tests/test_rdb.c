@@ -265,6 +265,35 @@ static void test_largest_free_gap(void)
     CHECK(rdb_largest_free_gap(&m, &s, &e) == 0);
 }
 
+/* Partition flag fields: defaults on add, and maxtransfer/mask/bootable/boot_pri
+   round-tripping through serialize -> parse. */
+static void test_part_flags(void)
+{
+    RdbModel m, back;
+    memset(g_ram, 0, sizeof(g_ram));
+
+    rdb_init_model(&m, 996, 16, 63);
+    CHECK(rdb_add_partition(&m, "DH0", 200, RDB_DOSTYPE_FFS_INTL) == RDB_OK);
+
+    /* defaults on a fresh partition */
+    CHECK(m.parts[0].maxtransfer == 0x7FFFFFFFu);
+    CHECK(m.parts[0].mask        == 0x7FFFFFFEu);
+    CHECK(m.parts[0].bootable    == 0);
+    CHECK(m.parts[0].boot_pri    == 0);
+
+    /* set custom flag values, serialize, parse back */
+    m.parts[0].maxtransfer = 0x0001FE00u;
+    m.parts[0].mask        = 0xFFFFFFFEu;
+    m.parts[0].bootable    = 1;
+    m.parts[0].boot_pri    = 5;
+    CHECK(rdb_serialize(&m, ram_io, 0) == RDB_OK);
+    CHECK(rdb_parse(&back, ram_io, 0) == RDB_OK);
+    CHECK(back.parts[0].maxtransfer == 0x0001FE00u);
+    CHECK(back.parts[0].mask        == 0xFFFFFFFEu);
+    CHECK(back.parts[0].bootable    == 1);
+    CHECK(back.parts[0].boot_pri    == 5);
+}
+
 int main(int argc, char **argv)
 {
     if (argc >= 2 && strcmp(argv[1], "--emit") == 0) {
@@ -301,6 +330,7 @@ int main(int argc, char **argv)
     test_add_at_and_set();
     test_add_cyl_and_rename();
     test_largest_free_gap();
+    test_part_flags();
     if (g_fail) { printf("%d CHECK(s) FAILED\n", g_fail); return 1; }
     printf("ALL TESTS PASSED\n");
     return 0;

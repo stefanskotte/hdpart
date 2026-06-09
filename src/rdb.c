@@ -143,6 +143,7 @@ int rdb_add_partition_at(RdbModel *m, const char *name, uint32_t start_cyl,
     copy_name(p->name, name);
     p->low_cyl = start_cyl; p->high_cyl = end;
     p->dos_type = dos_type; p->num_buffers = 30; p->boot_pri = 0; p->bootable = 0;
+    p->maxtransfer = RDB_DEFAULT_MAXTRANSFER; p->mask = RDB_DEFAULT_MASK;
     m->num_parts++;
     if (rdb_validate(m) != RDB_OK) { m->num_parts--; return RDB_ERR_OVERLAP; }
     return m->num_parts - 1;
@@ -184,6 +185,7 @@ int rdb_add_partition_cyl(RdbModel *m, const char *name, uint32_t start_cyl,
     copy_name(p->name, name);
     p->low_cyl = start_cyl; p->high_cyl = end_cyl;
     p->dos_type = dos_type; p->num_buffers = 30; p->boot_pri = 0; p->bootable = 0;
+    p->maxtransfer = RDB_DEFAULT_MAXTRANSFER; p->mask = RDB_DEFAULT_MASK;
     m->num_parts++;
     if (rdb_validate(m) != RDB_OK) { m->num_parts--; return RDB_ERR_OVERLAP; }
     return m->num_parts - 1;
@@ -225,6 +227,8 @@ int rdb_add_partition(RdbModel *m, const char *name, uint32_t size_mb,
     p->num_buffers = 30;
     p->boot_pri    = 0;
     p->bootable    = 0;
+    p->maxtransfer = RDB_DEFAULT_MAXTRANSFER;
+    p->mask        = RDB_DEFAULT_MASK;
     return RDB_OK;
 }
 
@@ -362,8 +366,8 @@ static void write_partition_block(uint8_t *blk, const RdbModel *m,
     env_put(blk, DE_HighCyl,      p->high_cyl);
     env_put(blk, DE_NumBuffers,   p->num_buffers);
     env_put(blk, DE_BufMemType,   0);
-    env_put(blk, DE_MaxTransfer,  0x7FFFFFFFu);
-    env_put(blk, DE_Mask,         0x7FFFFFFEu);
+    env_put(blk, DE_MaxTransfer,  p->maxtransfer);
+    env_put(blk, DE_Mask,         p->mask);
     env_put(blk, DE_BootPri,      (uint32_t)p->boot_pri);
     env_put(blk, DE_DosType,      p->dos_type);
 
@@ -466,6 +470,8 @@ int rdb_parse(RdbModel *m, BlockIO io, void *ctx)
         p->high_cyl    = env_get(blk, DE_HighCyl);
         p->num_buffers = env_get(blk, DE_NumBuffers);
         p->boot_pri    = (int32_t)env_get(blk, DE_BootPri);
+        p->maxtransfer = env_get(blk, DE_MaxTransfer);
+        p->mask        = env_get(blk, DE_Mask);
         p->dos_type    = env_get(blk, DE_DosType);
         p->bootable    = (be_get32(blk + PART_o_Flags) & 1u) ? 1 : 0;
 

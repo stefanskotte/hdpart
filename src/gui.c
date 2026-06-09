@@ -425,16 +425,51 @@ static void gui_delete(void)
 static const char *const kFsLabels[] = { "FFS Intl (DOS\\3)", 0 };
 static const uint32_t     kFsTypes[]  = { RDB_DOSTYPE_FFS_INTL };
 
+/* Write "0x" + 8 uppercase hex digits of v to o[<=11]; returns the length. */
+static int u32_to_hex(char *o, uint32_t v)
+{
+    static const char hx[] = "0123456789ABCDEF";
+    int i;
+    o[0] = '0'; o[1] = 'x';
+    for (i = 0; i < 8; i++) o[2 + i] = hx[(v >> ((7 - i) * 4)) & 0xF];
+    o[10] = 0;
+    return 10;
+}
+
+/* Parse a hex string (optional 0x/0X/$ prefix) into *out. Returns 1 on success
+   (1..8 hex digits, nothing else), 0 on failure. Leading spaces are skipped. */
+static int parse_hex32(const char *s, uint32_t *out)
+{
+    uint32_t v = 0;
+    int digits = 0;
+    while (*s == ' ' || *s == '\t') s++;
+    if (s[0] == '0' && (s[1] == 'x' || s[1] == 'X')) s += 2;
+    else if (s[0] == '$') s += 1;
+    for (; *s; s++) {
+        char c = *s; int d;
+        if      (c >= '0' && c <= '9') d = c - '0';
+        else if (c >= 'a' && c <= 'f') d = c - 'a' + 10;
+        else if (c >= 'A' && c <= 'F') d = c - 'A' + 10;
+        else return 0;
+        if (digits >= 8) return 0;            /* > 32 bits */
+        v = (v << 4) | (uint32_t)d; digits++;
+    }
+    if (digits == 0) return 0;
+    *out = v;
+    return 1;
+}
+
 /* Edit partition `index` of g_model via a modal dialog. Returns 1 if applied. */
 static int gui_edit_dialog(int index)
 {
     struct Window *dw;
     struct Gadget *dglist = 0, *g;
-    struct Gadget *gName = 0, *gSize = 0;
+    struct Gadget *gName = 0, *gSize = 0, *gBoot = 0, *gPri = 0, *gMaxT = 0, *gMask = 0;
     struct NewGadget ng;
     RdbPartition *pt = &g_model.parts[index];
     static char nameBuf[32];
     static char sizeMaxLabel[24];
+    static char maxtBuf[12], maskBuf[12];
     uint32_t startCyl = pt->low_cyl;
     uint32_t maxEndExclusive;   /* first cylinder not available to this part */
     uint32_t maxCyls, maxMB, curMB;
@@ -459,6 +494,8 @@ static int gui_edit_dialog(int index)
 
     for (k = 0; k < 31 && pt->name[k]; k++) nameBuf[k] = pt->name[k];
     nameBuf[k] = 0;
+    u32_to_hex(maxtBuf, pt->maxtransfer);
+    u32_to_hex(maskBuf, pt->mask);
 
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wincompatible-pointer-types"
@@ -489,7 +526,28 @@ static int gui_edit_dialog(int index)
     ng.ng_GadgetText = (UBYTE *)"FS"; ng.ng_GadgetID = 4;
     g = CreateGadget(CYCLE_KIND, g, &ng, GTCY_Labels, (ULONG)kFsLabels, GTCY_Active, 0, TAG_END);
 
-    ng.ng_LeftEdge = dl + 10; ng.ng_TopEdge = dt + 70; ng.ng_Width = 70; ng.ng_Height = 14;
+    /* Bootable (checkbox) + Boot Pri (integer) share a row. */
+    ng.ng_LeftEdge = dl + 90; ng.ng_TopEdge = dt + 70; ng.ng_Width = 26; ng.ng_Height = 11;
+    ng.ng_GadgetText = (UBYTE *)"Bootable"; ng.ng_GadgetID = 5;
+    g = CreateGadget(CHECKBOX_KIND, g, &ng, GTCB_Checked, (ULONG)(pt->bootable ? TRUE : FALSE), TAG_END);
+    gBoot = g;
+
+    ng.ng_LeftEdge = dl + 230; ng.ng_TopEdge = dt + 70; ng.ng_Width = 50; ng.ng_Height = 14;
+    ng.ng_GadgetText = (UBYTE *)"Boot Pri"; ng.ng_GadgetID = 6;
+    g = CreateGadget(INTEGER_KIND, g, &ng, GTIN_Number, (ULONG)(LONG)pt->boot_pri, GTIN_MaxChars, 6, TAG_END);
+    gPri = g;
+
+    ng.ng_LeftEdge = dl + 90; ng.ng_TopEdge = dt + 92; ng.ng_Width = 120; ng.ng_Height = 14;
+    ng.ng_GadgetText = (UBYTE *)"MaxTransfer"; ng.ng_GadgetID = 7;
+    g = CreateGadget(STRING_KIND, g, &ng, GTST_String, (ULONG)maxtBuf, GTST_MaxChars, 11, TAG_END);
+    gMaxT = g;
+
+    ng.ng_LeftEdge = dl + 90; ng.ng_TopEdge = dt + 114; ng.ng_Width = 120; ng.ng_Height = 14;
+    ng.ng_GadgetText = (UBYTE *)"Mask"; ng.ng_GadgetID = 8;
+    g = CreateGadget(STRING_KIND, g, &ng, GTST_String, (ULONG)maskBuf, GTST_MaxChars, 11, TAG_END);
+    gMask = g;
+
+    ng.ng_LeftEdge = dl + 10; ng.ng_TopEdge = dt + 136; ng.ng_Width = 70; ng.ng_Height = 14;
     ng.ng_GadgetText = (UBYTE *)"Ok"; ng.ng_GadgetID = 10;
     g = CreateGadget(BUTTON_KIND, g, &ng, TAG_END);
     ng.ng_LeftEdge = dl + 210; ng.ng_GadgetText = (UBYTE *)"Cancel"; ng.ng_GadgetID = 11;
@@ -498,7 +556,7 @@ static int gui_edit_dialog(int index)
 
     {   /* center the dialog over the main window */
         int dwW = dl + 300 + g_scr->WBorRight;
-        int dwH = dt + 92 + g_scr->WBorBottom;
+        int dwH = dt + 158 + g_scr->WBorBottom;
         int dwL = g_win->LeftEdge + (g_win->Width  - dwW) / 2;
         int dwT = g_win->TopEdge  + (g_win->Height - dwH) / 2;
         if (dwL < 0) dwL = 0;
@@ -507,7 +565,7 @@ static int gui_edit_dialog(int index)
             WA_Left, dwL, WA_Top, dwT, WA_Width, dwW, WA_Height, dwH,
             WA_Title, (ULONG)"Edit Partition",
             WA_Gadgets, (ULONG)dglist,
-            WA_IDCMP, IDCMP_CLOSEWINDOW | IDCMP_REFRESHWINDOW | BUTTONIDCMP | STRINGIDCMP | INTEGERIDCMP,
+            WA_IDCMP, IDCMP_CLOSEWINDOW | IDCMP_REFRESHWINDOW | BUTTONIDCMP | STRINGIDCMP | INTEGERIDCMP | CHECKBOXIDCMP,
             WA_Flags, WFLG_DRAGBAR | WFLG_DEPTHGADGET | WFLG_ACTIVATE | WFLG_SMART_REFRESH,
             g_pub ? WA_PubScreen : WA_CustomScreen, (ULONG)g_scr,
             TAG_END);
@@ -534,21 +592,34 @@ static int gui_edit_dialog(int index)
                 } else if (ig->GadgetID == 10) {                                /* Ok */
                     LONG mb = ((struct StringInfo *)gSize->SpecialInfo)->LongInt;
                     char *nm = (char *)((struct StringInfo *)gName->SpecialInfo)->Buffer;
+                    const char *mt = (const char *)((struct StringInfo *)gMaxT->SpecialInfo)->Buffer;
+                    const char *mk = (const char *)((struct StringInfo *)gMask->SpecialInfo)->Buffer;
+                    uint32_t mtv, mkv;
                     int r;
-                    if (mb < 1) mb = 1;
-                    if ((ULONG)mb > maxMB) mb = (LONG)maxMB;
-                    /* If the MB field is unchanged from what the dialog opened
-                       with, keep the EXACT cylinder range (so a gap-filling
-                       partition isn't silently shrunk by MB re-rounding); only
-                       resize when the user actually changed the size. */
-                    if ((uint32_t)mb == curMB)
-                        r = rdb_rename_partition(&g_model, index, nm, kFsTypes[0]);
-                    else
-                        r = rdb_set_partition(&g_model, index, nm, (uint32_t)mb, kFsTypes[0]);
-                    if (r == RDB_OK) {
-                        applied = 1; done = 1;
+                    if (!parse_hex32(mt, &mtv) || !parse_hex32(mk, &mkv)) {
+                        gui_msg("Edit", "MaxTransfer / Mask must be hex (e.g. 0x7FFFFFFE).");
                     } else {
-                        gui_msg("Edit", "Invalid name or size (overlaps / out of range).");
+                        if (mb < 1) mb = 1;
+                        if ((ULONG)mb > maxMB) mb = (LONG)maxMB;
+                        /* If the MB field is unchanged from what the dialog opened
+                           with, keep the EXACT cylinder range (so a gap-filling
+                           partition isn't silently shrunk by MB re-rounding); only
+                           resize when the user actually changed the size. */
+                        if ((uint32_t)mb == curMB)
+                            r = rdb_rename_partition(&g_model, index, nm, kFsTypes[0]);
+                        else
+                            r = rdb_set_partition(&g_model, index, nm, (uint32_t)mb, kFsTypes[0]);
+                        if (r == RDB_OK) {
+                            /* Apply the flag fields directly (resize/rename keep
+                               them; they don't affect geometry/validation). */
+                            pt->bootable    = (gBoot->Flags & GFLG_SELECTED) ? 1 : 0;
+                            pt->boot_pri    = (int32_t)((struct StringInfo *)gPri->SpecialInfo)->LongInt;
+                            pt->maxtransfer = mtv;
+                            pt->mask        = mkv;
+                            applied = 1; done = 1;
+                        } else {
+                            gui_msg("Edit", "Invalid name or size (overlaps / out of range).");
+                        }
                     }
                 } else if (cl == IDCMP_GADGETUP && ig->GadgetID == 11) { done = 1; } /* Cancel */
             }
