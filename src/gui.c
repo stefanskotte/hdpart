@@ -89,6 +89,8 @@ static void gui_select_unit(int unitIdx);     /* Unit cycle: show that disk's pa
 static void gui_scan_selected(void);          /* probe the target driver (Scan button) */
 void gui_draw_bar(void);
 static void gui_draw_partheader(void);    /* column headings above the listview */
+static void gui_draw_easter(void);        /* the bottom-right pi glyph */
+static int  gui_hit_easter(int mx, int my);
 static void gui_set_selection(int idx);   /* select partition `idx` (or -1) + redraw */
 static int  gui_part_at_x(int mx, int my);/* partition under a window-relative point, or -1 */
 
@@ -207,7 +209,7 @@ static struct Gadget *build_gadgets(void)
        Double height: spans both the Driver (y6) and Unit (y26) rows to balance
        the two dropdowns. */
     ng.ng_TextAttr = &g_font_bold;
-    ng.ng_LeftEdge = 386 + g_leftb; ng.ng_TopEdge = 6 + g_topb; ng.ng_Width = 70; ng.ng_Height = 34;
+    ng.ng_LeftEdge = 380 + g_leftb; ng.ng_TopEdge = 6 + g_topb; ng.ng_Width = 70; ng.ng_Height = 34;
     ng.ng_GadgetText = (UBYTE *)"Scan"; ng.ng_GadgetID = GID_SCAN;
     g = CreateGadget(BUTTON_KIND, g, &ng, TAG_END);
     g_gad[GID_SCAN] = g;
@@ -276,7 +278,8 @@ static void gui_draw_text(struct Window *w, const char *body, int x, int y)
 
 /* Modal requester centered over the main window. twoButtons=1 -> Proceed/Cancel
    (returns 1 for Proceed, 0 for Cancel/close); twoButtons=0 -> single OK. */
-static int gui_request(const char *title, const char *body, int twoButtons)
+static int gui_request(const char *title, const char *body, int twoButtons,
+                       const char *okLabel)
 {
     struct Window *dw;
     struct Gadget *glist = 0, *g;
@@ -314,7 +317,8 @@ static int gui_request(const char *title, const char *body, int twoButtons)
         ng.ng_LeftEdge = dl + textW + 12 - 90; ng.ng_GadgetText = (UBYTE *)"Cancel"; ng.ng_GadgetID = 0;
         g = CreateGadget(BUTTON_KIND, g, &ng, TAG_END);
     } else {
-        ng.ng_LeftEdge = dl + (textW + 24 - 90) / 2; ng.ng_GadgetText = (UBYTE *)"OK"; ng.ng_GadgetID = 1;
+        ng.ng_LeftEdge = dl + (textW + 24 - 90) / 2;
+        ng.ng_GadgetText = (UBYTE *)(okLabel ? okLabel : "OK"); ng.ng_GadgetID = 1;
         g = CreateGadget(BUTTON_KIND, g, &ng, TAG_END);
     }
     if (!g) { FreeGadgets(glist); return 0; }
@@ -348,8 +352,8 @@ static int gui_request(const char *title, const char *body, int twoButtons)
     return result;
 }
 
-static int  gui_confirm(const char *title, const char *body) { return gui_request(title, body, 1); }
-static void gui_msg(const char *title, const char *body)      { (void)gui_request(title, body, 0); }
+static int  gui_confirm(const char *title, const char *body) { return gui_request(title, body, 1, 0); }
+static void gui_msg(const char *title, const char *body)      { (void)gui_request(title, body, 0, 0); }
 
 static char g_msgbuf[120];
 
@@ -748,6 +752,8 @@ int gui_run(void)
                     if (code == SELECTDOWN) {           /* click on the disk-map bar selects */
                         int idx = gui_part_at_x((int)mx, (int)my);
                         if (idx >= 0) gui_set_selection(idx);
+                        else if (gui_hit_easter((int)mx, (int)my))
+                            gui_request("HDPart", "You watched too many movies.", 0, "I know");
                     }
                     break;
                 case IDCMP_GADGETUP:
@@ -1040,6 +1046,7 @@ void gui_draw_bar(void)
     Draw(rp, bx + bw - 1, by + bh - 1); Draw(rp, bx, by + bh - 1); Draw(rp, bx, by);
 
     gui_draw_partheader();   /* column headings, shown even for an empty list */
+    gui_draw_easter();       /* tiny pi in the corner, always present */
 
     if (!g_have_model || g_model.cylinders == 0) return;
 
@@ -1093,4 +1100,26 @@ static void gui_draw_partheader(void)
     SetAPen(rp, 1);
     Move(rp, lx, ly);
     Text(rp, (CONST_STRPTR)hdr, (LONG)p);
+}
+
+/* A tiny hand-drawn pi glyph in the bottom-right corner (no Topaz glyph for it).
+   Clicking it is an easter egg. */
+static void gui_draw_easter(void)
+{
+    struct RastPort *rp;
+    int px = 451 + g_leftb, py = 189 + g_topb;
+    if (!g_win) return;
+    rp = g_win->RPort;
+    SetAPen(rp, 1);
+    Move(rp, px,     py);     Draw(rp, px + 7, py);       /* top bar */
+    Move(rp, px + 1, py + 1); Draw(rp, px + 1, py + 8);   /* left leg */
+    Move(rp, px + 6, py + 1); Draw(rp, px + 6, py + 8);   /* right leg */
+}
+
+/* True if (mx,my) is in the bottom-right corner where the pi glyph lives. Only
+   non-gadget clicks reach this (GadTools eats gadget clicks), so the generous
+   rect won't conflict with the Save button to its left. */
+static int gui_hit_easter(int mx, int my)
+{
+    return mx >= 448 + g_leftb && my >= 184 + g_topb;
 }
