@@ -106,6 +106,14 @@ int rdb_rename_partition(RdbModel *m, int index, const char *name, uint32_t dos_
    than partitions). */
 int rdb_split_equal(RdbModel *m, int count, uint32_t dos_type);
 
+/* Append `count` equal cylinder-slices over [lo, hi] (within lo_cyl..hi_cyl),
+   auto-named with the lowest unused DH<n>, keeping existing partitions. The last
+   slice absorbs remainder cylinders. Returns RDB_OK, RDB_ERR_RANGE (count<1 or
+   bad range), RDB_ERR_TOO_MANY (would exceed RDB_MAX_PARTS), or RDB_ERR_NO_SPACE
+   (fewer cylinders than partitions). Used to split a free gap. */
+int rdb_split_range(RdbModel *m, uint32_t lo, uint32_t hi, int count,
+                    uint32_t dos_type);
+
 /* Remove partition by index, shifting the rest down. */
 int rdb_delete_partition(RdbModel *m, int index);
 /* Validate all partitions: bounds within [lo_cyl,hi_cyl], no overlaps,

@@ -203,35 +203,53 @@ int rdb_rename_partition(RdbModel *m, int index, const char *name, uint32_t dos_
     return RDB_OK;
 }
 
-int rdb_split_equal(RdbModel *m, int count, uint32_t dos_type)
+/* Lowest unused "DH<n>" into out[<=12]. */
+static void next_dh_name(const RdbModel *m, char *out)
 {
-    uint32_t lo, hi, span;
-    int i;
-    if (count < 1 || count > RDB_MAX_PARTS) return RDB_ERR_RANGE;
-    lo = m->lo_cyl; hi = m->hi_cyl;
-    if (hi < lo) return RDB_ERR_NO_SPACE;
+    int n;
+    for (n = 0; n < 1000; n++) {
+        int p = 0; uint32_t v = (uint32_t)n; char tmp[10]; int ti = 0;
+        out[p++] = 'D'; out[p++] = 'H';
+        if (v == 0) tmp[ti++] = '0';
+        while (v) { tmp[ti++] = (char)('0' + v % 10); v /= 10; }
+        while (ti > 0) out[p++] = tmp[--ti];
+        out[p] = 0;
+        if (!name_taken(m, out, -1)) return;
+    }
+}
+
+int rdb_split_range(RdbModel *m, uint32_t lo, uint32_t hi, int count,
+                    uint32_t dos_type)
+{
+    uint32_t span;
+    int i, before = m->num_parts;
+    if (count < 1)                          return RDB_ERR_RANGE;
+    if (before + count > RDB_MAX_PARTS)      return RDB_ERR_TOO_MANY;
+    if (hi < lo || lo < m->lo_cyl || hi > m->hi_cyl) return RDB_ERR_RANGE;
     span = hi - lo + 1;
     if ((uint32_t)count > span) return RDB_ERR_NO_SPACE;   /* need >= 1 cyl each */
 
-    m->num_parts = 0;
     for (i = 0; i < count; i++) {
         /* Proportional split: slice i is [span*i/count, span*(i+1)/count); the
            last slice's end lands exactly on hi. Contiguous, no gaps/overlap.
            span<=65535, count<=RDB_MAX_PARTS, so span*(i+1) stays 32-bit. */
         uint32_t s = lo + (span * (uint32_t)i)       / (uint32_t)count;
         uint32_t e = lo + (span * (uint32_t)(i + 1)) / (uint32_t)count - 1;
-        char name[12]; int p = 0; uint32_t n = (uint32_t)i; char tmp[10]; int ti = 0;
-        name[p++] = 'D'; name[p++] = 'H';
-        if (n == 0) tmp[ti++] = '0';
-        while (n) { tmp[ti++] = (char)('0' + n % 10); n /= 10; }
-        while (ti > 0) name[p++] = tmp[--ti];
-        name[p] = 0;
+        char name[12];
+        next_dh_name(m, name);
         if (rdb_add_partition_cyl(m, name, s, e, dos_type) < 0) {
-            m->num_parts = 0;
+            m->num_parts = before;          /* roll back any added slices */
             return RDB_ERR_NO_SPACE;
         }
     }
     return RDB_OK;
+}
+
+int rdb_split_equal(RdbModel *m, int count, uint32_t dos_type)
+{
+    if (count < 1 || count > RDB_MAX_PARTS) return RDB_ERR_RANGE;
+    m->num_parts = 0;                        /* whole disk: clear, then fill */
+    return rdb_split_range(m, m->lo_cyl, m->hi_cyl, count, dos_type);
 }
 
 int rdb_add_partition(RdbModel *m, const char *name, uint32_t size_mb,

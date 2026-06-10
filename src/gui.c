@@ -834,7 +834,7 @@ static void gui_new(void)
     gui_update_buttons();
 }
 
-/* "N x ~<size> MB  (DH0-DH<N-1>)" preview for the Split dialog. */
+/* "N x ~<size> MB each" preview for the Split dialog. */
 static void gui_split_preview(char *o, int n, uint32_t span,
                               uint32_t cylBlocks, uint32_t blockBytes)
 {
@@ -844,31 +844,43 @@ static void gui_split_preview(char *o, int n, uint32_t span,
     p += u2s(o + p, (ULONG)n);
     s_cat(o, &p, " x ~");
     p += u2s(o + p, (ULONG)mb);
-    s_cat(o, &p, " MB  (DH0-DH");
-    p += u2s(o + p, (ULONG)(n > 0 ? n - 1 : 0));
-    o[p++] = ')'; o[p] = 0;
+    s_cat(o, &p, " MB each");
+    o[p] = 0;
 }
 
-/* Quick partitioning: split the whole disk into N equal partitions. */
+/* Quick partitioning: split the largest free gap into N equal partitions,
+   keeping existing ones (on a blank disk the gap is the whole disk). */
 static void gui_split(void)
 {
     struct Window *dw;
     struct Gadget *dglist = 0, *g, *gNum = 0, *gPrev = 0;
     struct NewGadget ng;
     int dt = g_topb, dl = g_leftb;
-    int done = 0, applied = 0, n = 4;
-    uint32_t cylBlocks, span, maxN;
+    int done = 0, applied = 0, n = 4, slots;
+    uint32_t cylBlocks, blockBytes, gs, ge, span, maxN;
     static char prevBuf[40];
 
     if (!g_geo.has_media || g_geo.cylinders == 0) {
         gui_msg("Split", "No media / geometry on this device."); return;
     }
-    cylBlocks = (uint32_t)g_geo.heads * (uint32_t)g_geo.sectors;
-    span = (g_geo.cylinders > RDB_RESERVED_CYLS) ? (g_geo.cylinders - RDB_RESERVED_CYLS) : 0;
-    if (span == 0) { gui_msg("Split", "Disk is too small to partition."); return; }
-    maxN = (span < RDB_MAX_PARTS) ? span : RDB_MAX_PARTS;
+    /* Free gap + geometry for the preview, without touching the model yet. */
+    if (g_have_model) {
+        if (!rdb_largest_free_gap(&g_model, &gs, &ge)) {
+            gui_msg("Split", "No free space on this disk."); return;
+        }
+        cylBlocks = g_model.cyl_blocks; blockBytes = g_model.block_bytes;
+        slots = RDB_MAX_PARTS - g_model.num_parts;
+    } else {                                   /* blank disk: whole partitionable range */
+        gs = RDB_RESERVED_CYLS; ge = g_geo.cylinders - 1;
+        cylBlocks = (uint32_t)g_geo.heads * (uint32_t)g_geo.sectors;
+        blockBytes = g_geo.block_bytes;
+        slots = RDB_MAX_PARTS;
+    }
+    span = (ge >= gs) ? (ge - gs + 1) : 0;
+    if (span == 0 || slots < 1) { gui_msg("Split", "No room to add partitions."); return; }
+    maxN = (span < (uint32_t)slots) ? span : (uint32_t)slots;
     if ((uint32_t)n > maxN) n = (int)maxN;
-    gui_split_preview(prevBuf, n, span, cylBlocks, g_geo.block_bytes);
+    gui_split_preview(prevBuf, n, span, cylBlocks, blockBytes);
 
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wincompatible-pointer-types"
@@ -927,7 +939,7 @@ static void gui_split(void)
                     if ((ULONG)v > maxN) v = (LONG)maxN;
                     GT_SetGadgetAttrs(gNum, dw, 0, GTIN_Number, (ULONG)v, TAG_END);
                     n = (int)v;
-                    gui_split_preview(prevBuf, n, span, cylBlocks, g_geo.block_bytes);
+                    gui_split_preview(prevBuf, n, span, cylBlocks, blockBytes);
                     GT_SetGadgetAttrs(gPrev, dw, 0, GTTX_Text, (ULONG)prevBuf, TAG_END);
                 } else if (ig->GadgetID == 10) {                /* Ok */
                     LONG v = ((struct StringInfo *)gNum->SpecialInfo)->LongInt;
@@ -942,18 +954,15 @@ static void gui_split(void)
     FreeGadgets(dglist);
     if (!applied) return;
 
-    /* Confirm before discarding an existing partition table. */
-    if (g_have_model && g_model.num_parts > 0) {
-        static char q[64]; int p = 0;
-        s_cat(q, &p, "Replace all partitions with "); p += u2s(q + p, (ULONG)n);
-        s_cat(q, &p, " equal slices?"); q[p] = 0;
-        if (!gui_confirm("Split", q)) return;
+    /* Additive: split the free gap, keeping existing partitions. On a blank disk,
+       create the empty table first (the gap is the whole partitionable range). */
+    if (!g_have_model) {
+        rdb_init_model(&g_model, g_geo.cylinders, g_geo.heads, g_geo.sectors);
+        g_have_model = 1;
     }
-
-    rdb_init_model(&g_model, g_geo.cylinders, g_geo.heads, g_geo.sectors);
-    if (rdb_split_equal(&g_model, n, RDB_DOSTYPE_FFS_INTL) != RDB_OK)
-        gui_msg("Split", "Could not split the disk.");
-    g_have_model = 1; g_dirty = 1; g_sel_part = -1;
+    if (rdb_split_range(&g_model, gs, ge, n, RDB_DOSTYPE_FFS_INTL) != RDB_OK)
+        gui_msg("Split", "Could not split the free space.");
+    g_dirty = 1; g_sel_part = -1;
     gui_refresh_parts();
     gui_update_buttons();
 }

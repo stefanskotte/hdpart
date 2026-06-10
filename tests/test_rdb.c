@@ -326,6 +326,31 @@ static void test_split_equal(void)
       CHECK(rdb_split_equal(&s, 4, RDB_DOSTYPE_FFS_INTL) != RDB_OK); }
 }
 
+/* rdb_split_range: append N equal slices into a free gap, auto-named (lowest
+   unused DH<n>), keeping existing partitions. */
+static void test_split_range(void)
+{
+    RdbModel m;
+    int i;
+
+    rdb_init_model(&m, 996, 16, 63);                 /* lo=2, hi=995 */
+    CHECK(rdb_add_partition_cyl(&m, "DH0", 2, 51, RDB_DOSTYPE_FFS_INTL) >= 0); /* boot */
+    CHECK(rdb_split_range(&m, 52, 995, 3, RDB_DOSTYPE_FFS_INTL) == RDB_OK);
+    CHECK(m.num_parts == 4);                          /* DH0 + 3 new */
+    CHECK(strcmp(m.parts[0].name, "DH0") == 0);
+    CHECK(strcmp(m.parts[1].name, "DH1") == 0);       /* auto-named, skips DH0 */
+    CHECK(strcmp(m.parts[3].name, "DH3") == 0);
+    CHECK(m.parts[1].low_cyl == 52);                  /* covers the gap exactly */
+    CHECK(m.parts[3].high_cyl == 995);
+    for (i = 2; i < 4; i++)
+        CHECK(m.parts[i].low_cyl == m.parts[i-1].high_cyl + 1);   /* contiguous */
+    CHECK(rdb_validate(&m) == RDB_OK);
+
+    CHECK(rdb_split_range(&m, 52, 995, 0, RDB_DOSTYPE_FFS_INTL) != RDB_OK);  /* count<1 */
+    { RdbModel s; rdb_init_model(&s, 996, 16, 63);
+      CHECK(rdb_split_range(&s, 2, 4, 4, RDB_DOSTYPE_FFS_INTL) != RDB_OK); } /* 4 > span 3 */
+}
+
 int main(int argc, char **argv)
 {
     if (argc >= 2 && strcmp(argv[1], "--emit") == 0) {
@@ -364,6 +389,7 @@ int main(int argc, char **argv)
     test_largest_free_gap();
     test_part_flags();
     test_split_equal();
+    test_split_range();
     if (g_fail) { printf("%d CHECK(s) FAILED\n", g_fail); return 1; }
     printf("ALL TESTS PASSED\n");
     return 0;
