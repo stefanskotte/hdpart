@@ -2,6 +2,7 @@
 #include <exec/types.h>
 #include <exec/lists.h>
 #include <exec/nodes.h>
+#include <exec/execbase.h>
 #include <intuition/intuition.h>
 #include <intuition/screens.h>
 #include <libraries/gadtools.h>
@@ -81,6 +82,25 @@ static int u2s(char *o, ULONG v)   /* write decimal, return length */
 static void s_cat(char *o, int *p, const char *s) { while (*s) o[(*p)++] = *s++; }
 static void s_pad(char *o, int *p, int col) { while (*p < col) o[(*p)++] = ' '; }
 
+/* Render a DosType to a short label: "DOS\3" / "PFS\3" / "SFS\0" when bytes 0-2
+   are printable, else "0x........". out needs >= 12 bytes. */
+static void dostype_label(char *out, uint32_t t)
+{
+    static const char hx[] = "0123456789ABCDEF";
+    unsigned char b0 = (unsigned char)(t >> 24), b1 = (unsigned char)(t >> 16),
+                  b2 = (unsigned char)(t >> 8),  b3 = (unsigned char)t;
+    int p = 0;
+    if (b0 >= 0x20 && b0 < 0x7F && b1 >= 0x20 && b1 < 0x7F && b2 >= 0x20 && b2 < 0x7F) {
+        out[p++] = (char)b0; out[p++] = (char)b1; out[p++] = (char)b2; out[p++] = '\\';
+        if (b3 < 10) out[p++] = (char)('0' + b3);
+        else { out[p++] = hx[(b3 >> 4) & 0xF]; out[p++] = hx[b3 & 0xF]; }
+    } else {
+        int i; out[p++] = '0'; out[p++] = 'x';
+        for (i = 0; i < 8; i++) out[p++] = hx[(t >> ((7 - i) * 4)) & 0xF];
+    }
+    out[p] = 0;
+}
+
 /* Forward decls. */
 static void gui_load_driver(void);
 static void gui_split(void);                  /* quick split-into-N-equal dialog */
@@ -145,7 +165,8 @@ static void gui_refresh_parts(void)
             p += u2s(row + p, (ULONG)(i + 1));         s_pad(row, &p, 6);
             for (k = 0; pt->name[k] && k < 11; k++) row[p++] = pt->name[k];
             s_pad(row, &p, 18);
-            s_cat(row, &p, "FFS");                     s_pad(row, &p, 24);
+            { char tb[12]; dostype_label(tb, pt->dos_type); s_cat(row, &p, tb); }
+            s_pad(row, &p, 24);
             p += u2s(row + p, pt->low_cyl);            s_pad(row, &p, 32);
             p += u2s(row + p, pt->high_cyl);           s_pad(row, &p, 40);
             { ULONG cyls = pt->high_cyl - pt->low_cyl + 1;
@@ -429,9 +450,6 @@ static void gui_delete(void)
     gui_update_buttons();
 }
 
-/* Filesystem cycle choices (phase 1: FFS Intl only; dos types parallel). */
-static const char *const kFsLabels[] = { "FFS Intl (DOS\\3)", 0 };
-static const uint32_t     kFsTypes[]  = { RDB_DOSTYPE_FFS_INTL };
 
 /* Write "0x" + 8 uppercase hex digits of v to o[<=11]; returns the length. */
 static int u32_to_hex(char *o, uint32_t v)
@@ -519,12 +537,16 @@ static int gui_edit_dialog(int index)
     struct Gadget *dglist = 0, *g;
     struct Gadget *gName = 0, *gSize = 0, *gBoot = 0, *gPri = 0, *gMaxT = 0, *gMask = 0;
     struct Gadget *gMaxTCyc = 0, *gMaskCyc = 0, *gMaxTHelp = 0, *gMaskHelp = 0;
+    struct Gadget *gFsCyc = 0, *gIntl = 0, *gCache = 0;
     struct NewGadget ng;
     RdbPartition *pt = &g_model.parts[index];
     static char nameBuf[32];
     static char sizeMaxLabel[24];
     static char maxtBuf[12], maskBuf[12];
+    static const char *fsLabels[4];
+    static char fsKeep[12];
     int maxtIdx, maskIdx;
+    int fsRom, fsActive, fsIdx, fsKeepIdx, v39;
     uint32_t startCyl = pt->low_cyl;
     uint32_t maxEndExclusive;   /* first cylinder not available to this part */
     uint32_t maxCyls, maxMB, curMB;
@@ -554,6 +576,20 @@ static int gui_edit_dialog(int index)
     maxtIdx = preset_index(kMaxTValues, N_MAXT, pt->maxtransfer);
     maskIdx = preset_index(kMaskValues, N_MASK, pt->mask);
 
+    /* Filesystem: ROM DOS\x decodes to FFS/OFS + Intl + DirCache bits; anything
+       else (PFS3/SFS/custom) gets a read-only 'keep' entry that preserves it.
+       DirCache is KS3.0+ (exec V39). */
+    v39   = (SysBase->LibNode.lib_Version >= 39);
+    fsRom = ((pt->dos_type & 0xFFFFFF00u) == 0x444F5300u) && ((pt->dos_type & 0xFFu) <= 7);
+    { int n = 0;
+      fsLabels[n++] = "FFS";
+      fsLabels[n++] = "OFS";
+      if (!fsRom) { dostype_label(fsKeep, pt->dos_type); fsKeepIdx = n; fsLabels[n++] = fsKeep; }
+      else fsKeepIdx = -1;
+      fsLabels[n] = 0; }
+    fsActive = !fsRom ? fsKeepIdx : ((pt->dos_type & 1u) ? 0 : 1);   /* FFS=0, OFS=1 */
+    fsIdx    = fsActive;
+
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wincompatible-pointer-types"
     g = CreateContext(&dglist);
@@ -579,9 +615,25 @@ static int gui_edit_dialog(int index)
     ng.ng_LeftEdge = dl + 200; ng.ng_Width = 110; ng.ng_GadgetText = 0; ng.ng_GadgetID = 0;
     g = CreateGadget(TEXT_KIND, g, &ng, GTTX_Text, (ULONG)sizeMaxLabel, TAG_END);
 
-    ng.ng_LeftEdge = dl + 110; ng.ng_TopEdge = dt + 48; ng.ng_Width = 180; ng.ng_Height = 14;
+    /* FS row: FFS/OFS (+ 'keep') cycle, plus Intl and DirCache checkboxes. */
+    ng.ng_LeftEdge = dl + 110; ng.ng_TopEdge = dt + 48; ng.ng_Width = 80; ng.ng_Height = 14;
     ng.ng_GadgetText = (UBYTE *)"FS"; ng.ng_GadgetID = 4;
-    g = CreateGadget(CYCLE_KIND, g, &ng, GTCY_Labels, (ULONG)kFsLabels, GTCY_Active, 0, TAG_END);
+    g = CreateGadget(CYCLE_KIND, g, &ng, GTCY_Labels, (ULONG)fsLabels, GTCY_Active, (ULONG)fsActive, TAG_END);
+    gFsCyc = g;
+
+    ng.ng_LeftEdge = dl + 236; ng.ng_TopEdge = dt + 48; ng.ng_Width = 26; ng.ng_Height = 11;
+    ng.ng_GadgetText = (UBYTE *)"Intl"; ng.ng_GadgetID = 14;
+    g = CreateGadget(CHECKBOX_KIND, g, &ng,
+                     GTCB_Checked, (ULONG)((fsRom && (pt->dos_type & 2u)) ? TRUE : FALSE),
+                     GA_Disabled,  (ULONG)(!fsRom), TAG_END);
+    gIntl = g;
+
+    ng.ng_LeftEdge = dl + 320; ng.ng_TopEdge = dt + 48; ng.ng_Width = 26; ng.ng_Height = 11;
+    ng.ng_GadgetText = (UBYTE *)"Cache"; ng.ng_GadgetID = 15;
+    g = CreateGadget(CHECKBOX_KIND, g, &ng,
+                     GTCB_Checked, (ULONG)((fsRom && v39 && (pt->dos_type & 4u)) ? TRUE : FALSE),
+                     GA_Disabled,  (ULONG)(!fsRom || !v39), TAG_END);
+    gCache = g;
 
     /* Bootable (checkbox) + Boot Pri (integer) share a row. */
     ng.ng_LeftEdge = dl + 110; ng.ng_TopEdge = dt + 70; ng.ng_Width = 26; ng.ng_Height = 11;
@@ -661,6 +713,11 @@ static int gui_edit_dialog(int index)
                     preset_apply(dw, gMaxT, gMaxTHelp, (int)code, kMaxTValues, N_MAXT, kMaxTHelp);
                 } else if (ig == gMaskCyc) {
                     preset_apply(dw, gMask, gMaskHelp, (int)code, kMaskValues, N_MASK, kMaskHelp);
+                } else if (ig == gFsCyc) {
+                    int keep = (fsKeepIdx >= 0 && (int)code == fsKeepIdx);
+                    fsIdx = (int)code;
+                    GT_SetGadgetAttrs(gIntl,  dw, 0, GA_Disabled, (ULONG)keep, TAG_END);
+                    GT_SetGadgetAttrs(gCache, dw, 0, GA_Disabled, (ULONG)(keep || !v39), TAG_END);
                 } else if (ig == gSize) {
                     /* clamp the typed size to [1, maxMB] */
                     LONG v = ((struct StringInfo *)gSize->SpecialInfo)->LongInt;
@@ -677,6 +734,17 @@ static int gui_edit_dialog(int index)
                     if (!parse_hex32(mt, &mtv) || !parse_hex32(mk, &mkv)) {
                         gui_msg("Edit", "MaxTransfer / Mask must be hex (e.g. 0x7FFFFFFE).");
                     } else {
+                        /* Compute the DosType from the FS controls (keep entry
+                           preserves a non-ROM type). */
+                        uint32_t fdt;
+                        if (fsKeepIdx >= 0 && fsIdx == fsKeepIdx) {
+                            fdt = pt->dos_type;
+                        } else {
+                            fdt = 0x444F5300u;
+                            if (fsIdx == 0)                            fdt |= 1u;  /* FFS */
+                            if (gIntl->Flags & GFLG_SELECTED)          fdt |= 2u;  /* Intl */
+                            if (v39 && (gCache->Flags & GFLG_SELECTED)) fdt |= 4u; /* DirCache */
+                        }
                         if (mb < 1) mb = 1;
                         if ((ULONG)mb > maxMB) mb = (LONG)maxMB;
                         /* If the MB field is unchanged from what the dialog opened
@@ -684,9 +752,9 @@ static int gui_edit_dialog(int index)
                            partition isn't silently shrunk by MB re-rounding); only
                            resize when the user actually changed the size. */
                         if ((uint32_t)mb == curMB)
-                            r = rdb_rename_partition(&g_model, index, nm, kFsTypes[0]);
+                            r = rdb_rename_partition(&g_model, index, nm, fdt);
                         else
-                            r = rdb_set_partition(&g_model, index, nm, (uint32_t)mb, kFsTypes[0]);
+                            r = rdb_set_partition(&g_model, index, nm, (uint32_t)mb, fdt);
                         if (r == RDB_OK) {
                             /* Apply the flag fields directly (resize/rename keep
                                them; they don't affect geometry/validation). */
