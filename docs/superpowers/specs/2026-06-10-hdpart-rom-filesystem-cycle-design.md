@@ -1,95 +1,105 @@
 # HDPart — ROM filesystem selection in the editor (design)
 
-**Date:** 2026-06-10
+**Date:** 2026-06-10 (rev 2)
 **Status:** Approved (brainstorming)
-**Scope:** "A" only — the in-ROM (Kickstart) FastFileSystem family, version-gated.
-Loading a third-party filesystem from disk and embedding it in the RDB
-(FSHD/LSEG) is **deferred** ("B"); see [[hdpart-filesystem-types]].
+**Scope:** "A" only — the in-ROM (Kickstart) FastFileSystem, chosen as OFS/FFS plus
+the International and Directory-Cache flags. Loading a third-party filesystem from
+disk and embedding it in the RDB (FSHD/LSEG) is **deferred** ("B"); see
+[[hdpart-filesystem-types]].
 
 ## Problem
 
-The Edit/Add dialog's `FS` cycle has a single option (`FFS Intl (DOS\3)`), and
-the Ok handler **hardcodes** `kFsTypes[0]` — so the dropdown does nothing even if
-it had more entries. Users want to choose among the filesystems the running
-Kickstart actually supports.
+The Edit/Add dialog's `FS` cycle has a single option (`FFS Intl (DOS\3)`), and the
+Ok handler **hardcodes** `kFsTypes[0]` — so the dropdown does nothing. Users want
+to choose the ROM filesystem the way HDToolBox does: OFS vs FFS, with
+International and Directory-Cache as independent toggles.
 
-## Background (DosTypes & Kickstart gating)
+## Background — DosType encoding (corrected)
 
-A partition's filesystem is its RDB `de_DosType` (already stored/written/read by
-`src/rdb.c`). The Kickstart ROM FastFileSystem handles the `DOS\x` family; which
-members it knows depends on the exec version:
+A partition's filesystem is its RDB `de_DosType` (`'D','O','S', flags`). The low
+byte is a **bitmask**, not a sequence:
 
-| Label | DosType | Available |
-|-------|---------|-----------|
-| OFS | `0x444F5300` (`DOS\0`) | KS2.0+ |
-| FFS | `0x444F5301` (`DOS\1`) | KS2.0+ |
-| OFS Intl | `0x444F5302` (`DOS\2`) | KS2.0+ |
-| FFS Intl | `0x444F5303` (`DOS\3`) | KS2.0+ (default) |
-| OFS Intl+DC | `0x444F5304` (`DOS\4`) | **KS3.0+ (exec V39)** |
-| FFS Intl+DC | `0x444F5305` (`DOS\5`) | **KS3.0+ (exec V39)** |
+- **bit 0** — FFS (1) vs OFS (0)
+- **bit 1** — International mode
+- **bit 2** — Directory Cache mode
 
-HDPart's V37 baseline guarantees DOS\0–\3; DirCache (\4,\5) is gated on
-`SysBase->LibNode.lib_Version >= 39`. All ROM filesystems run on a 68000, so **no
-CPU gating is needed** for this scope (the 68020 gate is a B/SFS concern).
+So `DOS\0`=OFS, `\1`=FFS, `\2`=OFS+Intl, `\3`=FFS+Intl, `\4`=OFS+DC, `\5`=FFS+DC,
+`\6`=OFS+Intl+DC, `\7`=FFS+Intl+DC. (An earlier rev of this spec wrongly treated
+`\4/\5` as the Intl+DC combos.)
+
+Availability by Kickstart (exec version):
+- OFS/FFS and **International** — KS2.0+ (our V37 baseline always has them).
+- **Directory Cache** — **KS3.0+ (exec V39)**; gate the DirCache toggle on
+  `SysBase->LibNode.lib_Version >= 39`. All ROM filesystems run on a 68000, so no
+  CPU gating is needed here (that's a B/SFS concern).
 
 ## Design (all in `gui_edit_dialog`, `src/gui.c`)
 
-### 1. Build the FS list at dialog open
+### Controls (on the existing FS row, y48 — no new row)
 
-Replace the static `kFsLabels`/`kFsTypes` (single FFS-Intl entry) with arrays
-built per dialog, into file-static storage sized for the max (6 ROM + 1 "keep"):
+Replace the single FS cycle with three gadgets sharing the row:
+1. **FS base cycle** — `FFS` / `OFS`, plus a trailing **`keep`** entry that
+   appears *only* when the partition's current `dos_type` is not a ROM DOS type
+   (its label is the rendered DosType, e.g. `PFS\3`). ~x110 w80.
+2. **`Intl` checkbox** (International, bit 1). ~box x236.
+3. **`Cache` checkbox** (Directory Cache, bit 2). ~box x320. Created **disabled
+   when `lib_Version < 39`** (and never contributes a set bit on <V39).
 
-```c
-static const char *fsLabels[8];   /* NULL-terminated, for GTCY_Labels */
-static uint32_t    fsTypes[8];
-static char        fsKeepLabel[20];
+The dialog stays 350 wide; short labels (`FS`, `Intl`, `Cache`) keep the row
+within bounds.
+
+### Initial state (decode the partition's DosType)
+
+- If `dos_type` is a ROM `DOS\x` (`(dos_type & 0xFFFFFF00) == 0x444F5300` and the
+  low byte ≤ 7): FS cycle = FFS/OFS from bit 0; `Intl` checked from bit 1; `Cache`
+  checked from bit 2 (and only if V39+). No `keep` entry.
+- Else (non-ROM, e.g. PFS3/SFS/custom): the FS cycle gains a `keep` entry (label =
+  rendered DosType) and selects it; both checkboxes are **disabled** (they don't
+  apply). The original `dos_type` is retained verbatim.
+
+### Interaction
+
+- FS cycle GADGETUP: if it moved to/from `keep`, enable/disable the two checkboxes
+  accordingly (Cache stays disabled on <V39 regardless).
+- Checkboxes toggle freely (GadTools handles their visual state; we read
+  `GFLG_SELECTED` on Ok).
+
+### Compute on Ok
+
+Replace the hardcoded `kFsTypes[0]` with a computed DosType:
+
+```
+if (FS cycle == keep)  dt = pt->dos_type;            /* preserve */
+else {
+    dt = 0x444F5300u;
+    if (fsCyc == FFS)              dt |= 1u;
+    if (gIntl->Flags & GFLG_SELECTED)  dt |= 2u;
+    if ((lib_Version >= 39) && (gCache->Flags & GFLG_SELECTED)) dt |= 4u;
+}
 ```
 
-Build order:
-1. If `pt->dos_type` is **not** one of the ROM DosTypes below, entry 0 is a
-   "keep" entry: label = friendly render of the type + `" (keep)"`, value =
-   `pt->dos_type`. (Render: bytes 0–2 if all printable ASCII, then `\`, then the
-   low byte as a decimal digit if < 10 else two hex digits — e.g. `PFS\3`,
-   `SFS\0`; otherwise `0x%08X`.)
-2. ROM entries in this order: `FFS Intl (DOS\3)`, `OFS Intl (DOS\2)`,
-   `FFS (DOS\1)`, `OFS (DOS\0)`.
-3. If `lib_Version >= 39`: append `FFS Intl+DC (DOS\5)`, `OFS Intl+DC (DOS\4)`.
-4. NULL-terminate `fsLabels`.
+Pass `dt` to `rdb_rename_partition` / `rdb_set_partition` (today both use
+`kFsTypes[0]`). This also fixes the latent bug where the FS choice was ignored.
 
-`fsActive` (initial cycle index) = index whose `fsTypes[i] == pt->dos_type`
-(the ROM match, or the index-0 keep entry). A freshly-created partition (default
-`RDB_DOSTYPE_FFS_INTL`) lands on the `FFS Intl` entry.
+### Helper
 
-The FS cycle gadget is created with `GTCY_Labels=(ULONG)fsLabels`,
-`GTCY_Active=(ULONG)fsActive`, and its pointer is saved (currently it is not).
+`dostype_label(char *out, uint32_t t)` — render a DosType to a human string: bytes
+0–2 if printable ASCII then `\` then the low byte as a decimal digit (`PFS\3`,
+`SFS\0`); otherwise `0x%08X`. GUI-local; verified on-target.
 
-### 2. Track and honor the selection
+### No engine / layout-growth / test change
 
-- Save the FS cycle gadget pointer (`gFsCyc`) and a running `int fsIdx = fsActive;`.
-- In the event loop, on `ig == gFsCyc` GADGETUP: `fsIdx = (int)code;`.
-- In the **Ok** handler, replace both `kFsTypes[0]` uses with `fsTypes[fsIdx]`,
-  passed to `rdb_rename_partition` / `rdb_set_partition`. (Fixes the latent bug
-  where the FS choice was ignored.)
-
-### 3. Helpers
-
-- A small `dostype_label(char *out, uint32_t t)` that renders a DosType to a
-  human string (printable `Xxx\d` form, else `0x%08X`). Pure, could be unit-tested
-  but is GUI-local; verified on-target.
-- KS-version check inline: `SysBase->LibNode.lib_Version >= 39`.
-
-### Layout / engine / tests
-
-No change to dialog geometry (the cycle keeps its `x110 w180 y48` slot; labels
-fit). No `rdb.c`/`rdb.h` change — `de_DosType` round-trips already. No host-test
-change (the FS list is GUI-only); `gui_new` still defaults to `RDB_DOSTYPE_FFS_INTL`.
+`de_DosType` round-trips already in `src/rdb.c`; `gui_new` still seeds
+`RDB_DOSTYPE_FFS_INTL` (which decodes to FFS + Intl on open). The partition-list
+`Type` column still shows `FFS`/`OFS`… (it currently prints a fixed `"FFS"`; out of
+scope to change here, but noted).
 
 ## Risks / notes
 
 | Risk | Handling |
 |------|----------|
-| FS choice silently ignored today | Fixed: Ok now uses the selected `fsTypes[fsIdx]`. |
-| Editing a PFS3/SFS partition would overwrite its type | "keep" entry preserves it; selected by default. |
-| DirCache (\4,\5) is deprecated/buggy | Offered only on KS3.0+, where it is the OS's own option; user's choice. |
-| Label width | Longest `FFS Intl+DC (DOS\5)` (~19 chars) fits the 180px cycle. |
-| `kFsLabels`/`kFsTypes` removed | Replace usages (FS cycle create + Ok handler); `gui_new` uses `RDB_DOSTYPE_FFS_INTL` directly, unaffected. |
+| FS choice silently ignored today | Fixed: Ok computes the DosType from the controls. |
+| Editing a PFS3/SFS partition would overwrite its type | `keep` entry preserves it; checkboxes disabled. |
+| DirCache deprecated/buggy & KS3.0-only | `Cache` checkbox disabled on <V39; on 3.0+ it is the OS's own option. |
+| Crowded FS row | Short labels (`FS`/`Intl`/`Cache`); fits the 350-wide dialog. |
+| `kFsLabels`/`kFsTypes` removed | FS-cycle create + Ok handler updated; `gui_new` uses `RDB_DOSTYPE_FFS_INTL` directly. |
