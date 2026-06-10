@@ -83,16 +83,24 @@ Pass `dt` to `rdb_rename_partition` / `rdb_set_partition` (today both use
 
 ### Helper
 
-`dostype_label(char *out, uint32_t t)` — render a DosType to a human string: bytes
-0–2 if printable ASCII then `\` then the low byte as a decimal digit (`PFS\3`,
-`SFS\0`); otherwise `0x%08X`. GUI-local; verified on-target.
+`dostype_label(char *out, uint32_t t)` — render a DosType to a short human string:
+bytes 0–2 if printable ASCII then `\` then the low byte as a decimal digit
+(`DOS\3`, `DOS\7`, `PFS\3`, `SFS\0`); otherwise `0x%08X`. Defined early (near the
+`u2s`/`s_cat` helpers) so both the editor and the partition list can use it.
+
+### Partition-list Type column (folded in)
+
+`gui_refresh_parts` currently prints a fixed `"FFS"` for every partition's `Type`.
+Replace it with `dostype_label(pt->dos_type)` so the column reflects the real
+filesystem — `DOS\3` (FFS Intl), `DOS\1` (FFS), `DOS\0` (OFS), `DOS\7` (FFS Intl
+DC), `PFS\3`, `SFS\0`, … The Type column is 6 chars wide, which fits the 5-char
+`XXX\d` form (the rare non-printable hex fallback may overflow into the next
+column; acceptable). No column-layout change.
 
 ### No engine / layout-growth / test change
 
 `de_DosType` round-trips already in `src/rdb.c`; `gui_new` still seeds
-`RDB_DOSTYPE_FFS_INTL` (which decodes to FFS + Intl on open). The partition-list
-`Type` column still shows `FFS`/`OFS`… (it currently prints a fixed `"FFS"`; out of
-scope to change here, but noted).
+`RDB_DOSTYPE_FFS_INTL` (decodes to FFS + Intl on open).
 
 ## Risks / notes
 
