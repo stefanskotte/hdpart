@@ -965,8 +965,6 @@ static void gui_load_driver(void)
     fr = (struct FileRequester *)AllocAslRequestTags(ASL_FileRequest,
             ASLFR_TitleText,     (ULONG)"Select a device driver",
             ASLFR_InitialDrawer, (ULONG)"DEVS:",
-            ASLFR_DoPatterns,    TRUE,
-            ASLFR_InitialPattern,(ULONG)"#?.device",
             ASLFR_Screen,        (ULONG)g_scr,   /* open on OUR screen, not WB */
             TAG_END);
     if (!fr) { gui_msg("Driver", "Could not open the file requester."); return; }
