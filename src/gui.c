@@ -243,14 +243,15 @@ static struct Gadget *build_gadgets(void)
 
     /* Ghosted action buttons (enabled in Plan 3b) */
     {
-        static const struct { int id; const char *txt; int x; } btn[] = {
-            { GID_NEW, "New", 10 }, { GID_DELETE, "Delete", 70 }, { GID_EDIT, "Edit", 150 },
-            { GID_SPLIT, "Split...", 214 }, { GID_INIT, "Init Disk", 280 }, { GID_SAVE, "Save", 390 }
+        static const struct { int id; const char *txt; int x; int w; } btn[] = {
+            { GID_NEW,    "New",        8, 52 }, { GID_DELETE, "Delete",   64, 58 },
+            { GID_EDIT,   "Edit",      126, 46 }, { GID_SPLIT,  "Split...",176, 72 },
+            { GID_INIT,   "Init Disk", 252, 90 }, { GID_SAVE,   "Save",    388, 62 }
         };
         int k;
         for (k = 0; k < 6; k++) {
             ng.ng_LeftEdge = btn[k].x + g_leftb; ng.ng_TopEdge = 186 + g_topb;
-            ng.ng_Width = (btn[k].id == GID_INIT) ? 90 : 60; ng.ng_Height = 14;
+            ng.ng_Width = btn[k].w; ng.ng_Height = 14;
             ng.ng_GadgetText = (UBYTE *)btn[k].txt; ng.ng_GadgetID = btn[k].id;
             g = CreateGadget(BUTTON_KIND, g, &ng, GA_Disabled, TRUE, TAG_END);
             g_gad[btn[k].id] = g;
@@ -793,7 +794,7 @@ static void gui_split(void)
     if (!g) return;
     ng.ng_TextAttr = &g_font; ng.ng_VisualInfo = g_vi; ng.ng_Flags = 0;
 
-    ng.ng_LeftEdge = dl + 100; ng.ng_TopEdge = dt + 6; ng.ng_Width = 50; ng.ng_Height = 14;
+    ng.ng_LeftEdge = dl + 100; ng.ng_TopEdge = dt + 6; ng.ng_Width = 60; ng.ng_Height = 14;
     ng.ng_GadgetText = (UBYTE *)"Partitions"; ng.ng_GadgetID = 1;
     g = CreateGadget(INTEGER_KIND, g, &ng, GTIN_Number, (ULONG)n, GTIN_MaxChars, 4, TAG_END);
     gNum = g;
@@ -825,6 +826,7 @@ static void gui_split(void)
     }
     if (!dw) { FreeGadgets(dglist); return; }
     GT_RefreshWindow(dw, 0);
+    ActivateGadget(gNum, dw, 0);   /* make the count field ready to type into */
 
     while (!done) {
         struct IntuiMessage *im;
