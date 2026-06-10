@@ -101,6 +101,21 @@ static void dostype_label(char *out, uint32_t t)
     out[p] = 0;
 }
 
+/* Friendly filesystem label for the list's Type column: "FFS"/"OFS" plus " Intl"
+   and " DC" for a ROM DOS type, else the raw DosType. out needs >= 16 bytes. */
+static void fstype_label(char *out, uint32_t t)
+{
+    if ((t & 0xFFFFFF00u) == 0x444F5300u && (t & 0xFFu) <= 7) {
+        int p = 0;
+        s_cat(out, &p, (t & 1u) ? "FFS" : "OFS");
+        if (t & 2u) s_cat(out, &p, " Intl");
+        if (t & 4u) s_cat(out, &p, " DC");
+        out[p] = 0;
+    } else {
+        dostype_label(out, t);
+    }
+}
+
 /* Forward decls. */
 static void gui_load_driver(void);
 static void gui_split(void);                  /* quick split-into-N-equal dialog */
@@ -159,16 +174,16 @@ static void gui_refresh_parts(void)
                in the list on every OS version — GadTools GTLV_Selected highlight
                is V39+ only, a no-op on the V37 baseline. Fixed char columns so
                the heading (gui_draw_partheader) lines up:
-               mark@0 #@2 Name@6 Type@18 Start@24 End@32 Size@40. */
+               mark@0 #@2 Name@6 Type@18 Start@30 End@38 Size@46. */
             row[p++] = (i == g_sel_part) ? '>' : ' ';
             row[p++] = ' ';
             p += u2s(row + p, (ULONG)(i + 1));         s_pad(row, &p, 6);
             for (k = 0; pt->name[k] && k < 11; k++) row[p++] = pt->name[k];
             s_pad(row, &p, 18);
-            { char tb[12]; dostype_label(tb, pt->dos_type); s_cat(row, &p, tb); }
-            s_pad(row, &p, 24);
-            p += u2s(row + p, pt->low_cyl);            s_pad(row, &p, 32);
-            p += u2s(row + p, pt->high_cyl);           s_pad(row, &p, 40);
+            { char tb[16]; fstype_label(tb, pt->dos_type); s_cat(row, &p, tb); }
+            s_pad(row, &p, 30);
+            p += u2s(row + p, pt->low_cyl);            s_pad(row, &p, 38);
+            p += u2s(row + p, pt->high_cyl);           s_pad(row, &p, 46);
             { ULONG cyls = pt->high_cyl - pt->low_cyl + 1;
               ULONG mb = disc_blocks_to_mb(cyls * g_model.cyl_blocks, g_model.block_bytes);
               p += u2s(row + p, mb); s_cat(row, &p, "MB"); }
@@ -1349,16 +1364,16 @@ void gui_draw_bar(void)
 static void gui_draw_partheader(void)
 {
     struct RastPort *rp;
-    static char hdr[48];
+    static char hdr[56];
     int p = 0, lx, ly;
     if (!g_win) return;
     rp = g_win->RPort;
     s_pad(hdr, &p, 2);                            /* blank selection-marker column */
     s_cat(hdr, &p, "#");     s_pad(hdr, &p, 6);
     s_cat(hdr, &p, "Name");  s_pad(hdr, &p, 18);
-    s_cat(hdr, &p, "Type");  s_pad(hdr, &p, 24);
-    s_cat(hdr, &p, "Start"); s_pad(hdr, &p, 32);
-    s_cat(hdr, &p, "End");   s_pad(hdr, &p, 40);
+    s_cat(hdr, &p, "Type");  s_pad(hdr, &p, 30);
+    s_cat(hdr, &p, "Start"); s_pad(hdr, &p, 38);
+    s_cat(hdr, &p, "End");   s_pad(hdr, &p, 46);
     s_cat(hdr, &p, "Size");  hdr[p] = 0;
     lx = 10 + g_leftb + 4;               /* match the listview's text inset */
     ly = 74 + g_topb - 2;                /* baseline just above the listview */
