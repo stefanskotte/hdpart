@@ -98,6 +98,14 @@ int rdb_add_partition_cyl(RdbModel *m, const char *name, uint32_t start_cyl,
    re-round it). Returns RDB_OK or a negative RDB_ERR_*. */
 int rdb_rename_partition(RdbModel *m, int index, const char *name, uint32_t dos_type);
 
+/* Replace the whole partition table with `count` equal cylinder-slices spanning
+   the partitionable range (lo_cyl..hi_cyl), named DH0..DH(count-1); the last
+   slice absorbs any remainder cylinders so the disk is covered exactly. The
+   model's geometry must already be set (rdb_init_model). Returns RDB_OK, or
+   RDB_ERR_RANGE (count<1 or >RDB_MAX_PARTS) / RDB_ERR_NO_SPACE (fewer cylinders
+   than partitions). */
+int rdb_split_equal(RdbModel *m, int count, uint32_t dos_type);
+
 /* Remove partition by index, shifting the rest down. */
 int rdb_delete_partition(RdbModel *m, int index);
 /* Validate all partitions: bounds within [lo_cyl,hi_cyl], no overlaps,

@@ -29,7 +29,7 @@ extern struct DosLibrary *DOSBase;   /* opened in startup.c (for AddPart) */
 
 /* Gadget IDs */
 enum { GID_DEVICE = 1, GID_SCAN, GID_DRIVER, GID_PARTS, GID_NEW, GID_DELETE,
-       GID_EDIT, GID_INIT, GID_SAVE, GID_STATUS, GID_UNIT };
+       GID_EDIT, GID_INIT, GID_SAVE, GID_STATUS, GID_UNIT, GID_SPLIT };
 /* GID_DEVICE is the Driver cycle; GID_UNIT is the Unit cycle. */
 
 /* Module state for one GUI session. */
@@ -83,6 +83,7 @@ static void s_pad(char *o, int *p, int col) { while (*p < col) o[(*p)++] = ' '; 
 
 /* Forward decls. */
 static void gui_load_driver(void);
+static void gui_split(void);                  /* quick split-into-N-equal dialog */
 static void gui_init_picker(void);            /* no-probe startup picker */
 static void gui_select_driver(int drvIdx);    /* Driver cycle: pick a scan target (resets) */
 static void gui_select_unit(int unitIdx);     /* Unit cycle: show that disk's partitions */
@@ -117,6 +118,7 @@ static void gui_update_buttons(void)
     GT_SetGadgetAttrs(g_gad[GID_SAVE],   g_win, 0, GA_Disabled, (ULONG)!(hasModel && g_dirty), TAG_END);
     GT_SetGadgetAttrs(g_gad[GID_NEW],    g_win, 0, GA_Disabled, (ULONG)!hasModel, TAG_END);
     GT_SetGadgetAttrs(g_gad[GID_INIT],   g_win, 0, GA_Disabled, (ULONG)!hasGeo,   TAG_END);
+    GT_SetGadgetAttrs(g_gad[GID_SPLIT],  g_win, 0, GA_Disabled, (ULONG)!hasGeo,   TAG_END);
     GT_SetGadgetAttrs(g_gad[GID_DELETE], g_win, 0, GA_Disabled, (ULONG)!hasSel,   TAG_END);
     GT_SetGadgetAttrs(g_gad[GID_EDIT],   g_win, 0, GA_Disabled, (ULONG)!hasSel,   TAG_END);
     GT_SetGadgetAttrs(g_gad[GID_SCAN],   g_win, 0, GA_Disabled, (ULONG)(g_target_driver[0] == 0), TAG_END);
@@ -243,10 +245,10 @@ static struct Gadget *build_gadgets(void)
     {
         static const struct { int id; const char *txt; int x; } btn[] = {
             { GID_NEW, "New", 10 }, { GID_DELETE, "Delete", 70 }, { GID_EDIT, "Edit", 150 },
-            { GID_INIT, "Init Disk", 280 }, { GID_SAVE, "Save", 390 }
+            { GID_SPLIT, "Split...", 214 }, { GID_INIT, "Init Disk", 280 }, { GID_SAVE, "Save", 390 }
         };
         int k;
-        for (k = 0; k < 5; k++) {
+        for (k = 0; k < 6; k++) {
             ng.ng_LeftEdge = btn[k].x + g_leftb; ng.ng_TopEdge = 186 + g_topb;
             ng.ng_Width = (btn[k].id == GID_INIT) ? 90 : 60; ng.ng_Height = 14;
             ng.ng_GadgetText = (UBYTE *)btn[k].txt; ng.ng_GadgetID = btn[k].id;
@@ -748,6 +750,129 @@ static void gui_new(void)
     gui_update_buttons();
 }
 
+/* "N x ~<size> MB  (DH0-DH<N-1>)" preview for the Split dialog. */
+static void gui_split_preview(char *o, int n, uint32_t span,
+                              uint32_t cylBlocks, uint32_t blockBytes)
+{
+    int p = 0;
+    uint32_t perCyls = (n > 0) ? span / (uint32_t)n : 0;
+    uint32_t mb = rdb_cyls_to_mb(perCyls, cylBlocks, blockBytes);
+    p += u2s(o + p, (ULONG)n);
+    s_cat(o, &p, " x ~");
+    p += u2s(o + p, (ULONG)mb);
+    s_cat(o, &p, " MB  (DH0-DH");
+    p += u2s(o + p, (ULONG)(n > 0 ? n - 1 : 0));
+    o[p++] = ')'; o[p] = 0;
+}
+
+/* Quick partitioning: split the whole disk into N equal partitions. */
+static void gui_split(void)
+{
+    struct Window *dw;
+    struct Gadget *dglist = 0, *g, *gNum = 0, *gPrev = 0;
+    struct NewGadget ng;
+    int dt = g_topb, dl = g_leftb;
+    int done = 0, applied = 0, n = 4;
+    uint32_t cylBlocks, span, maxN;
+    static char prevBuf[40];
+
+    if (!g_geo.has_media || g_geo.cylinders == 0) {
+        gui_msg("Split", "No media / geometry on this device."); return;
+    }
+    cylBlocks = (uint32_t)g_geo.heads * (uint32_t)g_geo.sectors;
+    span = (g_geo.cylinders > RDB_RESERVED_CYLS) ? (g_geo.cylinders - RDB_RESERVED_CYLS) : 0;
+    if (span == 0) { gui_msg("Split", "Disk is too small to partition."); return; }
+    maxN = (span < RDB_MAX_PARTS) ? span : RDB_MAX_PARTS;
+    if ((uint32_t)n > maxN) n = (int)maxN;
+    gui_split_preview(prevBuf, n, span, cylBlocks, g_geo.block_bytes);
+
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wincompatible-pointer-types"
+    g = CreateContext(&dglist);
+#pragma GCC diagnostic pop
+    if (!g) return;
+    ng.ng_TextAttr = &g_font; ng.ng_VisualInfo = g_vi; ng.ng_Flags = 0;
+
+    ng.ng_LeftEdge = dl + 100; ng.ng_TopEdge = dt + 6; ng.ng_Width = 50; ng.ng_Height = 14;
+    ng.ng_GadgetText = (UBYTE *)"Partitions"; ng.ng_GadgetID = 1;
+    g = CreateGadget(INTEGER_KIND, g, &ng, GTIN_Number, (ULONG)n, GTIN_MaxChars, 4, TAG_END);
+    gNum = g;
+
+    ng.ng_LeftEdge = dl + 10; ng.ng_TopEdge = dt + 26; ng.ng_Width = 270; ng.ng_GadgetText = 0; ng.ng_GadgetID = 0;
+    g = CreateGadget(TEXT_KIND, g, &ng, GTTX_Text, (ULONG)prevBuf, TAG_END);
+    gPrev = g;
+
+    ng.ng_LeftEdge = dl + 10; ng.ng_TopEdge = dt + 48; ng.ng_Width = 70; ng.ng_Height = 14;
+    ng.ng_GadgetText = (UBYTE *)"Ok"; ng.ng_GadgetID = 10;
+    g = CreateGadget(BUTTON_KIND, g, &ng, TAG_END);
+    ng.ng_LeftEdge = dl + 200; ng.ng_GadgetText = (UBYTE *)"Cancel"; ng.ng_GadgetID = 11;
+    g = CreateGadget(BUTTON_KIND, g, &ng, TAG_END);
+    if (!g) { FreeGadgets(dglist); return; }
+
+    {   int dwW = dl + 290 + g_scr->WBorRight;
+        int dwH = dt + 70 + g_scr->WBorBottom;
+        int dwL = g_win->LeftEdge + (g_win->Width  - dwW) / 2;
+        int dwT = g_win->TopEdge  + (g_win->Height - dwH) / 2;
+        if (dwL < 0) dwL = 0;
+        if (dwT < 0) dwT = 0;
+        dw = OpenWindowTags(0,
+            WA_Left, dwL, WA_Top, dwT, WA_Width, dwW, WA_Height, dwH,
+            WA_Title, (ULONG)"Split Disk", WA_Gadgets, (ULONG)dglist,
+            WA_IDCMP, IDCMP_CLOSEWINDOW | IDCMP_REFRESHWINDOW | BUTTONIDCMP | INTEGERIDCMP,
+            WA_Flags, WFLG_DRAGBAR | WFLG_DEPTHGADGET | WFLG_ACTIVATE | WFLG_SMART_REFRESH,
+            g_pub ? WA_PubScreen : WA_CustomScreen, (ULONG)g_scr,
+            TAG_END);
+    }
+    if (!dw) { FreeGadgets(dglist); return; }
+    GT_RefreshWindow(dw, 0);
+
+    while (!done) {
+        struct IntuiMessage *im;
+        WaitPort(dw->UserPort);
+        while ((im = GT_GetIMsg(dw->UserPort)) != 0) {
+            ULONG cl = im->Class;
+            struct Gadget *ig = (struct Gadget *)im->IAddress;
+            GT_ReplyIMsg(im);
+            if (cl == IDCMP_CLOSEWINDOW) { done = 1; }
+            else if (cl == IDCMP_REFRESHWINDOW) { GT_BeginRefresh(dw); GT_EndRefresh(dw, TRUE); }
+            else if (cl == IDCMP_GADGETUP) {
+                if (ig == gNum) {
+                    LONG v = ((struct StringInfo *)gNum->SpecialInfo)->LongInt;
+                    if (v < 1) v = 1;
+                    if ((ULONG)v > maxN) v = (LONG)maxN;
+                    GT_SetGadgetAttrs(gNum, dw, 0, GTIN_Number, (ULONG)v, TAG_END);
+                    n = (int)v;
+                    gui_split_preview(prevBuf, n, span, cylBlocks, g_geo.block_bytes);
+                    GT_SetGadgetAttrs(gPrev, dw, 0, GTTX_Text, (ULONG)prevBuf, TAG_END);
+                } else if (ig->GadgetID == 10) {                /* Ok */
+                    LONG v = ((struct StringInfo *)gNum->SpecialInfo)->LongInt;
+                    if (v < 1) v = 1;
+                    if ((ULONG)v > maxN) v = (LONG)maxN;
+                    n = (int)v; applied = 1; done = 1;
+                } else if (ig->GadgetID == 11) { done = 1; }     /* Cancel */
+            }
+        }
+    }
+    CloseWindow(dw);
+    FreeGadgets(dglist);
+    if (!applied) return;
+
+    /* Confirm before discarding an existing partition table. */
+    if (g_have_model && g_model.num_parts > 0) {
+        static char q[64]; int p = 0;
+        s_cat(q, &p, "Replace all partitions with "); p += u2s(q + p, (ULONG)n);
+        s_cat(q, &p, " equal slices?"); q[p] = 0;
+        if (!gui_confirm("Split", q)) return;
+    }
+
+    rdb_init_model(&g_model, g_geo.cylinders, g_geo.heads, g_geo.sectors);
+    if (rdb_split_equal(&g_model, n, RDB_DOSTYPE_FFS_INTL) != RDB_OK)
+        gui_msg("Split", "Could not split the disk.");
+    g_have_model = 1; g_dirty = 1; g_sel_part = -1;
+    gui_refresh_parts();
+    gui_update_buttons();
+}
+
 int gui_run(void)
 {
     BOOL done = FALSE;
@@ -834,6 +959,7 @@ int gui_run(void)
                     else if (gad->GadgetID == GID_PARTS) gui_set_selection((int)code);
                     else if (gad->GadgetID == GID_SAVE) gui_save();
                     else if (gad->GadgetID == GID_INIT) gui_init_disk();
+                    else if (gad->GadgetID == GID_SPLIT) gui_split();
                     else if (gad->GadgetID == GID_DELETE) gui_delete();
                     else if (gad->GadgetID == GID_NEW) gui_new();
                     else if (gad->GadgetID == GID_EDIT) {

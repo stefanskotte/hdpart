@@ -294,6 +294,38 @@ static void test_part_flags(void)
     CHECK(back.parts[0].boot_pri    == 5);
 }
 
+/* rdb_split_equal: N equal cylinder-slices covering the whole partitionable
+   range, named DH0..DH(N-1), with error handling. */
+static void test_split_equal(void)
+{
+    RdbModel m;
+    int i;
+
+    rdb_init_model(&m, 996, 16, 63);                 /* lo=2, hi=995, span=994 */
+    CHECK(rdb_split_equal(&m, 4, RDB_DOSTYPE_FFS_INTL) == RDB_OK);
+    CHECK(m.num_parts == 4);
+    CHECK(m.parts[0].low_cyl == 2);                  /* starts at lo */
+    CHECK(m.parts[3].high_cyl == 995);               /* last reaches hi exactly */
+    for (i = 1; i < 4; i++)                           /* contiguous, no gaps */
+        CHECK(m.parts[i].low_cyl == m.parts[i-1].high_cyl + 1);
+    CHECK(strcmp(m.parts[0].name, "DH0") == 0);
+    CHECK(strcmp(m.parts[3].name, "DH3") == 0);
+    CHECK(rdb_validate(&m) == RDB_OK);
+
+    /* N=1 covers the whole range */
+    CHECK(rdb_split_equal(&m, 1, RDB_DOSTYPE_FFS_INTL) == RDB_OK);
+    CHECK(m.num_parts == 1);
+    CHECK(m.parts[0].low_cyl == 2 && m.parts[0].high_cyl == 995);
+
+    /* errors: bad count */
+    CHECK(rdb_split_equal(&m, 0, RDB_DOSTYPE_FFS_INTL) != RDB_OK);
+    CHECK(rdb_split_equal(&m, RDB_MAX_PARTS + 1, RDB_DOSTYPE_FFS_INTL) != RDB_OK);
+
+    /* error: more partitions than cylinders (span = 3, ask 4) */
+    { RdbModel s; rdb_init_model(&s, 5, 1, 1);
+      CHECK(rdb_split_equal(&s, 4, RDB_DOSTYPE_FFS_INTL) != RDB_OK); }
+}
+
 int main(int argc, char **argv)
 {
     if (argc >= 2 && strcmp(argv[1], "--emit") == 0) {
@@ -331,6 +363,7 @@ int main(int argc, char **argv)
     test_add_cyl_and_rename();
     test_largest_free_gap();
     test_part_flags();
+    test_split_equal();
     if (g_fail) { printf("%d CHECK(s) FAILED\n", g_fail); return 1; }
     printf("ALL TESTS PASSED\n");
     return 0;
