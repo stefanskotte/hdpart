@@ -599,7 +599,7 @@ static int gui_edit_dialog(int index)
     ng.ng_GadgetText = (UBYTE *)"MaxTransfer"; ng.ng_GadgetID = 7;
     g = CreateGadget(CYCLE_KIND, g, &ng, GTCY_Labels, (ULONG)kMaxTLabels, GTCY_Active, (ULONG)maxtIdx, TAG_END);
     gMaxTCyc = g;
-    ng.ng_LeftEdge = dl + 236; ng.ng_TopEdge = dt + 92; ng.ng_Width = 80; ng.ng_GadgetText = 0; ng.ng_GadgetID = 12;
+    ng.ng_LeftEdge = dl + 236; ng.ng_TopEdge = dt + 92; ng.ng_Width = 100; ng.ng_GadgetText = 0; ng.ng_GadgetID = 12;
     g = CreateGadget(STRING_KIND, g, &ng, GTST_String, (ULONG)maxtBuf, GTST_MaxChars, 11,
                      GA_Disabled, (ULONG)(maxtIdx < N_MAXT), TAG_END);
     gMaxT = g;
@@ -612,7 +612,7 @@ static int gui_edit_dialog(int index)
     ng.ng_GadgetText = (UBYTE *)"Mask"; ng.ng_GadgetID = 8;
     g = CreateGadget(CYCLE_KIND, g, &ng, GTCY_Labels, (ULONG)kMaskLabels, GTCY_Active, (ULONG)maskIdx, TAG_END);
     gMaskCyc = g;
-    ng.ng_LeftEdge = dl + 236; ng.ng_TopEdge = dt + 128; ng.ng_Width = 80; ng.ng_GadgetText = 0; ng.ng_GadgetID = 13;
+    ng.ng_LeftEdge = dl + 236; ng.ng_TopEdge = dt + 128; ng.ng_Width = 100; ng.ng_GadgetText = 0; ng.ng_GadgetID = 13;
     g = CreateGadget(STRING_KIND, g, &ng, GTST_String, (ULONG)maskBuf, GTST_MaxChars, 11,
                      GA_Disabled, (ULONG)(maskIdx < N_MASK), TAG_END);
     gMask = g;
@@ -628,7 +628,7 @@ static int gui_edit_dialog(int index)
     if (!g) { FreeGadgets(dglist); return 0; }
 
     {   /* center the dialog over the main window */
-        int dwW = dl + 320 + g_scr->WBorRight;
+        int dwW = dl + 350 + g_scr->WBorRight;
         int dwH = dt + 190 + g_scr->WBorBottom;
         int dwL = g_win->LeftEdge + (g_win->Width  - dwW) / 2;
         int dwT = g_win->TopEdge  + (g_win->Height - dwH) / 2;
