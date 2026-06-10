@@ -465,16 +465,63 @@ static int parse_hex32(const char *s, uint32_t *out)
 }
 
 /* Edit partition `index` of g_model via a modal dialog. Returns 1 if applied. */
+/* MaxTransfer / Mask presets for the editor cycles. The cycle shows the short
+   NAME; the adjacent hex field always holds the effective value (filled+disabled
+   for a preset, editable for Custom). Values/guidance from the captured EAB FAQ
+   (docs/reference/amiga-disk-size-maxtransfer-mask.md). */
+static const char *const kMaxTLabels[] = { "IDE", "SCSI", "No limit", "Custom", 0 };
+static const uint32_t    kMaxTValues[] = { 0x0001FE00u, 0x00FFFFFFu, 0x7FFFFFFFu };
+static const char *const kMaxTHelp[]   = {
+    "0x1FE00: onboard IDE - required!",
+    "0xFFFFFF: SCSI controllers",
+    "0x7FFFFFFF: IDEfix/PFS3-AiO/PCMCIA",
+    "Advanced - enter a hex value"
+};
+#define N_MAXT 3
+
+static const char *const kMaskLabels[] = { "Default", "Zorro II DMA", "A1200/A4000", "No mask", "Custom", 0 };
+static const uint32_t    kMaskValues[] = { 0x7FFFFFFEu, 0x00FFFFFFu, 0xFFFFFFFCu, 0xFFFFFFFFu };
+static const char *const kMaskHelp[]   = {
+    "DMA mask; OK as-is for plain IDE",
+    "Zorro II DMA controller (24-bit)",
+    "A1200/A4000 internal IDE",
+    "No masking (Zorro III / no DMA)",
+    "Advanced - enter a hex value"
+};
+#define N_MASK 4
+
+/* Index of v among vals[0..n), or n (the 'Custom' slot) if it is not a preset. */
+static int preset_index(const uint32_t *vals, int n, uint32_t v)
+{
+    int i; for (i = 0; i < n; i++) if (vals[i] == v) return i; return n;
+}
+
+/* React to a MaxTransfer/Mask cycle change: fill+disable the hex field for a
+   preset, enable it for Custom, and update the help line. */
+static void preset_apply(struct Window *dw, struct Gadget *field, struct Gadget *help,
+                         int idx, const uint32_t *vals, int n, const char *const *helps)
+{
+    if (idx < n) {
+        char buf[12]; u32_to_hex(buf, vals[idx]);
+        GT_SetGadgetAttrs(field, dw, 0, GTST_String, (ULONG)buf, GA_Disabled, TRUE, TAG_END);
+    } else {
+        GT_SetGadgetAttrs(field, dw, 0, GA_Disabled, FALSE, TAG_END);
+    }
+    GT_SetGadgetAttrs(help, dw, 0, GTTX_Text, (ULONG)helps[idx], TAG_END);
+}
+
 static int gui_edit_dialog(int index)
 {
     struct Window *dw;
     struct Gadget *dglist = 0, *g;
     struct Gadget *gName = 0, *gSize = 0, *gBoot = 0, *gPri = 0, *gMaxT = 0, *gMask = 0;
+    struct Gadget *gMaxTCyc = 0, *gMaskCyc = 0, *gMaxTHelp = 0, *gMaskHelp = 0;
     struct NewGadget ng;
     RdbPartition *pt = &g_model.parts[index];
     static char nameBuf[32];
     static char sizeMaxLabel[24];
     static char maxtBuf[12], maskBuf[12];
+    int maxtIdx, maskIdx;
     uint32_t startCyl = pt->low_cyl;
     uint32_t maxEndExclusive;   /* first cylinder not available to this part */
     uint32_t maxCyls, maxMB, curMB;
@@ -501,6 +548,8 @@ static int gui_edit_dialog(int index)
     nameBuf[k] = 0;
     u32_to_hex(maxtBuf, pt->maxtransfer);
     u32_to_hex(maskBuf, pt->mask);
+    maxtIdx = preset_index(kMaxTValues, N_MAXT, pt->maxtransfer);
+    maskIdx = preset_index(kMaskValues, N_MASK, pt->mask);
 
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wincompatible-pointer-types"
@@ -542,17 +591,33 @@ static int gui_edit_dialog(int index)
     g = CreateGadget(INTEGER_KIND, g, &ng, GTIN_Number, (ULONG)(LONG)pt->boot_pri, GTIN_MaxChars, 6, TAG_END);
     gPri = g;
 
+    /* MaxTransfer: cycle (preset names) + hex value field + help line. */
     ng.ng_LeftEdge = dl + 110; ng.ng_TopEdge = dt + 92; ng.ng_Width = 120; ng.ng_Height = 14;
     ng.ng_GadgetText = (UBYTE *)"MaxTransfer"; ng.ng_GadgetID = 7;
-    g = CreateGadget(STRING_KIND, g, &ng, GTST_String, (ULONG)maxtBuf, GTST_MaxChars, 11, TAG_END);
+    g = CreateGadget(CYCLE_KIND, g, &ng, GTCY_Labels, (ULONG)kMaxTLabels, GTCY_Active, (ULONG)maxtIdx, TAG_END);
+    gMaxTCyc = g;
+    ng.ng_LeftEdge = dl + 236; ng.ng_TopEdge = dt + 92; ng.ng_Width = 80; ng.ng_GadgetText = 0; ng.ng_GadgetID = 12;
+    g = CreateGadget(STRING_KIND, g, &ng, GTST_String, (ULONG)maxtBuf, GTST_MaxChars, 11,
+                     GA_Disabled, (ULONG)(maxtIdx < N_MAXT), TAG_END);
     gMaxT = g;
+    ng.ng_LeftEdge = dl + 10; ng.ng_TopEdge = dt + 110; ng.ng_Width = 300; ng.ng_GadgetText = 0; ng.ng_GadgetID = 0;
+    g = CreateGadget(TEXT_KIND, g, &ng, GTTX_Text, (ULONG)kMaxTHelp[maxtIdx], TAG_END);
+    gMaxTHelp = g;
 
-    ng.ng_LeftEdge = dl + 110; ng.ng_TopEdge = dt + 114; ng.ng_Width = 120; ng.ng_Height = 14;
+    /* Mask: cycle (controller presets) + hex value field + help line. */
+    ng.ng_LeftEdge = dl + 110; ng.ng_TopEdge = dt + 128; ng.ng_Width = 120; ng.ng_Height = 14;
     ng.ng_GadgetText = (UBYTE *)"Mask"; ng.ng_GadgetID = 8;
-    g = CreateGadget(STRING_KIND, g, &ng, GTST_String, (ULONG)maskBuf, GTST_MaxChars, 11, TAG_END);
+    g = CreateGadget(CYCLE_KIND, g, &ng, GTCY_Labels, (ULONG)kMaskLabels, GTCY_Active, (ULONG)maskIdx, TAG_END);
+    gMaskCyc = g;
+    ng.ng_LeftEdge = dl + 236; ng.ng_TopEdge = dt + 128; ng.ng_Width = 80; ng.ng_GadgetText = 0; ng.ng_GadgetID = 13;
+    g = CreateGadget(STRING_KIND, g, &ng, GTST_String, (ULONG)maskBuf, GTST_MaxChars, 11,
+                     GA_Disabled, (ULONG)(maskIdx < N_MASK), TAG_END);
     gMask = g;
+    ng.ng_LeftEdge = dl + 10; ng.ng_TopEdge = dt + 146; ng.ng_Width = 300; ng.ng_GadgetText = 0; ng.ng_GadgetID = 0;
+    g = CreateGadget(TEXT_KIND, g, &ng, GTTX_Text, (ULONG)kMaskHelp[maskIdx], TAG_END);
+    gMaskHelp = g;
 
-    ng.ng_LeftEdge = dl + 10; ng.ng_TopEdge = dt + 136; ng.ng_Width = 70; ng.ng_Height = 14;
+    ng.ng_LeftEdge = dl + 10; ng.ng_TopEdge = dt + 168; ng.ng_Width = 70; ng.ng_Height = 14;
     ng.ng_GadgetText = (UBYTE *)"Ok"; ng.ng_GadgetID = 10;
     g = CreateGadget(BUTTON_KIND, g, &ng, TAG_END);
     ng.ng_LeftEdge = dl + 210; ng.ng_GadgetText = (UBYTE *)"Cancel"; ng.ng_GadgetID = 11;
@@ -561,7 +626,7 @@ static int gui_edit_dialog(int index)
 
     {   /* center the dialog over the main window */
         int dwW = dl + 320 + g_scr->WBorRight;
-        int dwH = dt + 158 + g_scr->WBorBottom;
+        int dwH = dt + 190 + g_scr->WBorBottom;
         int dwL = g_win->LeftEdge + (g_win->Width  - dwW) / 2;
         int dwT = g_win->TopEdge  + (g_win->Height - dwH) / 2;
         if (dwL < 0) dwL = 0;
@@ -570,7 +635,7 @@ static int gui_edit_dialog(int index)
             WA_Left, dwL, WA_Top, dwT, WA_Width, dwW, WA_Height, dwH,
             WA_Title, (ULONG)"Edit Partition",
             WA_Gadgets, (ULONG)dglist,
-            WA_IDCMP, IDCMP_CLOSEWINDOW | IDCMP_REFRESHWINDOW | BUTTONIDCMP | STRINGIDCMP | INTEGERIDCMP | CHECKBOXIDCMP,
+            WA_IDCMP, IDCMP_CLOSEWINDOW | IDCMP_REFRESHWINDOW | BUTTONIDCMP | STRINGIDCMP | INTEGERIDCMP | CHECKBOXIDCMP | CYCLEIDCMP,
             WA_Flags, WFLG_DRAGBAR | WFLG_DEPTHGADGET | WFLG_ACTIVATE | WFLG_SMART_REFRESH,
             g_pub ? WA_PubScreen : WA_CustomScreen, (ULONG)g_scr,
             TAG_END);
@@ -584,11 +649,16 @@ static int gui_edit_dialog(int index)
         while ((im = GT_GetIMsg(dw->UserPort)) != 0) {
             ULONG cl = im->Class;
             struct Gadget *ig = (struct Gadget *)im->IAddress;
+            UWORD code = im->Code;
             GT_ReplyIMsg(im);
             if (cl == IDCMP_CLOSEWINDOW) { done = 1; }
             else if (cl == IDCMP_REFRESHWINDOW) { GT_BeginRefresh(dw); GT_EndRefresh(dw, TRUE); }
             else if (cl == IDCMP_GADGETUP) {
-                if (ig == gSize) {
+                if (ig == gMaxTCyc) {
+                    preset_apply(dw, gMaxT, gMaxTHelp, (int)code, kMaxTValues, N_MAXT, kMaxTHelp);
+                } else if (ig == gMaskCyc) {
+                    preset_apply(dw, gMask, gMaskHelp, (int)code, kMaskValues, N_MASK, kMaskHelp);
+                } else if (ig == gSize) {
                     /* clamp the typed size to [1, maxMB] */
                     LONG v = ((struct StringInfo *)gSize->SpecialInfo)->LongInt;
                     if (v < 1) v = 1;
