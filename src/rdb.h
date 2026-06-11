@@ -94,6 +94,15 @@ int rdb_set_partition(RdbModel *m, int index, const char *name,
    RDB_ERR_RANGE (bad index or low > high), or rdb_validate's error. */
 int rdb_resize_cyl(RdbModel *m, int index, uint32_t low, uint32_t high);
 
+/* Exclusive end of the free run that follows partition `index`: the low_cyl of
+   the nearest partition starting after parts[index].high_cyl, or hi_cyl+1 if
+   none follows. Use (return - 1) as the max high_cyl for an End-edge grow. */
+uint32_t rdb_gap_end_after(const RdbModel *m, int index);
+/* Inclusive start of the free run that precedes partition `index`: the
+   high_cyl+1 of the nearest partition ending before parts[index].low_cyl, or
+   lo_cyl if none precedes. Use as the min low_cyl for a Start-edge grow. */
+uint32_t rdb_gap_start_before(const RdbModel *m, int index);
+
 /* Add a partition spanning an exact cylinder range [start_cyl, end_cyl]
    (inclusive). Use this to fill a free gap precisely without MB rounding loss.
    Returns the new index (>=0) or a negative RDB_ERR_*. */

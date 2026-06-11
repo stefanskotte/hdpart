@@ -393,6 +393,24 @@ static void test_resize_cyl(void)
     CHECK(m.parts[1].low_cyl == 150 && m.parts[1].high_cyl == 150);
 }
 
+static void test_gap_helpers(void)
+{
+    RdbModel m;
+    rdb_init_model(&m, 996, 16, 63);            /* lo_cyl=2, hi_cyl=995 */
+    CHECK(rdb_add_partition_cyl(&m, "DH0",   2,  51, RDB_DOSTYPE_FFS_INTL) == 0);
+    CHECK(rdb_add_partition_cyl(&m, "DH1", 100, 199, RDB_DOSTYPE_FFS_INTL) == 1);
+    CHECK(rdb_add_partition_cyl(&m, "DH2", 300, 399, RDB_DOSTYPE_FFS_INTL) == 2);
+
+    /* DH1 sits between DH0 (..51) and DH2 (300..) */
+    CHECK(rdb_gap_end_after(&m, 1)    == 300);  /* next occupied cyl after high */
+    CHECK(rdb_gap_start_before(&m, 1) == 52);   /* first free cyl before low   */
+
+    /* DH0 is first: nothing before -> lo_cyl */
+    CHECK(rdb_gap_start_before(&m, 0) == 2);
+    /* DH2 is last: nothing after -> hi_cyl+1 */
+    CHECK(rdb_gap_end_after(&m, 2)    == 996);
+}
+
 int main(int argc, char **argv)
 {
     if (argc >= 2 && strcmp(argv[1], "--emit") == 0) {
@@ -428,6 +446,7 @@ int main(int argc, char **argv)
     test_validate_negative();
     test_add_at_and_set();
     test_resize_cyl();
+    test_gap_helpers();
     test_add_cyl_and_rename();
     test_largest_free_gap();
     test_part_flags();

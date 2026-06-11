@@ -186,6 +186,36 @@ int rdb_resize_cyl(RdbModel *m, int index, uint32_t low, uint32_t high)
     return RDB_OK;
 }
 
+uint32_t rdb_gap_end_after(const RdbModel *m, int index)
+{
+    uint32_t end = m->hi_cyl + 1;            /* exclusive */
+    uint32_t hi;
+    int j;
+    if (index < 0 || index >= m->num_parts) return end;
+    hi = m->parts[index].high_cyl;
+    for (j = 0; j < m->num_parts; j++) {
+        if (j == index) continue;
+        if (m->parts[j].low_cyl > hi && m->parts[j].low_cyl < end)
+            end = m->parts[j].low_cyl;
+    }
+    return end;
+}
+
+uint32_t rdb_gap_start_before(const RdbModel *m, int index)
+{
+    uint32_t start = m->lo_cyl;              /* inclusive */
+    uint32_t lo;
+    int j;
+    if (index < 0 || index >= m->num_parts) return start;
+    lo = m->parts[index].low_cyl;
+    for (j = 0; j < m->num_parts; j++) {
+        if (j == index) continue;
+        if (m->parts[j].high_cyl < lo && m->parts[j].high_cyl + 1 > start)
+            start = m->parts[j].high_cyl + 1;
+    }
+    return start;
+}
+
 int rdb_add_partition_cyl(RdbModel *m, const char *name, uint32_t start_cyl,
                           uint32_t end_cyl, uint32_t dos_type)
 {
