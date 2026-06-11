@@ -30,7 +30,8 @@ extern struct DosLibrary *DOSBase;   /* opened in startup.c (for AddPart) */
 
 /* Gadget IDs */
 enum { GID_DEVICE = 1, GID_SCAN, GID_DRIVER, GID_PARTS, GID_NEW, GID_DELETE,
-       GID_EDIT, GID_INIT, GID_SAVE, GID_STATUS, GID_UNIT, GID_SPLIT };
+       GID_EDIT, GID_INIT, GID_SAVE, GID_STATUS, GID_UNIT, GID_SPLIT, GID_REFRESH,
+       GID_RESIZE };
 /* GID_DEVICE is the Driver cycle; GID_UNIT is the Unit cycle. */
 
 /* Module state for one GUI session. */
@@ -56,6 +57,7 @@ static DeviceInfo g_geo;            /* geometry of the selected device */
 static char     g_cur_driver[40];   /* selected device driver/unit (for Save) */
 static uint32_t g_cur_unit;
 static int      g_sel_part = -1;    /* selected partition index, or -1 */
+static int      g_cur_unitidx = -1; /* Unit cycle index currently shown (-1 = none): Refresh re-probes it */
 static int      g_unitmap[DISC_MAX + 1]; /* Unit cycle index -> g_disks index (-1 = none) */
 static int      g_nunits;           /* number of real disk entries in the Unit cycle */
 static char     g_target_driver[40];/* driver the Scan button will probe ("" = none) */
@@ -123,6 +125,8 @@ static void gui_init_picker(void);            /* no-probe startup picker */
 static void gui_select_driver(int drvIdx);    /* Driver cycle: pick a scan target (resets) */
 static void gui_select_unit(int unitIdx);     /* Unit cycle: show that disk's partitions */
 static void gui_scan_selected(void);          /* probe the target driver (Scan button) */
+static void gui_refresh_current(void);        /* re-probe the currently shown device+unit */
+static int  gui_resize_dialog(int index);     /* grow/shrink the selected partition */
 void gui_draw_bar(void);
 static void gui_draw_partheader(void);    /* column headings above the listview */
 static void gui_draw_easter(void);        /* the bottom-right pi glyph */
@@ -157,6 +161,7 @@ static void gui_update_buttons(void)
     GT_SetGadgetAttrs(g_gad[GID_DELETE], g_win, 0, GA_Disabled, (ULONG)!hasSel,   TAG_END);
     GT_SetGadgetAttrs(g_gad[GID_EDIT],   g_win, 0, GA_Disabled, (ULONG)!hasSel,   TAG_END);
     GT_SetGadgetAttrs(g_gad[GID_SCAN],   g_win, 0, GA_Disabled, (ULONG)(g_target_driver[0] == 0), TAG_END);
+    GT_SetGadgetAttrs(g_gad[GID_REFRESH],g_win, 0, GA_Disabled, (ULONG)(g_cur_unitidx < 0), TAG_END);
 }
 
 /* Rebuild the partition listview + status text + bar from g_model. */
@@ -270,6 +275,13 @@ static struct Gadget *build_gadgets(void)
        stays highlighted, rather than a scroll-only list with momentary highlight. */
     g = CreateGadget(LISTVIEW_KIND, g, &ng, GTLV_Labels, 0, GTLV_ShowSelected, 0, TAG_END);
     g_gad[GID_PARTS] = g;
+
+    /* Small Refresh button under the list: re-read the current device+unit from
+       disk (geometry + RDB) so the view reflects what is actually stored. */
+    ng.ng_LeftEdge = 10 + g_leftb; ng.ng_TopEdge = 146 + g_topb; ng.ng_Width = 70; ng.ng_Height = 14;
+    ng.ng_GadgetText = (UBYTE *)"Refresh"; ng.ng_GadgetID = GID_REFRESH;
+    g = CreateGadget(BUTTON_KIND, g, &ng, GA_Disabled, TRUE, TAG_END);
+    g_gad[GID_REFRESH] = g;
 
     /* Read-only status text */
     ng.ng_LeftEdge = 70 + g_leftb; ng.ng_TopEdge = 168 + g_topb; ng.ng_Width = 380; ng.ng_Height = 12;
@@ -848,6 +860,9 @@ static void gui_split_preview(char *o, int n, uint32_t span,
     o[p] = 0;
 }
 
+/* Null-terminated decimal, for the Split stepper's number display. */
+static void numstr(char *o, int v) { int ln = u2s(o, (ULONG)v); o[ln] = 0; }
+
 /* Quick partitioning: split the largest free gap into N equal partitions,
    keeping existing ones (on a blank disk the gap is the whole disk). */
 static void gui_split(void)
@@ -859,6 +874,7 @@ static void gui_split(void)
     int done = 0, applied = 0, n = 4, slots;
     uint32_t cylBlocks, blockBytes, gs, ge, span, maxN;
     static char prevBuf[40];
+    static char numBuf[8];
 
     if (!g_geo.has_media || g_geo.cylinders == 0) {
         gui_msg("Split", "No media / geometry on this device."); return;
@@ -879,6 +895,7 @@ static void gui_split(void)
     span = (ge >= gs) ? (ge - gs + 1) : 0;
     if (span == 0 || slots < 1) { gui_msg("Split", "No room to add partitions."); return; }
     maxN = (span < (uint32_t)slots) ? span : (uint32_t)slots;
+    if (maxN > 20) maxN = 20;        /* nobody sensibly makes more than 20 partitions */
     if ((uint32_t)n > maxN) n = (int)maxN;
     gui_split_preview(prevBuf, n, span, cylBlocks, blockBytes);
 
@@ -889,10 +906,26 @@ static void gui_split(void)
     if (!g) return;
     ng.ng_TextAttr = &g_font; ng.ng_VisualInfo = g_vi; ng.ng_Flags = 0;
 
-    ng.ng_LeftEdge = dl + 100; ng.ng_TopEdge = dt + 6; ng.ng_Width = 60; ng.ng_Height = 14;
-    ng.ng_GadgetText = (UBYTE *)"Partitions"; ng.ng_GadgetID = 1;
-    g = CreateGadget(INTEGER_KIND, g, &ng, GTIN_Number, (ULONG)n, GTIN_MaxChars, 4, TAG_END);
+    /* "Partitions" label */
+    ng.ng_LeftEdge = dl + 10; ng.ng_TopEdge = dt + 6; ng.ng_Width = 84; ng.ng_Height = 14;
+    ng.ng_GadgetText = 0; ng.ng_GadgetID = 0;
+    g = CreateGadget(TEXT_KIND, g, &ng, GTTX_Text, (ULONG)"Partitions", TAG_END);
+
+    /* [<] number [>] steppers — no free-text field, so it can't be cleared or
+       get stuck; the count is hard-bounded to 1..maxN (maxN capped at 20). */
+    ng.ng_LeftEdge = dl + 100; ng.ng_TopEdge = dt + 4; ng.ng_Width = 26; ng.ng_Height = 16;
+    ng.ng_GadgetText = (UBYTE *)"<"; ng.ng_GadgetID = 2;
+    g = CreateGadget(BUTTON_KIND, g, &ng, TAG_END);
+
+    numstr(numBuf, n);
+    ng.ng_LeftEdge = dl + 132; ng.ng_TopEdge = dt + 6; ng.ng_Width = 44; ng.ng_Height = 14;
+    ng.ng_GadgetText = 0; ng.ng_GadgetID = 0;
+    g = CreateGadget(TEXT_KIND, g, &ng, GTTX_Text, (ULONG)numBuf, GTTX_Border, TRUE, TAG_END);
     gNum = g;
+
+    ng.ng_LeftEdge = dl + 182; ng.ng_TopEdge = dt + 4; ng.ng_Width = 26; ng.ng_Height = 16;
+    ng.ng_GadgetText = (UBYTE *)">"; ng.ng_GadgetID = 3;
+    g = CreateGadget(BUTTON_KIND, g, &ng, TAG_END);
 
     ng.ng_LeftEdge = dl + 10; ng.ng_TopEdge = dt + 26; ng.ng_Width = 270; ng.ng_GadgetText = 0; ng.ng_GadgetID = 0;
     g = CreateGadget(TEXT_KIND, g, &ng, GTTX_Text, (ULONG)prevBuf, TAG_END);
@@ -913,7 +946,7 @@ static void gui_split(void)
         if (dwT < 0) dwT = 0;
         dw = OpenWindowTags(0,
             WA_Left, dwL, WA_Top, dwT, WA_Width, dwW, WA_Height, dwH,
-            WA_Title, (ULONG)"Split Disk", WA_Gadgets, (ULONG)dglist,
+            WA_Title, (ULONG)"Split remaining free space", WA_Gadgets, (ULONG)dglist,
             WA_IDCMP, IDCMP_CLOSEWINDOW | IDCMP_REFRESHWINDOW | BUTTONIDCMP | INTEGERIDCMP,
             WA_Flags, WFLG_DRAGBAR | WFLG_DEPTHGADGET | WFLG_ACTIVATE | WFLG_SMART_REFRESH,
             g_pub ? WA_PubScreen : WA_CustomScreen, (ULONG)g_scr,
@@ -921,7 +954,6 @@ static void gui_split(void)
     }
     if (!dw) { FreeGadgets(dglist); return; }
     GT_RefreshWindow(dw, 0);
-    ActivateGadget(gNum, dw, 0);   /* make the count field ready to type into */
 
     while (!done) {
         struct IntuiMessage *im;
@@ -933,20 +965,16 @@ static void gui_split(void)
             if (cl == IDCMP_CLOSEWINDOW) { done = 1; }
             else if (cl == IDCMP_REFRESHWINDOW) { GT_BeginRefresh(dw); GT_EndRefresh(dw, TRUE); }
             else if (cl == IDCMP_GADGETUP) {
-                if (ig == gNum) {
-                    LONG v = ((struct StringInfo *)gNum->SpecialInfo)->LongInt;
-                    if (v < 1) v = 1;
-                    if ((ULONG)v > maxN) v = (LONG)maxN;
-                    GT_SetGadgetAttrs(gNum, dw, 0, GTIN_Number, (ULONG)v, TAG_END);
-                    n = (int)v;
+                int id = ig->GadgetID;
+                if (id == 2 || id == 3) {                        /* < / > steppers */
+                    if (id == 2 && n > 1) n--;
+                    else if (id == 3 && (uint32_t)n < maxN) n++;
+                    numstr(numBuf, n);
+                    GT_SetGadgetAttrs(gNum, dw, 0, GTTX_Text, (ULONG)numBuf, TAG_END);
                     gui_split_preview(prevBuf, n, span, cylBlocks, blockBytes);
                     GT_SetGadgetAttrs(gPrev, dw, 0, GTTX_Text, (ULONG)prevBuf, TAG_END);
-                } else if (ig->GadgetID == 10) {                /* Ok */
-                    LONG v = ((struct StringInfo *)gNum->SpecialInfo)->LongInt;
-                    if (v < 1) v = 1;
-                    if ((ULONG)v > maxN) v = (LONG)maxN;
-                    n = (int)v; applied = 1; done = 1;
-                } else if (ig->GadgetID == 11) { done = 1; }     /* Cancel */
+                } else if (id == 10) { applied = 1; done = 1; }  /* Ok */
+                else if (id == 11) { done = 1; }                 /* Cancel */
             }
         }
     }
@@ -1049,6 +1077,7 @@ int gui_run(void)
                     if (gad->GadgetID == GID_DEVICE) gui_select_driver((int)code);
                     else if (gad->GadgetID == GID_UNIT) gui_select_unit((int)code);
                     else if (gad->GadgetID == GID_SCAN) gui_scan_selected();
+                    else if (gad->GadgetID == GID_REFRESH) gui_refresh_current();
                     else if (gad->GadgetID == GID_DRIVER) gui_load_driver();
                     else if (gad->GadgetID == GID_PARTS) gui_set_selection((int)code);
                     else if (gad->GadgetID == GID_SAVE) gui_save();
@@ -1148,7 +1177,7 @@ static void gui_set_unit_cycle(int active)
 static void gui_select_driver(int idx)
 {
     g_have_model = 0; g_dirty = 0; g_sel_part = -1; g_geo.has_media = 0;
-    g_cur_driver[0] = 0; g_cur_unit = 0;
+    g_cur_driver[0] = 0; g_cur_unit = 0; g_cur_unitidx = -1;
 
     if (idx <= 0) {                               /* the prompt */
         g_target_driver[0] = 0;
@@ -1176,9 +1205,11 @@ static void gui_select_unit(int uidx)
     g_cur_driver[0] = 0;
 
     if (uidx < 0 || uidx >= g_nunits || g_unitmap[uidx] < 0) {
+        g_cur_unitidx = -1;
         gui_refresh_parts(); gui_update_buttons();
         return;
     }
+    g_cur_unitidx = uidx;
     d = &g_disks[g_unitmap[uidx]];
     for (k = 0; k < 39 && d->driver[k]; k++) g_cur_driver[k] = d->driver[k];
     g_cur_driver[k] = 0;
@@ -1190,6 +1221,21 @@ static void gui_select_unit(int uidx)
         dev_close(h);
     }
     gui_refresh_parts(); gui_update_buttons();
+}
+
+/* Refresh button: re-read the currently shown device+unit from disk (geometry +
+   RDB), so the user can confirm the view matches what is actually stored (e.g.
+   after a Save). Re-reading discards any unsaved in-memory edits, so confirm
+   first when the model is dirty. */
+static void gui_refresh_current(void)
+{
+    if (g_cur_unitidx < 0) return;
+    if (g_dirty &&
+        !gui_request("Refresh", "Re-read this disk from storage?\n"
+                                "Unsaved changes will be lost.", 1, "Proceed"))
+        return;
+    gui_status("Refreshing...");
+    gui_select_unit(g_cur_unitidx);   /* re-opens the device, re-reads geometry + RDB */
 }
 
 /* Scan button: probe the target driver's units, fill the Unit cycle with the
@@ -1209,6 +1255,7 @@ static void gui_scan_selected(void)
     } else {
         char m[64]; int p = 0, q = 0; const char *a = "No disk found on ";
         g_have_model = 0; g_sel_part = -1; g_geo.has_media = 0; g_cur_driver[0] = 0;
+        g_cur_unitidx = -1;
         gui_refresh_parts(); gui_update_buttons();
         while (a[p]) { m[p] = a[p]; p++; }
         while (g_target_driver[q] && p < 62) m[p++] = g_target_driver[q++];
