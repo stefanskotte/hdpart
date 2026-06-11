@@ -87,6 +87,13 @@ int rdb_add_partition_at(RdbModel *m, const char *name, uint32_t start_cyl,
 int rdb_set_partition(RdbModel *m, int index, const char *name,
                       uint32_t size_mb, uint32_t dos_type);
 
+/* Resize partition `index` to the cylinder range [low, high], keeping every
+   other partition fixed. Validates the whole table (bounds / overlap / range /
+   duplicate-name) via rdb_validate and rolls back to the prior extent on any
+   error. Name, dos_type and flag fields are left untouched. Returns RDB_OK,
+   RDB_ERR_RANGE (bad index or low > high), or rdb_validate's error. */
+int rdb_resize_cyl(RdbModel *m, int index, uint32_t low, uint32_t high);
+
 /* Add a partition spanning an exact cylinder range [start_cyl, end_cyl]
    (inclusive). Use this to fill a free gap precisely without MB rounding loss.
    Returns the new index (>=0) or a negative RDB_ERR_*. */

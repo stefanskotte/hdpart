@@ -351,6 +351,48 @@ static void test_split_range(void)
       CHECK(rdb_split_range(&s, 2, 4, 4, RDB_DOSTYPE_FFS_INTL) != RDB_OK); } /* 4 > span 3 */
 }
 
+static void test_resize_cyl(void)
+{
+    RdbModel m;
+    rdb_init_model(&m, 996, 16, 63);            /* lo_cyl=2, hi_cyl=995 */
+    /* DH0 2..51, DH1 100..199, DH2 300..399 — gaps before/after DH1 */
+    CHECK(rdb_add_partition_cyl(&m, "DH0",   2,  51, RDB_DOSTYPE_FFS_INTL) == 0);
+    CHECK(rdb_add_partition_cyl(&m, "DH1", 100, 199, RDB_DOSTYPE_FFS_INTL) == 1);
+    CHECK(rdb_add_partition_cyl(&m, "DH2", 300, 399, RDB_DOSTYPE_FFS_INTL) == 2);
+
+    /* grow End edge into trailing gap: low fixed, high up */
+    CHECK(rdb_resize_cyl(&m, 1, 100, 250) == RDB_OK);
+    CHECK(m.parts[1].low_cyl == 100 && m.parts[1].high_cyl == 250);
+
+    /* grow Start edge into leading gap: high fixed, low down */
+    CHECK(rdb_resize_cyl(&m, 1, 60, 250) == RDB_OK);
+    CHECK(m.parts[1].low_cyl == 60 && m.parts[1].high_cyl == 250);
+
+    /* shrink End edge */
+    CHECK(rdb_resize_cyl(&m, 1, 60, 120) == RDB_OK);
+    CHECK(m.parts[1].low_cyl == 60 && m.parts[1].high_cyl == 120);
+
+    /* shrink Start edge */
+    CHECK(rdb_resize_cyl(&m, 1, 110, 120) == RDB_OK);
+    CHECK(m.parts[1].low_cyl == 110 && m.parts[1].high_cyl == 120);
+
+    /* overlap rejection -> model unchanged (rollback) */
+    CHECK(rdb_resize_cyl(&m, 1, 110, 300) == RDB_ERR_OVERLAP);   /* hits DH2@300 */
+    CHECK(m.parts[1].low_cyl == 110 && m.parts[1].high_cyl == 120);
+
+    /* out-of-bounds rejection -> rollback */
+    CHECK(rdb_resize_cyl(&m, 2, 300, 996) == RDB_ERR_NO_SPACE);  /* hi_cyl=995 */
+    CHECK(m.parts[2].low_cyl == 300 && m.parts[2].high_cyl == 399);
+
+    /* inverted range and bad index */
+    CHECK(rdb_resize_cyl(&m, 1, 200, 199) == RDB_ERR_RANGE);
+    CHECK(rdb_resize_cyl(&m, 99, 100, 200) == RDB_ERR_RANGE);
+
+    /* 1-cylinder floor round-trips */
+    CHECK(rdb_resize_cyl(&m, 1, 150, 150) == RDB_OK);
+    CHECK(m.parts[1].low_cyl == 150 && m.parts[1].high_cyl == 150);
+}
+
 int main(int argc, char **argv)
 {
     if (argc >= 2 && strcmp(argv[1], "--emit") == 0) {
@@ -385,6 +427,7 @@ int main(int argc, char **argv)
     test_serialize_parse();
     test_validate_negative();
     test_add_at_and_set();
+    test_resize_cyl();
     test_add_cyl_and_rename();
     test_largest_free_gap();
     test_part_flags();

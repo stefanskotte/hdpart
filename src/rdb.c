@@ -171,6 +171,21 @@ int rdb_set_partition(RdbModel *m, int index, const char *name,
     return RDB_OK;
 }
 
+int rdb_resize_cyl(RdbModel *m, int index, uint32_t low, uint32_t high)
+{
+    RdbPartition saved, *p;
+    int v;
+    if (index < 0 || index >= m->num_parts) return RDB_ERR_RANGE;
+    if (low > high)                          return RDB_ERR_RANGE;
+    p = &m->parts[index];
+    saved = *p;
+    p->low_cyl  = low;
+    p->high_cyl = high;
+    v = rdb_validate(m);
+    if (v != RDB_OK) { *p = saved; return v; }
+    return RDB_OK;
+}
+
 int rdb_add_partition_cyl(RdbModel *m, const char *name, uint32_t start_cyl,
                           uint32_t end_cyl, uint32_t dos_type)
 {
