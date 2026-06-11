@@ -67,9 +67,10 @@ FSUAE_CFG_DIR = $(HOME)/Documents/FS-UAE/Configurations
 hd: $(OUT).exe
 	@mkdir -p amiga_hd amiga_boot/s
 	@cp $(OUT).exe amiga_hd/HDPart
+	@cp tools/HDPart.info amiga_hd/HDPart.info
 	@cp $(OUT).exe amiga_boot/HDPart
 	@printf 'HDPart\n' > amiga_boot/s/startup-sequence
-	$(info Staged -> amiga_hd/HDPart (volume HDPart:, run: HDPart:HDPart))
+	$(info Staged -> amiga_hd/HDPart (+ HDPart.info icon) (volume HDPart:, run: HDPart:HDPart))
 	$(info Staged -> amiga_boot/ (bootable dir; startup-sequence auto-runs HDPart for the no-Workbench own-screen test))
 
 install-fsuae:
