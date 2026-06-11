@@ -409,6 +409,10 @@ static void test_gap_helpers(void)
     CHECK(rdb_gap_start_before(&m, 0) == 2);
     /* DH2 is last: nothing after -> hi_cyl+1 */
     CHECK(rdb_gap_end_after(&m, 2)    == 996);
+
+    CHECK(rdb_gap_end_after(&m, 0)    == 100);   /* DH0 last in gap: next is DH1@100 */
+    CHECK(rdb_gap_start_before(&m, 2) == 200);   /* DH2: prev partition DH1 ends @199 */
+    CHECK(rdb_gap_end_after(&m, 99)   == 996);   /* invalid index -> full-disk sentinel */
 }
 
 int main(int argc, char **argv)
