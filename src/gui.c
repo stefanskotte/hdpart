@@ -162,6 +162,7 @@ static void gui_update_buttons(void)
     GT_SetGadgetAttrs(g_gad[GID_EDIT],   g_win, 0, GA_Disabled, (ULONG)!hasSel,   TAG_END);
     GT_SetGadgetAttrs(g_gad[GID_SCAN],   g_win, 0, GA_Disabled, (ULONG)(g_target_driver[0] == 0), TAG_END);
     GT_SetGadgetAttrs(g_gad[GID_REFRESH],g_win, 0, GA_Disabled, (ULONG)(g_cur_unitidx < 0), TAG_END);
+    GT_SetGadgetAttrs(g_gad[GID_RESIZE], g_win, 0, GA_Disabled, (ULONG)!hasSel, TAG_END);
 }
 
 /* Rebuild the partition listview + status text + bar from g_model. */
@@ -282,6 +283,12 @@ static struct Gadget *build_gadgets(void)
     ng.ng_GadgetText = (UBYTE *)"Refresh"; ng.ng_GadgetID = GID_REFRESH;
     g = CreateGadget(BUTTON_KIND, g, &ng, GA_Disabled, TRUE, TAG_END);
     g_gad[GID_REFRESH] = g;
+
+    /* Resize... button beside Refresh: grow/shrink the selected partition. */
+    ng.ng_LeftEdge = 90 + g_leftb; ng.ng_TopEdge = 146 + g_topb; ng.ng_Width = 72; ng.ng_Height = 14;
+    ng.ng_GadgetText = (UBYTE *)"Resize..."; ng.ng_GadgetID = GID_RESIZE;
+    g = CreateGadget(BUTTON_KIND, g, &ng, GA_Disabled, TRUE, TAG_END);
+    g_gad[GID_RESIZE] = g;
 
     /* Read-only status text */
     ng.ng_LeftEdge = 70 + g_leftb; ng.ng_TopEdge = 168 + g_topb; ng.ng_Width = 380; ng.ng_Height = 12;
@@ -1265,6 +1272,10 @@ int gui_run(void)
                     else if (gad->GadgetID == GID_UNIT) gui_select_unit((int)code);
                     else if (gad->GadgetID == GID_SCAN) gui_scan_selected();
                     else if (gad->GadgetID == GID_REFRESH) gui_refresh_current();
+                    else if (gad->GadgetID == GID_RESIZE) {
+                        if (g_sel_part >= 0 && g_sel_part < g_model.num_parts)
+                            gui_resize_dialog(g_sel_part);
+                    }
                     else if (gad->GadgetID == GID_DRIVER) gui_load_driver();
                     else if (gad->GadgetID == GID_PARTS) gui_set_selection((int)code);
                     else if (gad->GadgetID == GID_SAVE) gui_save();
