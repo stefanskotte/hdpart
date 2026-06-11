@@ -863,6 +863,193 @@ static void gui_split_preview(char *o, int n, uint32_t span,
 /* Null-terminated decimal, for the Split stepper's number display. */
 static void numstr(char *o, int v) { int ln = u2s(o, (ULONG)v); o[ln] = 0; }
 
+/* Resize the selected partition: Size (MB) + anchor (Move End / Move Start)
+   -> a new cylinder range, applied via rdb_resize_cyl. Confirms only when the
+   change is destructive (shrink, or any Start-edge move). Returns 1 if applied
+   (caller need not act — the dialog refreshes the view itself), else 0. */
+static int gui_resize_dialog(int index)
+{
+    struct Window *dw;
+    struct Gadget *dglist = 0, *g, *gAnchor = 0, *gSize = 0, *gMaxHint = 0, *gRead = 0;
+    struct NewGadget ng;
+    RdbPartition *pt;
+    int dt = g_topb, dl = g_leftb;
+    int done = 0, applied = 0, anchor = 0;          /* 0 = Move End, 1 = Move Start */
+    uint32_t oldLow, oldHigh, cylBlocks, blockBytes;
+    uint32_t gapAfter, gapBefore, maxCyls, maxMB, curMB, n;
+    static const char *anchorLabels[3];
+    static char maxBuf[24], readBuf[56], freeBuf[56];
+
+    if (!g_have_model || index < 0 || index >= g_model.num_parts) return 0;
+    pt = &g_model.parts[index];
+    oldLow = pt->low_cyl; oldHigh = pt->high_cyl;
+    cylBlocks = g_model.cyl_blocks; blockBytes = g_model.block_bytes;
+    gapAfter  = rdb_gap_end_after(&g_model, index);     /* exclusive */
+    gapBefore = rdb_gap_start_before(&g_model, index);  /* inclusive */
+
+    /* current size + the max for the default (Move End) anchor */
+    curMB  = rdb_cyls_to_mb(oldHigh - oldLow + 1, cylBlocks, blockBytes);
+    if (curMB < 1) curMB = 1;
+    maxCyls = gapAfter - oldLow;                        /* Move End: low fixed */
+    maxMB   = rdb_cyls_to_mb(maxCyls, cylBlocks, blockBytes);
+    if (maxMB < 1) maxMB = 1;
+    if (curMB > maxMB) curMB = maxMB;
+    n = curMB;
+
+    anchorLabels[0] = "Move: End edge (keep start)";
+    anchorLabels[1] = "Move: Start edge (keep end)";
+    anchorLabels[2] = 0;
+
+    { int p = 0; s_cat(maxBuf, &p, "max "); p += u2s(maxBuf + p, maxMB);
+      s_cat(maxBuf, &p, " MB"); maxBuf[p] = 0; }
+    { int p = 0; uint32_t fb, fa;
+      fb = (oldLow > gapBefore) ? rdb_cyls_to_mb(oldLow - gapBefore, cylBlocks, blockBytes) : 0;
+      fa = (gapAfter > oldHigh + 1) ? rdb_cyls_to_mb(gapAfter - 1 - oldHigh, cylBlocks, blockBytes) : 0;
+      s_cat(freeBuf, &p, "Free before "); p += u2s(freeBuf + p, fb);
+      s_cat(freeBuf, &p, " MB   after "); p += u2s(freeBuf + p, fa);
+      s_cat(freeBuf, &p, " MB"); freeBuf[p] = 0; }
+
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wincompatible-pointer-types"
+    g = CreateContext(&dglist);
+#pragma GCC diagnostic pop
+    if (!g) return 0;
+    ng.ng_TextAttr = &g_font; ng.ng_VisualInfo = g_vi; ng.ng_Flags = 0;
+
+    /* free before/after context line (read-only) */
+    ng.ng_LeftEdge = dl + 10; ng.ng_TopEdge = dt + 6; ng.ng_Width = 320; ng.ng_Height = 12;
+    ng.ng_GadgetText = 0; ng.ng_GadgetID = 0;
+    g = CreateGadget(TEXT_KIND, g, &ng, GTTX_Text, (ULONG)freeBuf, TAG_END);
+
+    /* anchor cycle */
+    ng.ng_LeftEdge = dl + 100; ng.ng_TopEdge = dt + 24; ng.ng_Width = 230; ng.ng_Height = 14;
+    ng.ng_GadgetText = (UBYTE *)"Anchor"; ng.ng_GadgetID = 1;
+    g = CreateGadget(CYCLE_KIND, g, &ng, GTCY_Labels, (ULONG)anchorLabels, GTCY_Active, 0, TAG_END);
+    gAnchor = g;
+
+    /* size (MB) */
+    ng.ng_LeftEdge = dl + 100; ng.ng_TopEdge = dt + 44; ng.ng_Width = 90; ng.ng_Height = 14;
+    ng.ng_GadgetText = (UBYTE *)"Size (MB)"; ng.ng_GadgetID = 2;
+    g = CreateGadget(INTEGER_KIND, g, &ng, GTIN_Number, (ULONG)n, GTIN_MaxChars, 7, TAG_END);
+    gSize = g;
+
+    /* max hint */
+    ng.ng_LeftEdge = dl + 200; ng.ng_Width = 130; ng.ng_GadgetText = 0; ng.ng_GadgetID = 0;
+    g = CreateGadget(TEXT_KIND, g, &ng, GTTX_Text, (ULONG)maxBuf, TAG_END);
+    gMaxHint = g;
+
+    /* live cyl readout (filled by RZ_RECOMPUTE below) */
+    ng.ng_LeftEdge = dl + 10; ng.ng_TopEdge = dt + 64; ng.ng_Width = 320; ng.ng_Height = 12;
+    ng.ng_GadgetText = 0; ng.ng_GadgetID = 0;
+    g = CreateGadget(TEXT_KIND, g, &ng, GTTX_Text, (ULONG)"", TAG_END);
+    gRead = g;
+
+    /* persistent caveat */
+    ng.ng_LeftEdge = dl + 10; ng.ng_TopEdge = dt + 80; ng.ng_Width = 320; ng.ng_Height = 12;
+    g = CreateGadget(TEXT_KIND, g, &ng, GTTX_Text,
+                     (ULONG)"Resize edits the table only - reformat to use new space.", TAG_END);
+
+    /* Ok / Cancel */
+    ng.ng_LeftEdge = dl + 10; ng.ng_TopEdge = dt + 98; ng.ng_Width = 70; ng.ng_Height = 14;
+    ng.ng_GadgetText = (UBYTE *)"Ok"; ng.ng_GadgetID = 10;
+    g = CreateGadget(BUTTON_KIND, g, &ng, TAG_END);
+    ng.ng_LeftEdge = dl + 200; ng.ng_GadgetText = (UBYTE *)"Cancel"; ng.ng_GadgetID = 11;
+    g = CreateGadget(BUTTON_KIND, g, &ng, TAG_END);
+    if (!g) { FreeGadgets(dglist); return 0; }
+
+    {   int dwW = dl + 350 + g_scr->WBorRight;
+        int dwH = dt + 120 + g_scr->WBorBottom;
+        int dwL = g_win->LeftEdge + (g_win->Width  - dwW) / 2;
+        int dwT = g_win->TopEdge  + (g_win->Height - dwH) / 2;
+        if (dwL < 0) dwL = 0;
+        if (dwT < 0) dwT = 0;
+        dw = OpenWindowTags(0,
+            WA_Left, dwL, WA_Top, dwT, WA_Width, dwW, WA_Height, dwH,
+            WA_Title, (ULONG)"Resize partition", WA_Gadgets, (ULONG)dglist,
+            WA_IDCMP, IDCMP_CLOSEWINDOW | IDCMP_REFRESHWINDOW | BUTTONIDCMP | INTEGERIDCMP | CYCLEIDCMP,
+            WA_Flags, WFLG_DRAGBAR | WFLG_DEPTHGADGET | WFLG_ACTIVATE | WFLG_SMART_REFRESH,
+            g_pub ? WA_PubScreen : WA_CustomScreen, (ULONG)g_scr,
+            TAG_END);
+    }
+    if (!dw) { FreeGadgets(dglist); return 0; }
+    GT_RefreshWindow(dw, 0);
+
+    /* helper to recompute max + clamp n + refresh the readout for the current anchor */
+#define RZ_RECOMPUTE() do {                                                       \
+        if (anchor == 0) maxCyls = gapAfter - oldLow;                             \
+        else             maxCyls = oldHigh - gapBefore + 1;                       \
+        maxMB = rdb_cyls_to_mb(maxCyls, cylBlocks, blockBytes);                   \
+        if (maxMB < 1) maxMB = 1;                                                 \
+        if (n < 1) n = 1;                                                        \
+        if (n > maxMB) n = maxMB;                                                 \
+        { int p = 0; s_cat(maxBuf, &p, "max "); p += u2s(maxBuf + p, maxMB);      \
+          s_cat(maxBuf, &p, " MB"); maxBuf[p] = 0; }                              \
+        GT_SetGadgetAttrs(gMaxHint, dw, 0, GTTX_Text, (ULONG)maxBuf, TAG_END);    \
+        GT_SetGadgetAttrs(gSize, dw, 0, GTIN_Number, (ULONG)n, TAG_END);          \
+        { uint32_t cyls = rdb_mb_to_cyls(n, cylBlocks, blockBytes);              \
+          uint32_t nl, nh; int p = 0;                                            \
+          if (cyls < 1) cyls = 1;                                                 \
+          if (cyls > maxCyls) cyls = maxCyls; /* ceil(mb) can overshoot the gap */\
+          if (anchor == 0) { nl = oldLow;  nh = oldLow + cyls - 1; }              \
+          else             { nh = oldHigh; nl = oldHigh - cyls + 1; }            \
+          s_cat(readBuf, &p, "-> cyls "); p += u2s(readBuf + p, nl);             \
+          s_cat(readBuf, &p, ".."); p += u2s(readBuf + p, nh);                   \
+          s_cat(readBuf, &p, "  ("); p += u2s(readBuf + p, n);                   \
+          s_cat(readBuf, &p, " MB)"); readBuf[p] = 0; }                          \
+        GT_SetGadgetAttrs(gRead, dw, 0, GTTX_Text, (ULONG)readBuf, TAG_END);      \
+    } while (0)
+
+    RZ_RECOMPUTE();                      /* fill the initial readout */
+    ActivateGadget(gSize, dw, 0);
+
+    while (!done) {
+        struct IntuiMessage *im;
+        WaitPort(dw->UserPort);
+        while ((im = GT_GetIMsg(dw->UserPort)) != 0) {
+            ULONG cl = im->Class;
+            struct Gadget *ig = (struct Gadget *)im->IAddress;
+            UWORD code = im->Code;
+            GT_ReplyIMsg(im);
+            if (cl == IDCMP_CLOSEWINDOW) { done = 1; }
+            else if (cl == IDCMP_REFRESHWINDOW) { GT_BeginRefresh(dw); GT_EndRefresh(dw, TRUE); }
+            else if (cl == IDCMP_GADGETUP) {
+                if (ig == gAnchor) { anchor = (int)code; RZ_RECOMPUTE(); }
+                else if (ig == gSize) {
+                    n = (uint32_t)((struct StringInfo *)gSize->SpecialInfo)->LongInt;
+                    RZ_RECOMPUTE();
+                } else if (ig->GadgetID == 10) {                 /* Ok */
+                    uint32_t cyls = rdb_mb_to_cyls(n, cylBlocks, blockBytes);
+                    uint32_t nl, nh; int destructive, go = 1;
+                    if (cyls < 1) cyls = 1;
+                    if (cyls > maxCyls) cyls = maxCyls;  /* ceil(mb) can overshoot the gap */
+                    if (anchor == 0) { nl = oldLow;  nh = oldLow + cyls - 1; }
+                    else             { nh = oldHigh; nl = oldHigh - cyls + 1; }
+                    if (nl == oldLow && nh == oldHigh) { done = 1; break; }   /* no change */
+                    destructive = (nl != oldLow) || (nh < oldHigh);
+                    if (destructive)
+                        go = gui_request("Resize partition",
+                                "Resizing changes the partition's extent.\n"
+                                "Reformat afterward - existing data will be lost.",
+                                1, "Proceed");
+                    if (go) {
+                        int r = rdb_resize_cyl(&g_model, index, nl, nh);
+                        if (r == RDB_OK) {
+                            g_dirty = 1; applied = 1; done = 1;
+                        } else {
+                            gui_msg("Resize", "Could not resize (overlaps / out of range).");
+                        }
+                    }
+                } else if (ig->GadgetID == 11) { done = 1; }     /* Cancel */
+            }
+        }
+    }
+#undef RZ_RECOMPUTE
+    CloseWindow(dw);
+    FreeGadgets(dglist);
+    if (applied) { gui_refresh_parts(); gui_update_buttons(); }
+    return applied;
+}
+
 /* Quick partitioning: split the largest free gap into N equal partitions,
    keeping existing ones (on a blank disk the gap is the whole disk). */
 static void gui_split(void)
