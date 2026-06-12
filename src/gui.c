@@ -156,7 +156,6 @@ static void gui_update_buttons(void)
     if (!g_win) return;
     GT_SetGadgetAttrs(g_gad[GID_SAVE],   g_win, 0, GA_Disabled, (ULONG)!(hasModel && g_dirty), TAG_END);
     GT_SetGadgetAttrs(g_gad[GID_NEW],    g_win, 0, GA_Disabled, (ULONG)!hasModel, TAG_END);
-    GT_SetGadgetAttrs(g_gad[GID_INIT],   g_win, 0, GA_Disabled, (ULONG)!hasGeo,   TAG_END);
     GT_SetGadgetAttrs(g_gad[GID_SPLIT],  g_win, 0, GA_Disabled, (ULONG)!hasGeo,   TAG_END);
     GT_SetGadgetAttrs(g_gad[GID_DELETE], g_win, 0, GA_Disabled, (ULONG)!hasSel,   TAG_END);
     GT_SetGadgetAttrs(g_gad[GID_EDIT],   g_win, 0, GA_Disabled, (ULONG)!hasSel,   TAG_END);
@@ -231,87 +230,71 @@ static struct Gadget *build_gadgets(void)
 #pragma GCC diagnostic pop
     if (!g) return 0;
 
-    /* Driver cycle gadget (row 1). All ng positions are offset by the window
-       border (g_leftb,g_topb) since gadget coords are relative to the origin. */
+    /* Row 1 — Disk panel: Driver cycle + Load button */
     ng.ng_TextAttr   = &g_font;
     ng.ng_VisualInfo = g_vi;
-    ng.ng_LeftEdge = 70 + g_leftb;  ng.ng_TopEdge = 6 + g_topb;  ng.ng_Width = 236; ng.ng_Height = 14;
-    ng.ng_GadgetText = (UBYTE *)"Driver:"; ng.ng_GadgetID = GID_DEVICE;
-    ng.ng_Flags = 0;
+    ng.ng_LeftEdge = 64 + g_leftb; ng.ng_TopEdge = 8 + g_topb; ng.ng_Width = 420; ng.ng_Height = 14;
+    ng.ng_GadgetText = (UBYTE *)"Driver:"; ng.ng_GadgetID = GID_DEVICE; ng.ng_Flags = 0;
     g_drvlabels[0] = "Select or load a driver"; g_drvlabels[1] = 0;
     g = CreateGadget(CYCLE_KIND, g, &ng, GTCY_Labels, (ULONG)g_drvlabels, TAG_END);
     g_gad[GID_DEVICE] = g;
 
-    /* "..." button (load a .device from file via ASL) sits right after the
-       Driver cycle; "..." signals it opens a file requester. */
-    ng.ng_LeftEdge = 312 + g_leftb; ng.ng_TopEdge = 6 + g_topb; ng.ng_Width = 40; ng.ng_Height = 14;
-    ng.ng_GadgetText = (UBYTE *)"..."; ng.ng_GadgetID = GID_DRIVER;
-    g = CreateGadget(BUTTON_KIND, g, &ng, GA_Disabled, (ULONG)(AslBase == 0), TAG_END);
+    ng.ng_LeftEdge = 490 + g_leftb; ng.ng_TopEdge = 8 + g_topb; ng.ng_Width = 84; ng.ng_Height = 14;
+    ng.ng_GadgetText = (UBYTE *)"_Load..."; ng.ng_GadgetID = GID_DRIVER;
+    g = CreateGadget(BUTTON_KIND, g, &ng, GA_Disabled, (ULONG)(AslBase == 0), GT_Underscore, (ULONG)'_', TAG_END);
     g_gad[GID_DRIVER] = g;
 
-    /* Scan button (bold: it is the primary action — query the chosen driver).
-       Double height: spans both the Driver (y6) and Unit (y26) rows to balance
-       the two dropdowns. */
-    ng.ng_TextAttr = &g_font_bold;
-    ng.ng_LeftEdge = 380 + g_leftb; ng.ng_TopEdge = 6 + g_topb; ng.ng_Width = 70; ng.ng_Height = 34;
-    ng.ng_GadgetText = (UBYTE *)"Scan"; ng.ng_GadgetID = GID_SCAN;
-    g = CreateGadget(BUTTON_KIND, g, &ng, TAG_END);
-    g_gad[GID_SCAN] = g;
-    ng.ng_TextAttr = &g_font;            /* restore default for later gadgets */
-
-    /* Unit cycle gadget (row 2): the disks found on the selected driver after a
-       Scan. Starts disabled with a placeholder until a Scan populates it. */
-    ng.ng_LeftEdge = 70 + g_leftb; ng.ng_TopEdge = 26 + g_topb; ng.ng_Width = 236; ng.ng_Height = 14;
+    /* Row 2 — Disk panel: Unit cycle + Scan button (normal weight, single height) */
+    ng.ng_LeftEdge = 64 + g_leftb; ng.ng_TopEdge = 28 + g_topb; ng.ng_Width = 420; ng.ng_Height = 14;
     ng.ng_GadgetText = (UBYTE *)"Unit:"; ng.ng_GadgetID = GID_UNIT;
     g_unitlabels[0] = "(press Scan)"; g_unitlabels[1] = 0;
-    g = CreateGadget(CYCLE_KIND, g, &ng, GTCY_Labels, (ULONG)g_unitlabels,
-                     GA_Disabled, TRUE, TAG_END);
+    g = CreateGadget(CYCLE_KIND, g, &ng, GTCY_Labels, (ULONG)g_unitlabels, GA_Disabled, TRUE, TAG_END);
     g_gad[GID_UNIT] = g;
 
-    /* Partition listview (shifted down for the unit row; ~2 rows shorter so the
-       window keeps its height). */
-    ng.ng_LeftEdge = 10 + g_leftb; ng.ng_TopEdge = 74 + g_topb; ng.ng_Width = 440; ng.ng_Height = 66;
+    ng.ng_LeftEdge = 490 + g_leftb; ng.ng_TopEdge = 28 + g_topb; ng.ng_Width = 84; ng.ng_Height = 14;
+    ng.ng_GadgetText = (UBYTE *)"Scan"; ng.ng_GadgetID = GID_SCAN;   /* no underscore: Scan has no shortcut */
+    g = CreateGadget(BUTTON_KIND, g, &ng, TAG_END);
+    g_gad[GID_SCAN] = g;
+
+    /* Partition listview (inside Partitions panel, under bar+header) */
+    ng.ng_LeftEdge = 12 + g_leftb; ng.ng_TopEdge = 94 + g_topb; ng.ng_Width = 556; ng.ng_Height = 66;
     ng.ng_GadgetText = 0; ng.ng_GadgetID = GID_PARTS;
-    /* GTLV_ShowSelected (NULL) makes this a SELECTION listview: the clicked row
-       stays highlighted, rather than a scroll-only list with momentary highlight. */
     g = CreateGadget(LISTVIEW_KIND, g, &ng, GTLV_Labels, 0, GTLV_ShowSelected, 0, TAG_END);
     g_gad[GID_PARTS] = g;
 
-    /* Small Refresh button under the list: re-read the current device+unit from
-       disk (geometry + RDB) so the view reflects what is actually stored. */
-    ng.ng_LeftEdge = 10 + g_leftb; ng.ng_TopEdge = 146 + g_topb; ng.ng_Width = 70; ng.ng_Height = 14;
-    ng.ng_GadgetText = (UBYTE *)"Refresh"; ng.ng_GadgetID = GID_REFRESH;
-    g = CreateGadget(BUTTON_KIND, g, &ng, GA_Disabled, TRUE, TAG_END);
-    g_gad[GID_REFRESH] = g;
+    /* Partition-action toolbar (one row under the list) */
+    {
+        static const struct { int id; const char *txt; int x; int w; } pbtn[] = {
+            { GID_NEW,    "_New",     12,  56 }, { GID_EDIT,   "_Edit...", 72,  72 },
+            { GID_DELETE, "_Delete", 148,  72 }, { GID_SPLIT,  "Spli_t...",224, 74 },
+            { GID_RESIZE, "_Resize...",302, 88 }
+        };
+        int k;
+        for (k = 0; k < 5; k++) {
+            ng.ng_LeftEdge = pbtn[k].x + g_leftb; ng.ng_TopEdge = 162 + g_topb;
+            ng.ng_Width = pbtn[k].w; ng.ng_Height = 14;
+            ng.ng_GadgetText = (UBYTE *)pbtn[k].txt; ng.ng_GadgetID = pbtn[k].id;
+            g = CreateGadget(BUTTON_KIND, g, &ng, GA_Disabled, TRUE, GT_Underscore, (ULONG)'_', TAG_END);
+            g_gad[pbtn[k].id] = g;
+        }
+    }
 
-    /* Resize... button beside Refresh: grow/shrink the selected partition. */
-    ng.ng_LeftEdge = 90 + g_leftb; ng.ng_TopEdge = 146 + g_topb; ng.ng_Width = 88; ng.ng_Height = 14;
-    ng.ng_GadgetText = (UBYTE *)"Resize..."; ng.ng_GadgetID = GID_RESIZE;
-    g = CreateGadget(BUTTON_KIND, g, &ng, GA_Disabled, TRUE, TAG_END);
-    g_gad[GID_RESIZE] = g;
-
-    /* Read-only status text */
-    ng.ng_LeftEdge = 70 + g_leftb; ng.ng_TopEdge = 168 + g_topb; ng.ng_Width = 380; ng.ng_Height = 12;
+    /* Footer: status text (left) + Refresh + Save (right) */
+    ng.ng_LeftEdge = 12 + g_leftb; ng.ng_TopEdge = 186 + g_topb; ng.ng_Width = 360; ng.ng_Height = 12;
     ng.ng_GadgetText = (UBYTE *)"Status:"; ng.ng_GadgetID = GID_STATUS;
     g = CreateGadget(TEXT_KIND, g, &ng, GTTX_Text, (ULONG)"no disk selected", TAG_END);
     g_gad[GID_STATUS] = g;
 
-    /* Ghosted action buttons (enabled in Plan 3b) */
-    {
-        static const struct { int id; const char *txt; int x; int w; } btn[] = {
-            { GID_NEW,    "New",        8, 52 }, { GID_DELETE, "Delete",   64, 58 },
-            { GID_EDIT,   "Edit",      126, 46 }, { GID_SPLIT,  "Split...",176, 72 },
-            { GID_INIT,   "Init Disk", 252, 90 }, { GID_SAVE,   "Save",    388, 62 }
-        };
-        int k;
-        for (k = 0; k < 6; k++) {
-            ng.ng_LeftEdge = btn[k].x + g_leftb; ng.ng_TopEdge = 186 + g_topb;
-            ng.ng_Width = btn[k].w; ng.ng_Height = 14;
-            ng.ng_GadgetText = (UBYTE *)btn[k].txt; ng.ng_GadgetID = btn[k].id;
-            g = CreateGadget(BUTTON_KIND, g, &ng, GA_Disabled, TRUE, TAG_END);
-            g_gad[btn[k].id] = g;
-        }
-    }
+    ng.ng_LeftEdge = 408 + g_leftb; ng.ng_TopEdge = 184 + g_topb; ng.ng_Width = 76; ng.ng_Height = 14;
+    ng.ng_GadgetText = (UBYTE *)"Re_fresh"; ng.ng_GadgetID = GID_REFRESH;
+    g = CreateGadget(BUTTON_KIND, g, &ng, GA_Disabled, TRUE, GT_Underscore, (ULONG)'_', TAG_END);
+    g_gad[GID_REFRESH] = g;
+
+    ng.ng_LeftEdge = 490 + g_leftb; ng.ng_TopEdge = 184 + g_topb; ng.ng_Width = 84; ng.ng_Height = 14;
+    ng.ng_GadgetText = (UBYTE *)"_Save"; ng.ng_GadgetID = GID_SAVE;
+    g = CreateGadget(BUTTON_KIND, g, &ng, GA_Disabled, TRUE, GT_Underscore, (ULONG)'_', TAG_END);
+    g_gad[GID_SAVE] = g;
+
     return g;
 }
 
