@@ -78,6 +78,28 @@ install-fsuae:
 	@cp tools/fsuae/*.fs-uae "$(FSUAE_CFG_DIR)/"
 	$(info Installed FS-UAE configs -> $(FSUAE_CFG_DIR)/  (HDPart, HDPart-204, HDPart-204-ownscreen))
 
+# `make adf`            build a shareable 880K OFS floppy with the program + icons
+#                       (out/HDPart-$(ADFVER).adf). Primary use: mount under an
+#                       existing Workbench and double-click HDPart; it is also
+#                       bootable (auto-runs HDPart on its own screen). Needs
+#                       amitools' xdftool (pip3 install amitools).
+# ADFVER: keep in sync with the window title in src/gui.c ("HDPart 0.1").
+ADFVER = 0.1
+ADF    = out/HDPart-$(ADFVER).adf
+
+adf: $(OUT).exe tools/HDPart.info tools/Disk.info
+	@command -v xdftool >/dev/null 2>&1 || { echo "ERROR: xdftool not found - install amitools (pip3 install amitools)"; exit 1; }
+	@mkdir -p out
+	@printf 'HDPart\n' > out/.adf-startup-sequence
+	@xdftool -f $(ADF) create + format "HDPart" ofs + boot install \
+	    + makedir s \
+	    + write $(OUT).exe HDPart \
+	    + write out/.adf-startup-sequence s/startup-sequence \
+	    + write tools/HDPart.info HDPart.info \
+	    + write tools/Disk.info Disk.info
+	@rm -f out/.adf-startup-sequence
+	$(info Built -> $(ADF)  (880K OFS; mount under Workbench and run HDPart, or boot it))
+
 clean:
 	$(info Cleaning...)
 ifdef WINDOWS
