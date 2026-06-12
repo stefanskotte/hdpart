@@ -14,6 +14,17 @@ struct DeviceHandle {
     int             opened;   /* OpenDevice succeeded */
 };
 
+/* OpenDevice initializes a device-specific IORequest whose size varies by
+   device: IOExtTD (trackdisk) is 56 bytes, but IOExtPar (parallel) is 62 and
+   IOExtSer (serial) is 82. dev_open can be asked to open an ARBITRARY
+   user-loaded .device, so an IOExtTD-sized buffer is too small for non-disk
+   devices: OpenDevice then writes its defaults (baud, term arrays, ...) past
+   the end of our allocation and corrupts the heap (delayed crash at the next
+   allocation; Guru 8100xxxx). Allocate a request large enough for any standard
+   device. We still drive it as an IOExtTD for trackdisk commands; OpenDevice
+   only writes what its own device needs, so the slack is harmless. */
+#define DEV_IOREQ_SIZE 256
+
 DeviceHandle *dev_open(const char *driver, ULONG unit)
 {
     DeviceHandle *h = (DeviceHandle *)AllocVec(sizeof(*h), MEMF_CLEAR);
@@ -22,7 +33,7 @@ DeviceHandle *dev_open(const char *driver, ULONG unit)
     h->port = CreateMsgPort();
     if (!h->port) { dev_close(h); return 0; }
 
-    h->req = (struct IOExtTD *)CreateIORequest(h->port, sizeof(struct IOExtTD));
+    h->req = (struct IOExtTD *)CreateIORequest(h->port, DEV_IOREQ_SIZE);
     if (!h->req) { dev_close(h); return 0; }
 
     if (OpenDevice((CONST_STRPTR)driver, unit,
