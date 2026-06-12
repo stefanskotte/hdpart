@@ -2,7 +2,8 @@
 
 **Date:** 2026-06-13
 **Status:** Design approved (visual brainstorm, Direction C)
-**Scope:** `src/gui.c` main window only (dialogs unchanged); `Makefile` version bump.
+**Scope:** `src/gui.c` — main-window redesign + menu bar, **and** a dialog-
+scaffolding refactor; `Makefile` version bump.
 
 ## Problem
 
@@ -34,7 +35,7 @@ actions as visible buttons, organized into two BevelBox panels plus a footer.
  ┌ HDPart 0.2 ───────────────────────────────────────── □ ▢ ┐
  │ ┌─ Disk ────────────────────────────────────────────────┐ │
  │ │ Driver: [↕ parallel.device              ]  [ _Load… ]  │ │
- │ │ Unit:   [↕ (press Scan)                 ]  [ _Scan  ]  │ │
+ │ │ Unit:   [↕ (press Scan)                 ]  [  Scan  ]  │ │
  │ └───────────────────────────────────────────────────────┘ │
  │ ┌─ Partitions ──────────────────────────────────────────┐ │
  │ │ [██████████████ disk-map bar █████████████████████████]│ │
@@ -44,7 +45,7 @@ actions as visible buttons, organized into two BevelBox panels plus a footer.
  │ │ └───────────────────────────────────────────────────┘ │ │
  │ │ [ _New ] [ _Edit… ] [ _Delete ] [ Spli_t… ] [ _Resize… ]│ │
  │ └───────────────────────────────────────────────────────┘ │
- │ Status: <message>                       [ Re_fresh ] [ Sa_ve ]│
+ │ Status: <message>                       [ Re_fresh ] [ _Save ]│
  └───────────────────────────────────────────────────────────┘
 ```
 
@@ -66,17 +67,17 @@ made consistent (uniform padding; equal where labels allow).
 
 | Project | Disk | Partition |
 |---|---|---|
-| About HDPart… | Scan `rA-S` | New `rA-N` |
+| About HDPart… | Scan *(no key)* | New `rA-N` |
 | —— | Load Driver… `rA-L` | Edit… `rA-E` |
-| Save `rA-V` | —— | Delete `rA-D` |
+| Save `rA-S` | —— | Delete `rA-D` |
 | —— | Refresh `rA-F` | —— |
 | Quit `rA-Q` | Init Disk… `rA-I` | Split… `rA-T` |
 |  |  | Resize… `rA-R` |
 
 Notes:
-- `Save = rA-V` because `rA-S` is taken by the app's signature action, Scan. The
-  on-screen Save button underlines the **V** (`Sa_ve`) to match. (Easy to swap if
-  preferred at review.)
+- `Save = rA-S` (standard). **Scan has no keyboard shortcut** — it's a prominent
+  button that doesn't need one, which frees `S` for Save. The on-screen Scan
+  button carries no underlined letter; the Save button underlines **S** (`_Save`).
 - Menu items are enabled/disabled in lockstep with their button counterparts via
   the existing `gui_update_buttons()` state (extended to also `GTMENUITEM`-ghost
   the menu items).
@@ -90,7 +91,8 @@ Notes:
 - **Buttons**: the underlined letter (GadTools underscore in the gadget label,
   NewLook) acts as a plain-key shortcut, handled by adding `IDCMP_VANILLAKEY` to
   the main window and mapping the letter to the same handler. The main window has
-  no string/integer gadgets, so plain letters are unambiguous there.
+  no string/integer gadgets, so plain letters are unambiguous there. **Scan is the
+  one button with no underlined letter / shortcut.**
 
 ## Architecture / components
 
@@ -120,6 +122,29 @@ GadTools positioning, `g_gad[]` table, the `gui_*` handlers).
 7. **`Makefile`** — bump `ADFVER` to match the new `0.2` title (per the existing
    "bump ADFVER to match the gui.c title" convention for `make adf`).
 
+### Dialog scaffolding refactor (in scope)
+
+The four modal dialogs — `gui_request` (Proceed/Cancel + `gui_msg`),
+`gui_edit_dialog`, `gui_resize_dialog`, `gui_split` — each repeat the same
+boilerplate: center-on-screen math, `CreateContext`, `OpenWindowTags` (same flags
+/ screen), the `IDCMP_CLOSEWINDOW`/`IDCMP_REFRESHWINDOW` handling, and the
+`CloseWindow` + `FreeGadgets` cleanup. Factor that scaffolding into small shared
+helpers so each dialog keeps only its *own* gadgets and decision logic:
+
+- `dlg_center(w, h, *left, *top)` — compute centered position on `g_scr`
+  (replaces the duplicated `dwL/dwT/dwW/dwH` math).
+- `dlg_open(title, w, h, idcmp, glist)` — open a centered modal window with the
+  shared flags (`WFLG_DRAGBAR|DEPTHGADGET|ACTIVATE|SMART_REFRESH`, `g_pub ?
+  WA_PubScreen : WA_CustomScreen`), returning the window.
+- `dlg_refresh(win, class)` — the standard `GT_BeginRefresh`/`GT_EndRefresh`
+  response, so each loop just calls it.
+- `dlg_close(win, glist)` — `CloseWindow` + `FreeGadgets` cleanup.
+
+Per-dialog gadget creation and event handling stay as-is (they differ); only the
+scaffolding is shared. This is a **behavior-preserving** refactor — verified by
+the existing dialogs working identically afterward — and is best done as its own
+phase, independent of the main-window/menu work.
+
 ## Data flow / error handling
 
 No data-flow changes. Menus and buttons are two front-ends to the **same**
@@ -127,7 +152,8 @@ handlers (`gui_scan_selected`, `gui_load_driver`, `gui_new`, `gui_edit_dialog`,
 `gui_delete`, `gui_split`, `gui_resize_dialog`, `gui_init_disk`, `gui_save`,
 `gui_refresh_current`, plus a new tiny `gui_about` and the existing quit-confirm
 path). Existing dirty-confirm / disabled-state guards are unchanged and now also
-gate the menu items.
+gate the menu items. The dialog refactor preserves each dialog's behavior exactly;
+only shared scaffolding moves into helpers.
 
 ## Testing
 
@@ -145,6 +171,9 @@ gate the menu items.
      Save / Refresh / Quit-confirm all behave exactly as before.
   6. Also verify on the **own-screen** config (`HDPart-204-ownscreen`) that the
      menu attaches to the custom screen's bar.
+  7. **Dialog refactor regression**: Edit, Resize, Split, and the
+     Proceed/Cancel + message requesters all open centered, refresh correctly,
+     and behave exactly as before.
 
 ## Non-goals (explicit — deferred to a later pass)
 
@@ -152,9 +181,4 @@ gate the menu items.
   topaz-8 metrics; this redesign reflows *within* that assumption (and adds new
   hardcoded coordinates). Making metrics font-derived is a separate, larger
   effort. *Trade-off accepted:* if font-awareness is done later, these coordinates
-  get reworked.
-- **Dialog-scaffolding refactor.** Factoring the repeated
-  CreateContext/center/open/event-loop/cleanup out of the Edit/Split/Resize/
-  request dialogs is out of scope here; those dialogs are untouched.
-
-Both remain captured in the memory `hdpart-gui-overhaul-todo` for a future cycle.
+  get reworked. Remains captured in the memory `hdpart-gui-overhaul-todo`.
