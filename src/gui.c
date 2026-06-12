@@ -233,31 +233,31 @@ static struct Gadget *build_gadgets(void)
     /* Row 1 — Disk panel: Driver cycle + Load button */
     ng.ng_TextAttr   = &g_font;
     ng.ng_VisualInfo = g_vi;
-    ng.ng_LeftEdge = 64 + g_leftb; ng.ng_TopEdge = 8 + g_topb; ng.ng_Width = 420; ng.ng_Height = 14;
+    ng.ng_LeftEdge = 76 + g_leftb; ng.ng_TopEdge = 18 + g_topb; ng.ng_Width = 400; ng.ng_Height = 14;
     ng.ng_GadgetText = (UBYTE *)"Driver:"; ng.ng_GadgetID = GID_DEVICE; ng.ng_Flags = 0;
     g_drvlabels[0] = "Select or load a driver"; g_drvlabels[1] = 0;
     g = CreateGadget(CYCLE_KIND, g, &ng, GTCY_Labels, (ULONG)g_drvlabels, TAG_END);
     g_gad[GID_DEVICE] = g;
 
-    ng.ng_LeftEdge = 490 + g_leftb; ng.ng_TopEdge = 8 + g_topb; ng.ng_Width = 84; ng.ng_Height = 14;
+    ng.ng_LeftEdge = 484 + g_leftb; ng.ng_TopEdge = 18 + g_topb; ng.ng_Width = 82; ng.ng_Height = 14;
     ng.ng_GadgetText = (UBYTE *)"_Load..."; ng.ng_GadgetID = GID_DRIVER;
     g = CreateGadget(BUTTON_KIND, g, &ng, GA_Disabled, (ULONG)(AslBase == 0), GT_Underscore, (ULONG)'_', TAG_END);
     g_gad[GID_DRIVER] = g;
 
     /* Row 2 — Disk panel: Unit cycle + Scan button (normal weight, single height) */
-    ng.ng_LeftEdge = 64 + g_leftb; ng.ng_TopEdge = 28 + g_topb; ng.ng_Width = 420; ng.ng_Height = 14;
+    ng.ng_LeftEdge = 76 + g_leftb; ng.ng_TopEdge = 36 + g_topb; ng.ng_Width = 400; ng.ng_Height = 14;
     ng.ng_GadgetText = (UBYTE *)"Unit:"; ng.ng_GadgetID = GID_UNIT;
     g_unitlabels[0] = "(press Scan)"; g_unitlabels[1] = 0;
     g = CreateGadget(CYCLE_KIND, g, &ng, GTCY_Labels, (ULONG)g_unitlabels, GA_Disabled, TRUE, TAG_END);
     g_gad[GID_UNIT] = g;
 
-    ng.ng_LeftEdge = 490 + g_leftb; ng.ng_TopEdge = 28 + g_topb; ng.ng_Width = 84; ng.ng_Height = 14;
+    ng.ng_LeftEdge = 484 + g_leftb; ng.ng_TopEdge = 36 + g_topb; ng.ng_Width = 82; ng.ng_Height = 14;
     ng.ng_GadgetText = (UBYTE *)"Scan"; ng.ng_GadgetID = GID_SCAN;   /* no underscore: Scan has no shortcut */
     g = CreateGadget(BUTTON_KIND, g, &ng, TAG_END);
     g_gad[GID_SCAN] = g;
 
     /* Partition listview (inside Partitions panel, under bar+header) */
-    ng.ng_LeftEdge = 12 + g_leftb; ng.ng_TopEdge = 94 + g_topb; ng.ng_Width = 556; ng.ng_Height = 66;
+    ng.ng_LeftEdge = 16 + g_leftb; ng.ng_TopEdge = 106 + g_topb; ng.ng_Width = 550; ng.ng_Height = 66;
     ng.ng_GadgetText = 0; ng.ng_GadgetID = GID_PARTS;
     g = CreateGadget(LISTVIEW_KIND, g, &ng, GTLV_Labels, 0, GTLV_ShowSelected, 0, TAG_END);
     g_gad[GID_PARTS] = g;
@@ -265,13 +265,13 @@ static struct Gadget *build_gadgets(void)
     /* Partition-action toolbar (one row under the list) */
     {
         static const struct { int id; const char *txt; int x; int w; } pbtn[] = {
-            { GID_NEW,    "_New",     12,  56 }, { GID_EDIT,   "_Edit...", 72,  72 },
-            { GID_DELETE, "_Delete", 148,  72 }, { GID_SPLIT,  "Spli_t...",224, 74 },
-            { GID_RESIZE, "_Resize...",302, 88 }
+            { GID_NEW,    "_New",     16,  56 }, { GID_EDIT,   "_Edit...", 78,  72 },
+            { GID_DELETE, "_Delete", 156,  72 }, { GID_SPLIT,  "Spli_t...",234, 74 },
+            { GID_RESIZE, "_Resize...",314, 88 }
         };
         int k;
         for (k = 0; k < 5; k++) {
-            ng.ng_LeftEdge = pbtn[k].x + g_leftb; ng.ng_TopEdge = 162 + g_topb;
+            ng.ng_LeftEdge = pbtn[k].x + g_leftb; ng.ng_TopEdge = 174 + g_topb;
             ng.ng_Width = pbtn[k].w; ng.ng_Height = 14;
             ng.ng_GadgetText = (UBYTE *)pbtn[k].txt; ng.ng_GadgetID = pbtn[k].id;
             g = CreateGadget(BUTTON_KIND, g, &ng, GA_Disabled, TRUE, GT_Underscore, (ULONG)'_', TAG_END);
@@ -280,17 +280,17 @@ static struct Gadget *build_gadgets(void)
     }
 
     /* Footer: status text (left) + Refresh + Save (right) */
-    ng.ng_LeftEdge = 12 + g_leftb; ng.ng_TopEdge = 186 + g_topb; ng.ng_Width = 360; ng.ng_Height = 12;
+    ng.ng_LeftEdge = 64 + g_leftb; ng.ng_TopEdge = 196 + g_topb; ng.ng_Width = 320; ng.ng_Height = 12;
     ng.ng_GadgetText = (UBYTE *)"Status:"; ng.ng_GadgetID = GID_STATUS;
     g = CreateGadget(TEXT_KIND, g, &ng, GTTX_Text, (ULONG)"no disk selected", TAG_END);
     g_gad[GID_STATUS] = g;
 
-    ng.ng_LeftEdge = 408 + g_leftb; ng.ng_TopEdge = 184 + g_topb; ng.ng_Width = 76; ng.ng_Height = 14;
+    ng.ng_LeftEdge = 396 + g_leftb; ng.ng_TopEdge = 194 + g_topb; ng.ng_Width = 82; ng.ng_Height = 14;
     ng.ng_GadgetText = (UBYTE *)"Re_fresh"; ng.ng_GadgetID = GID_REFRESH;
     g = CreateGadget(BUTTON_KIND, g, &ng, GA_Disabled, TRUE, GT_Underscore, (ULONG)'_', TAG_END);
     g_gad[GID_REFRESH] = g;
 
-    ng.ng_LeftEdge = 490 + g_leftb; ng.ng_TopEdge = 184 + g_topb; ng.ng_Width = 84; ng.ng_Height = 14;
+    ng.ng_LeftEdge = 484 + g_leftb; ng.ng_TopEdge = 194 + g_topb; ng.ng_Width = 82; ng.ng_Height = 14;
     ng.ng_GadgetText = (UBYTE *)"_Save"; ng.ng_GadgetID = GID_SAVE;
     g = CreateGadget(BUTTON_KIND, g, &ng, GA_Disabled, TRUE, GT_Underscore, (ULONG)'_', TAG_END);
     g_gad[GID_SAVE] = g;
@@ -1196,7 +1196,7 @@ int gui_run(void)
     g_win = OpenWindowTags(0,
         WA_Left, 40, WA_Top, 16,
         WA_Width,  g_leftb + 580 + g_scr->WBorRight,
-        WA_Height, g_topb + 204 + g_scr->WBorBottom,
+        WA_Height, g_topb + 214 + g_scr->WBorBottom,
         WA_Title, (ULONG)"HDPart 0.1",
         WA_Gadgets, (ULONG)g_glist,
         WA_IDCMP, IDCMP_CLOSEWINDOW | IDCMP_REFRESHWINDOW | IDCMP_MOUSEBUTTONS | CYCLEIDCMP | BUTTONIDCMP | LISTVIEWIDCMP,
@@ -1508,7 +1508,7 @@ static void gui_load_driver(void)
 /* The disk-map bar rectangle (window-relative). Shared by draw + hit-test. */
 static void gui_bar_rect(int *bx, int *by, int *bw, int *bh)
 {
-    *bx = 12 + g_leftb; *by = 64 + g_topb; *bw = 556; *bh = 16;
+    *bx = 16 + g_leftb; *by = 74 + g_topb; *bw = 550; *bh = 16;
 }
 
 /* Return the partition index whose bar segment contains (mx,my), or -1. */
@@ -1549,12 +1549,12 @@ static void gui_draw_chrome(void)
     if (!g_win) return;
     rp = g_win->RPort;
     /* Disk panel */
-    DrawBevelBox(rp, 6 + g_leftb, 2 + g_topb, 568, 44, GT_VisualInfo, (ULONG)g_vi, TAG_END);
+    DrawBevelBox(rp, 6 + g_leftb, 4 + g_topb, 568, 50, GT_VisualInfo, (ULONG)g_vi, TAG_END);
     SetAPen(rp, 1); SetBPen(rp, 0);
-    Move(rp, 14 + g_leftb, 2 + g_topb + 3); Text(rp, (CONST_STRPTR)" Disk ", 6);
+    Move(rp, 16 + g_leftb, 4 + g_topb + 8); Text(rp, (CONST_STRPTR)" Disk ", 6);
     /* Partitions panel */
-    DrawBevelBox(rp, 6 + g_leftb, 52 + g_topb, 568, 128, GT_VisualInfo, (ULONG)g_vi, TAG_END);
-    Move(rp, 14 + g_leftb, 52 + g_topb + 3); Text(rp, (CONST_STRPTR)" Partitions ", 12);
+    DrawBevelBox(rp, 6 + g_leftb, 58 + g_topb, 568, 132, GT_VisualInfo, (ULONG)g_vi, TAG_END);
+    Move(rp, 16 + g_leftb, 58 + g_topb + 8); Text(rp, (CONST_STRPTR)" Partitions ", 12);
 }
 
 void gui_draw_bar(void)
@@ -1620,8 +1620,8 @@ static void gui_draw_partheader(void)
     s_cat(hdr, &p, "Start"); s_pad(hdr, &p, 38);
     s_cat(hdr, &p, "End");   s_pad(hdr, &p, 46);
     s_cat(hdr, &p, "Size");  hdr[p] = 0;
-    lx = 12 + g_leftb + 4;               /* match the listview's text inset */
-    ly = 84 + g_topb - 2;                /* baseline just above the listview */
+    lx = 16 + g_leftb + 4;               /* match the listview's text inset */
+    ly = 102 + g_topb - 2;               /* baseline just above the listview */
     SetAPen(rp, 1);
     Move(rp, lx, ly);
     Text(rp, (CONST_STRPTR)hdr, (LONG)p);
@@ -1632,7 +1632,7 @@ static void gui_draw_partheader(void)
 static void gui_draw_easter(void)
 {
     struct RastPort *rp;
-    int px = 560 + g_leftb, py = 198 + g_topb;   /* bottom-right corner of widened window */
+    int px = 560 + g_leftb, py = 206 + g_topb;   /* bottom-right corner of widened window */
     if (!g_win) return;
     rp = g_win->RPort;
     SetAPen(rp, 1);
@@ -1646,5 +1646,5 @@ static void gui_draw_easter(void)
    rect won't conflict with the Save button to its left. */
 static int gui_hit_easter(int mx, int my)
 {
-    return mx >= 554 + g_leftb && my >= 194 + g_topb;
+    return mx >= 554 + g_leftb && my >= 202 + g_topb;
 }
