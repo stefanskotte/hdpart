@@ -885,7 +885,7 @@ static int gui_resize_dialog(int index)
     uint32_t oldLow, oldHigh, cylBlocks, blockBytes;
     uint32_t gapAfter, gapBefore, maxCyls, maxMB, curMB, n;
     static const char *anchorLabels[3];
-    static char maxBuf[24], readBuf[56], freeBuf[56];
+    static char maxBuf[24], readBuf[56];
 
     if (!g_have_model || index < 0 || index >= g_model.num_parts) return 0;
     pt = &g_model.parts[index];
@@ -909,12 +909,6 @@ static int gui_resize_dialog(int index)
 
     { int p = 0; s_cat(maxBuf, &p, "max "); p += u2s(maxBuf + p, maxMB);
       s_cat(maxBuf, &p, " MB"); maxBuf[p] = 0; }
-    { int p = 0; uint32_t fb, fa;
-      fb = (oldLow > gapBefore) ? rdb_cyls_to_mb(oldLow - gapBefore, cylBlocks, blockBytes) : 0;
-      fa = (gapAfter > oldHigh + 1) ? rdb_cyls_to_mb(gapAfter - 1 - oldHigh, cylBlocks, blockBytes) : 0;
-      s_cat(freeBuf, &p, "Free before "); p += u2s(freeBuf + p, fb);
-      s_cat(freeBuf, &p, " MB   after "); p += u2s(freeBuf + p, fa);
-      s_cat(freeBuf, &p, " MB"); freeBuf[p] = 0; }
 
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wincompatible-pointer-types"
@@ -923,19 +917,14 @@ static int gui_resize_dialog(int index)
     if (!g) return 0;
     ng.ng_TextAttr = &g_font; ng.ng_VisualInfo = g_vi; ng.ng_Flags = 0;
 
-    /* free before/after context line (read-only) */
-    ng.ng_LeftEdge = dl + 10; ng.ng_TopEdge = dt + 6; ng.ng_Width = 320; ng.ng_Height = 12;
-    ng.ng_GadgetText = 0; ng.ng_GadgetID = 0;
-    g = CreateGadget(TEXT_KIND, g, &ng, GTTX_Text, (ULONG)freeBuf, TAG_END);
-
     /* anchor cycle */
-    ng.ng_LeftEdge = dl + 100; ng.ng_TopEdge = dt + 24; ng.ng_Width = 230; ng.ng_Height = 14;
+    ng.ng_LeftEdge = dl + 100; ng.ng_TopEdge = dt + 6; ng.ng_Width = 230; ng.ng_Height = 14;
     ng.ng_GadgetText = (UBYTE *)"Anchor"; ng.ng_GadgetID = 1;
     g = CreateGadget(CYCLE_KIND, g, &ng, GTCY_Labels, (ULONG)anchorLabels, GTCY_Active, 0, TAG_END);
     gAnchor = g;
 
     /* size (MB) */
-    ng.ng_LeftEdge = dl + 100; ng.ng_TopEdge = dt + 44; ng.ng_Width = 90; ng.ng_Height = 14;
+    ng.ng_LeftEdge = dl + 100; ng.ng_TopEdge = dt + 26; ng.ng_Width = 90; ng.ng_Height = 14;
     ng.ng_GadgetText = (UBYTE *)"Size (MB)"; ng.ng_GadgetID = 2;
     g = CreateGadget(INTEGER_KIND, g, &ng, GTIN_Number, (ULONG)n, GTIN_MaxChars, 7, TAG_END);
     gSize = g;
@@ -946,18 +935,18 @@ static int gui_resize_dialog(int index)
     gMaxHint = g;
 
     /* live cyl readout (filled by RZ_RECOMPUTE below) */
-    ng.ng_LeftEdge = dl + 10; ng.ng_TopEdge = dt + 64; ng.ng_Width = 320; ng.ng_Height = 12;
+    ng.ng_LeftEdge = dl + 10; ng.ng_TopEdge = dt + 46; ng.ng_Width = 320; ng.ng_Height = 12;
     ng.ng_GadgetText = 0; ng.ng_GadgetID = 0;
     g = CreateGadget(TEXT_KIND, g, &ng, GTTX_Text, (ULONG)"", TAG_END);
     gRead = g;
 
     /* persistent caveat */
-    ng.ng_LeftEdge = dl + 10; ng.ng_TopEdge = dt + 80; ng.ng_Width = 360; ng.ng_Height = 12;
+    ng.ng_LeftEdge = dl + 10; ng.ng_TopEdge = dt + 62; ng.ng_Width = 360; ng.ng_Height = 12;
     g = CreateGadget(TEXT_KIND, g, &ng, GTTX_Text,
                      (ULONG)"NOTE: Resizing partitions implies data loss.", TAG_END);
 
     /* Ok / Cancel (Cancel right-aligned, equal padding to Ok) */
-    ng.ng_LeftEdge = dl + 10; ng.ng_TopEdge = dt + 98; ng.ng_Width = 70; ng.ng_Height = 14;
+    ng.ng_LeftEdge = dl + 10; ng.ng_TopEdge = dt + 80; ng.ng_Width = 70; ng.ng_Height = 14;
     ng.ng_GadgetText = (UBYTE *)"Ok"; ng.ng_GadgetID = 10;
     g = CreateGadget(BUTTON_KIND, g, &ng, TAG_END);
     ng.ng_LeftEdge = dl + 300; ng.ng_GadgetText = (UBYTE *)"Cancel"; ng.ng_GadgetID = 11;
@@ -965,7 +954,7 @@ static int gui_resize_dialog(int index)
     if (!g) { FreeGadgets(dglist); return 0; }
 
     {   int dwW = dl + 380 + g_scr->WBorRight;
-        int dwH = dt + 120 + g_scr->WBorBottom;
+        int dwH = dt + 102 + g_scr->WBorBottom;
         int dwL = g_win->LeftEdge + (g_win->Width  - dwW) / 2;
         int dwT = g_win->TopEdge  + (g_win->Height - dwH) / 2;
         if (dwL < 0) dwL = 0;
