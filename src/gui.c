@@ -1523,7 +1523,7 @@ static void gui_load_driver(void)
 /* The disk-map bar rectangle (window-relative). Shared by draw + hit-test. */
 static void gui_bar_rect(int *bx, int *by, int *bw, int *bh)
 {
-    *bx = 10 + g_leftb; *by = 48 + g_topb; *bw = 440; *bh = 16;
+    *bx = 12 + g_leftb; *by = 64 + g_topb; *bw = 556; *bh = 16;
 }
 
 /* Return the partition index whose bar segment contains (mx,my), or -1. */
@@ -1618,8 +1618,8 @@ static void gui_draw_partheader(void)
     s_cat(hdr, &p, "Start"); s_pad(hdr, &p, 38);
     s_cat(hdr, &p, "End");   s_pad(hdr, &p, 46);
     s_cat(hdr, &p, "Size");  hdr[p] = 0;
-    lx = 10 + g_leftb + 4;               /* match the listview's text inset */
-    ly = 74 + g_topb - 2;                /* baseline just above the listview */
+    lx = 12 + g_leftb + 4;               /* match the listview's text inset */
+    ly = 84 + g_topb - 2;                /* baseline just above the listview */
     SetAPen(rp, 1);
     Move(rp, lx, ly);
     Text(rp, (CONST_STRPTR)hdr, (LONG)p);
@@ -1630,7 +1630,7 @@ static void gui_draw_partheader(void)
 static void gui_draw_easter(void)
 {
     struct RastPort *rp;
-    int px = 452 + g_leftb, py = 200 + g_topb;   /* bottom-right, below the buttons */
+    int px = 560 + g_leftb, py = 198 + g_topb;   /* bottom-right corner of widened window */
     if (!g_win) return;
     rp = g_win->RPort;
     SetAPen(rp, 1);
@@ -1644,5 +1644,5 @@ static void gui_draw_easter(void)
    rect won't conflict with the Save button to its left. */
 static int gui_hit_easter(int mx, int my)
 {
-    return mx >= 446 + g_leftb && my >= 196 + g_topb;
+    return mx >= 554 + g_leftb && my >= 194 + g_topb;
 }
