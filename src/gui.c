@@ -141,8 +141,12 @@ static int streq(const char *a, const char *b)
 /* Set the status-line text. */
 static void gui_status(const char *s)
 {
-    int p = 0;
-    while (s[p] && p < (int)sizeof(g_statusbuf) - 1) { g_statusbuf[p] = s[p]; p++; }
+    /* "Status: " is baked into the text (not a GadTools label) so the line's
+       left edge aligns deterministically with the bevel content column. */
+    static const char pre[] = "Status: ";
+    int p = 0, i = 0;
+    while (pre[p]) { g_statusbuf[p] = pre[p]; p++; }
+    while (s[i] && p < (int)sizeof(g_statusbuf) - 1) { g_statusbuf[p++] = s[i++]; }
     g_statusbuf[p] = 0;
     if (g_win && g_gad[GID_STATUS])
         GT_SetGadgetAttrs(g_gad[GID_STATUS], g_win, 0, GTTX_Text, (ULONG)g_statusbuf, TAG_END);
@@ -279,10 +283,11 @@ static struct Gadget *build_gadgets(void)
         }
     }
 
-    /* Footer: status text (left) + Refresh + Save (right) */
-    ng.ng_LeftEdge = 64 + g_leftb; ng.ng_TopEdge = 196 + g_topb; ng.ng_Width = 320; ng.ng_Height = 12;
-    ng.ng_GadgetText = (UBYTE *)"Status:"; ng.ng_GadgetID = GID_STATUS;
-    g = CreateGadget(TEXT_KIND, g, &ng, GTTX_Text, (ULONG)"no disk selected", TAG_END);
+    /* Footer: status text (left, aligned with bevel content column) + Refresh + Save (right).
+       No GadTools label — "Status: " is baked into the text by gui_status(). */
+    ng.ng_LeftEdge = 16 + g_leftb; ng.ng_TopEdge = 196 + g_topb; ng.ng_Width = 374; ng.ng_Height = 12;
+    ng.ng_GadgetText = 0; ng.ng_GadgetID = GID_STATUS;
+    g = CreateGadget(TEXT_KIND, g, &ng, GTTX_Text, (ULONG)"Status: no disk selected", TAG_END);
     g_gad[GID_STATUS] = g;
 
     ng.ng_LeftEdge = 396 + g_leftb; ng.ng_TopEdge = 194 + g_topb; ng.ng_Width = 82; ng.ng_Height = 14;
