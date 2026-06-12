@@ -903,8 +903,8 @@ static int gui_resize_dialog(int index)
     if (curMB > maxMB) curMB = maxMB;
     n = curMB;
 
-    anchorLabels[0] = "Move: End edge (keep start)";
-    anchorLabels[1] = "Move: Start edge (keep end)";
+    anchorLabels[0] = "Move: End edge";
+    anchorLabels[1] = "Move: Start edge";
     anchorLabels[2] = 0;
 
     { int p = 0; s_cat(maxBuf, &p, "max "); p += u2s(maxBuf + p, maxMB);
@@ -954,7 +954,7 @@ static int gui_resize_dialog(int index)
     /* persistent caveat */
     ng.ng_LeftEdge = dl + 10; ng.ng_TopEdge = dt + 80; ng.ng_Width = 360; ng.ng_Height = 12;
     g = CreateGadget(TEXT_KIND, g, &ng, GTTX_Text,
-                     (ULONG)"Resize edits the table - reformat after.", TAG_END);
+                     (ULONG)"NOTE: Resizing partitions implies data loss.", TAG_END);
 
     /* Ok / Cancel (Cancel right-aligned, equal padding to Ok) */
     ng.ng_LeftEdge = dl + 10; ng.ng_TopEdge = dt + 98; ng.ng_Width = 70; ng.ng_Height = 14;
