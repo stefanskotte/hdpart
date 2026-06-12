@@ -285,7 +285,7 @@ static struct Gadget *build_gadgets(void)
     g_gad[GID_REFRESH] = g;
 
     /* Resize... button beside Refresh: grow/shrink the selected partition. */
-    ng.ng_LeftEdge = 90 + g_leftb; ng.ng_TopEdge = 146 + g_topb; ng.ng_Width = 72; ng.ng_Height = 14;
+    ng.ng_LeftEdge = 90 + g_leftb; ng.ng_TopEdge = 146 + g_topb; ng.ng_Width = 88; ng.ng_Height = 14;
     ng.ng_GadgetText = (UBYTE *)"Resize..."; ng.ng_GadgetID = GID_RESIZE;
     g = CreateGadget(BUTTON_KIND, g, &ng, GA_Disabled, TRUE, TAG_END);
     g_gad[GID_RESIZE] = g;
@@ -709,7 +709,7 @@ static int gui_edit_dialog(int index)
     ng.ng_LeftEdge = dl + 10; ng.ng_TopEdge = dt + 168; ng.ng_Width = 70; ng.ng_Height = 14;
     ng.ng_GadgetText = (UBYTE *)"Ok"; ng.ng_GadgetID = 10;
     g = CreateGadget(BUTTON_KIND, g, &ng, TAG_END);
-    ng.ng_LeftEdge = dl + 210; ng.ng_GadgetText = (UBYTE *)"Cancel"; ng.ng_GadgetID = 11;
+    ng.ng_LeftEdge = dl + 270; ng.ng_GadgetText = (UBYTE *)"Cancel"; ng.ng_GadgetID = 11;
     g = CreateGadget(BUTTON_KIND, g, &ng, TAG_END);
     if (!g) { FreeGadgets(dglist); return 0; }
 
@@ -952,19 +952,19 @@ static int gui_resize_dialog(int index)
     gRead = g;
 
     /* persistent caveat */
-    ng.ng_LeftEdge = dl + 10; ng.ng_TopEdge = dt + 80; ng.ng_Width = 320; ng.ng_Height = 12;
+    ng.ng_LeftEdge = dl + 10; ng.ng_TopEdge = dt + 80; ng.ng_Width = 360; ng.ng_Height = 12;
     g = CreateGadget(TEXT_KIND, g, &ng, GTTX_Text,
-                     (ULONG)"Resize edits the table only - reformat to use new space.", TAG_END);
+                     (ULONG)"Resize edits the table - reformat after.", TAG_END);
 
-    /* Ok / Cancel */
+    /* Ok / Cancel (Cancel right-aligned, equal padding to Ok) */
     ng.ng_LeftEdge = dl + 10; ng.ng_TopEdge = dt + 98; ng.ng_Width = 70; ng.ng_Height = 14;
     ng.ng_GadgetText = (UBYTE *)"Ok"; ng.ng_GadgetID = 10;
     g = CreateGadget(BUTTON_KIND, g, &ng, TAG_END);
-    ng.ng_LeftEdge = dl + 200; ng.ng_GadgetText = (UBYTE *)"Cancel"; ng.ng_GadgetID = 11;
+    ng.ng_LeftEdge = dl + 300; ng.ng_GadgetText = (UBYTE *)"Cancel"; ng.ng_GadgetID = 11;
     g = CreateGadget(BUTTON_KIND, g, &ng, TAG_END);
     if (!g) { FreeGadgets(dglist); return 0; }
 
-    {   int dwW = dl + 350 + g_scr->WBorRight;
+    {   int dwW = dl + 380 + g_scr->WBorRight;
         int dwH = dt + 120 + g_scr->WBorBottom;
         int dwL = g_win->LeftEdge + (g_win->Width  - dwW) / 2;
         int dwT = g_win->TopEdge  + (g_win->Height - dwH) / 2;
