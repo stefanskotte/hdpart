@@ -1265,7 +1265,7 @@ int gui_run(void)
         WA_Height, g_topb + 214 + g_scr->WBorBottom,
         WA_Title, (ULONG)"HDPart 0.1",
         WA_Gadgets, (ULONG)g_glist,
-        WA_IDCMP, IDCMP_CLOSEWINDOW | IDCMP_REFRESHWINDOW | IDCMP_MOUSEBUTTONS | IDCMP_MENUPICK | CYCLEIDCMP | BUTTONIDCMP | LISTVIEWIDCMP,
+        WA_IDCMP, IDCMP_CLOSEWINDOW | IDCMP_REFRESHWINDOW | IDCMP_MOUSEBUTTONS | IDCMP_MENUPICK | IDCMP_VANILLAKEY | CYCLEIDCMP | BUTTONIDCMP | LISTVIEWIDCMP,
         WA_Flags, WFLG_DRAGBAR | WFLG_DEPTHGADGET | WFLG_CLOSEGADGET |
                   WFLG_ACTIVATE | WFLG_SMART_REFRESH,
         g_pub ? WA_PubScreen : WA_CustomScreen, (ULONG)g_scr,
@@ -1365,6 +1365,27 @@ int gui_run(void)
                             }
                         }
                         mnum = mi ? mi->NextSelect : MENUNULL;
+                    }
+                    break;
+                }
+                case IDCMP_VANILLAKEY: {
+                    UBYTE ch = (UBYTE)code; if (ch >= 'A' && ch <= 'Z') ch += 32;
+                    switch (ch) {
+                        case 'l': gui_load_driver(); break;
+                        case 'n': gui_new(); break;
+                        case 'd': gui_delete(); break;
+                        case 't': gui_split(); break;
+                        case 'f': gui_refresh_current(); break;
+                        case 's': gui_save(); break;
+                        case 'e':
+                            if (g_sel_part >= 0 && g_sel_part < g_model.num_parts) {
+                                gui_edit_dialog(g_sel_part); gui_refresh_parts(); gui_update_buttons();
+                            }
+                            break;
+                        case 'r':
+                            if (g_sel_part >= 0 && g_sel_part < g_model.num_parts)
+                                gui_resize_dialog(g_sel_part);
+                            break;
                     }
                     break;
                 }
