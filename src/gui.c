@@ -126,6 +126,7 @@ static void gui_select_unit(int unitIdx);     /* Unit cycle: show that disk's pa
 static void gui_scan_selected(void);          /* probe the target driver (Scan button) */
 static void gui_refresh_current(void);        /* re-probe the currently shown device+unit */
 static int  gui_resize_dialog(int index);     /* grow/shrink the selected partition */
+static void gui_draw_chrome(void);        /* BevelBox group frames + captions */
 void gui_draw_bar(void);
 static void gui_draw_partheader(void);    /* column headings above the listview */
 static void gui_draw_easter(void);        /* the bottom-right pi glyph */
@@ -1194,8 +1195,8 @@ int gui_run(void)
 
     g_win = OpenWindowTags(0,
         WA_Left, 40, WA_Top, 16,
-        WA_Width,  g_leftb + 460 + g_scr->WBorRight,
-        WA_Height, g_topb + 206 + g_scr->WBorBottom,
+        WA_Width,  g_leftb + 580 + g_scr->WBorRight,
+        WA_Height, g_topb + 204 + g_scr->WBorBottom,
         WA_Title, (ULONG)"HDPart 0.1",
         WA_Gadgets, (ULONG)g_glist,
         WA_IDCMP, IDCMP_CLOSEWINDOW | IDCMP_REFRESHWINDOW | IDCMP_MOUSEBUTTONS | CYCLEIDCMP | BUTTONIDCMP | LISTVIEWIDCMP,
@@ -1206,6 +1207,7 @@ int gui_run(void)
     if (!g_win) goto cleanup_gad;
 
     GT_RefreshWindow(g_win, 0);
+    gui_draw_chrome();
     gui_init_picker();     /* no-probe picker: prompt + driver names */
     gui_draw_bar();        /* initial bar (Task 3a.4.1) */
 
@@ -1227,6 +1229,7 @@ int gui_run(void)
                     break;
                 case IDCMP_REFRESHWINDOW:
                     GT_BeginRefresh(g_win);
+                    gui_draw_chrome();
                     gui_draw_bar();
                     GT_EndRefresh(g_win, TRUE);
                     break;
@@ -1535,6 +1538,23 @@ static void gui_set_selection(int idx)
        redraws the disk-map bar outline. */
     gui_refresh_parts();
     gui_update_buttons();
+}
+
+/* Draw the two BevelBox group frames + their captions. Not gadgets, so must be
+   redrawn on every window refresh (like gui_draw_bar). Coordinates are window-
+   relative and match the gadget layout in build_gadgets(). */
+static void gui_draw_chrome(void)
+{
+    struct RastPort *rp;
+    if (!g_win) return;
+    rp = g_win->RPort;
+    /* Disk panel */
+    DrawBevelBox(rp, 6 + g_leftb, 2 + g_topb, 568, 44, GT_VisualInfo, (ULONG)g_vi, TAG_END);
+    SetAPen(rp, 1); SetBPen(rp, 0);
+    Move(rp, 14 + g_leftb, 2 + g_topb + 3); Text(rp, (CONST_STRPTR)" Disk ", 6);
+    /* Partitions panel */
+    DrawBevelBox(rp, 6 + g_leftb, 52 + g_topb, 568, 128, GT_VisualInfo, (ULONG)g_vi, TAG_END);
+    Move(rp, 14 + g_leftb, 52 + g_topb + 3); Text(rp, (CONST_STRPTR)" Partitions ", 12);
 }
 
 void gui_draw_bar(void)
