@@ -154,6 +154,20 @@ static void gui_status(const char *s)
         GT_SetGadgetAttrs(g_gad[GID_STATUS], g_win, 0, GTTX_Text, (ULONG)g_statusbuf, TAG_END);
 }
 
+/* FULLMENUNUM indices (menu,item) for enable/disable + dispatch readability. */
+enum { MN_PROJECT=0, MN_DISK=1, MN_PART=2 };
+enum { IT_ABOUT=0, IT_SAVE=2, IT_QUIT=4 };               /* Project items */
+enum { ID_SCAN=0, ID_LOAD=1, ID_REFRESH=3, ID_INIT=4 };  /* Disk items   */
+enum { IP_NEW=0, IP_EDIT=1, IP_DELETE=2, IP_SPLIT=4, IP_RESIZE=5 }; /* Partition items */
+
+/* Enable/disable one menu item (menu,item) on the attached strip. */
+static void gui_menu_enable(UWORD menu, UWORD item, int on)
+{
+    UWORD num = FULLMENUNUM(menu, item, NOSUB);
+    if (!g_win || !g_menu) return;
+    if (on) OnMenu(g_win, num); else OffMenu(g_win, num);
+}
+
 static void gui_update_buttons(void)
 {
     int hasModel = g_have_model;
@@ -168,6 +182,15 @@ static void gui_update_buttons(void)
     GT_SetGadgetAttrs(g_gad[GID_SCAN],   g_win, 0, GA_Disabled, (ULONG)(g_target_driver[0] == 0), TAG_END);
     GT_SetGadgetAttrs(g_gad[GID_REFRESH],g_win, 0, GA_Disabled, (ULONG)(g_cur_unitidx < 0), TAG_END);
     GT_SetGadgetAttrs(g_gad[GID_RESIZE], g_win, 0, GA_Disabled, (ULONG)!hasSel, TAG_END);
+    gui_menu_enable(MN_PROJECT, IT_SAVE,    hasModel && g_dirty);
+    gui_menu_enable(MN_DISK,    ID_SCAN,    g_target_driver[0] != 0);
+    gui_menu_enable(MN_DISK,    ID_REFRESH, g_cur_unitidx >= 0);
+    gui_menu_enable(MN_DISK,    ID_INIT,    hasGeo);
+    gui_menu_enable(MN_PART,    IP_NEW,     hasModel);
+    gui_menu_enable(MN_PART,    IP_EDIT,    hasSel);
+    gui_menu_enable(MN_PART,    IP_DELETE,  hasSel);
+    gui_menu_enable(MN_PART,    IP_SPLIT,   hasGeo);
+    gui_menu_enable(MN_PART,    IP_RESIZE,  hasSel);
 }
 
 /* Rebuild the partition listview + status text + bar from g_model. */
@@ -244,12 +267,6 @@ static struct NewMenu g_newmenu[] = {
     {  NM_ITEM, "Resize...",    "R", 0, 0, 0 },
     { NM_END, 0, 0, 0, 0, 0 }
 };
-/* FULLMENUNUM indices (menu,item) for enable/disable + dispatch readability. */
-enum { MN_PROJECT=0, MN_DISK=1, MN_PART=2 };
-enum { IT_ABOUT=0, IT_SAVE=2, IT_QUIT=4 };               /* Project items */
-enum { ID_SCAN=0, ID_LOAD=1, ID_REFRESH=3, ID_INIT=4 };  /* Disk items   */
-enum { IP_NEW=0, IP_EDIT=1, IP_DELETE=2, IP_SPLIT=4, IP_RESIZE=5 }; /* Partition items */
-
 static struct Gadget *build_gadgets(void)
 {
     struct NewGadget ng;
