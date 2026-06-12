@@ -42,7 +42,6 @@ static APTR            g_vi;          /* VisualInfo */
 static struct Gadget  *g_glist;      /* gadtools context list */
 static struct Gadget  *g_gad[16];    /* gadget pointers by a small index */
 static struct TextAttr g_font = { (STRPTR)"topaz.font", 8, 0, 0 };
-static struct TextAttr g_font_bold = { (STRPTR)"topaz.font", 8, FSF_BOLD, 0 };
 
 /* Discovery + current selection (static: keep off the stack). */
 static DiscDisk g_disks[DISC_MAX];
