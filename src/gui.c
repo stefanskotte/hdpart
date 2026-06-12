@@ -42,6 +42,7 @@ static APTR            g_vi;          /* VisualInfo */
 static struct Gadget  *g_glist;      /* gadtools context list */
 static struct Gadget  *g_gad[16];    /* gadget pointers by a small index */
 static struct TextAttr g_font = { (STRPTR)"topaz.font", 8, 0, 0 };
+static struct Menu    *g_menu = 0;   /* menu strip attached to g_win */
 
 /* Discovery + current selection (static: keep off the stack). */
 static DiscDisk g_disks[DISC_MAX];
@@ -118,6 +119,7 @@ static void fstype_label(char *out, uint32_t t)
 }
 
 /* Forward decls. */
+static void gui_about(void);
 static void gui_load_driver(void);
 static void gui_split(void);                  /* quick split-into-N-equal dialog */
 static void gui_init_picker(void);            /* no-probe startup picker */
@@ -217,6 +219,36 @@ static void gui_refresh_parts(void)
         GT_SetGadgetAttrs(g_gad[GID_STATUS], g_win, 0, GTTX_Text, (ULONG)g_statusbuf, TAG_END);
     gui_draw_bar();
 }
+
+/* Screen-top menu strip. nm_CommKey letters are the right-Amiga shortcuts.
+   Scan has none (S belongs to Save). Items map 1:1 to the existing handlers. */
+static struct NewMenu g_newmenu[] = {
+    { NM_TITLE, "Project",       0,  0, 0, 0 },
+    {  NM_ITEM, "About HDPart...",0, 0, 0, (APTR)0 },
+    {  NM_ITEM, NM_BARLABEL,     0,  0, 0, 0 },
+    {  NM_ITEM, "Save",         "S", 0, 0, 0 },
+    {  NM_ITEM, NM_BARLABEL,     0,  0, 0, 0 },
+    {  NM_ITEM, "Quit",         "Q", 0, 0, 0 },
+    { NM_TITLE, "Disk",          0,  0, 0, 0 },
+    {  NM_ITEM, "Scan",          0,  0, 0, 0 },
+    {  NM_ITEM, "Load Driver...","L",0, 0, 0 },
+    {  NM_ITEM, NM_BARLABEL,     0,  0, 0, 0 },
+    {  NM_ITEM, "Refresh",      "F", 0, 0, 0 },
+    {  NM_ITEM, "Init Disk...", "I", 0, 0, 0 },
+    { NM_TITLE, "Partition",     0,  0, 0, 0 },
+    {  NM_ITEM, "New",          "N", 0, 0, 0 },
+    {  NM_ITEM, "Edit...",      "E", 0, 0, 0 },
+    {  NM_ITEM, "Delete",       "D", 0, 0, 0 },
+    {  NM_ITEM, NM_BARLABEL,     0,  0, 0, 0 },
+    {  NM_ITEM, "Split...",     "T", 0, 0, 0 },
+    {  NM_ITEM, "Resize...",    "R", 0, 0, 0 },
+    { NM_END, 0, 0, 0, 0, 0 }
+};
+/* FULLMENUNUM indices (menu,item) for enable/disable + dispatch readability. */
+enum { MN_PROJECT=0, MN_DISK=1, MN_PART=2 };
+enum { IT_ABOUT=0, IT_SAVE=2, IT_QUIT=4 };               /* Project items */
+enum { ID_SCAN=0, ID_LOAD=1, ID_REFRESH=3, ID_INIT=4 };  /* Disk items   */
+enum { IP_NEW=0, IP_EDIT=1, IP_DELETE=2, IP_SPLIT=4, IP_RESIZE=5 }; /* Partition items */
 
 static struct Gadget *build_gadgets(void)
 {
@@ -1166,6 +1198,18 @@ static void gui_split(void)
     gui_update_buttons();
 }
 
+/* Create + layout the menu strip and attach it to g_win. Returns 1 on success. */
+static int build_menus(void)
+{
+    g_menu = CreateMenus(g_newmenu, TAG_END);
+    if (!g_menu) return 0;
+    if (!LayoutMenus(g_menu, g_vi, GTMN_NewLookMenus, TRUE, TAG_END)) {
+        FreeMenus(g_menu); g_menu = 0; return 0;
+    }
+    SetMenuStrip(g_win, g_menu);
+    return 1;
+}
+
 int gui_run(void)
 {
     BOOL done = FALSE;
@@ -1204,12 +1248,14 @@ int gui_run(void)
         WA_Height, g_topb + 214 + g_scr->WBorBottom,
         WA_Title, (ULONG)"HDPart 0.1",
         WA_Gadgets, (ULONG)g_glist,
-        WA_IDCMP, IDCMP_CLOSEWINDOW | IDCMP_REFRESHWINDOW | IDCMP_MOUSEBUTTONS | CYCLEIDCMP | BUTTONIDCMP | LISTVIEWIDCMP,
+        WA_IDCMP, IDCMP_CLOSEWINDOW | IDCMP_REFRESHWINDOW | IDCMP_MOUSEBUTTONS | IDCMP_MENUPICK | CYCLEIDCMP | BUTTONIDCMP | LISTVIEWIDCMP,
         WA_Flags, WFLG_DRAGBAR | WFLG_DEPTHGADGET | WFLG_CLOSEGADGET |
                   WFLG_ACTIVATE | WFLG_SMART_REFRESH,
         g_pub ? WA_PubScreen : WA_CustomScreen, (ULONG)g_scr,
         TAG_END);
     if (!g_win) goto cleanup_gad;
+
+    if (!build_menus()) goto cleanup_win;   /* new cleanup label, Step 6 */
 
     GT_RefreshWindow(g_win, 0);
     gui_draw_chrome();
@@ -1270,10 +1316,51 @@ int gui_run(void)
                         }
                     }
                     break;
+                case IDCMP_MENUPICK: {
+                    UWORD mnum = code;
+                    while (mnum != MENUNULL) {
+                        struct MenuItem *mi = ItemAddress(g_menu, mnum);
+                        UWORD mn = MENUNUM(mnum), it = ITEMNUM(mnum);
+                        if (mn == MN_PROJECT) {
+                            if (it == IT_ABOUT) gui_about();
+                            else if (it == IT_SAVE) gui_save();
+                            else if (it == IT_QUIT) {
+                                if (!g_dirty || gui_confirm("Quit HDPart",
+                                        "Discard unsaved changes and quit?")) done = TRUE;
+                            }
+                        } else if (mn == MN_DISK) {
+                            if (it == ID_SCAN) gui_scan_selected();
+                            else if (it == ID_LOAD) gui_load_driver();
+                            else if (it == ID_REFRESH) gui_refresh_current();
+                            else if (it == ID_INIT) gui_init_disk();
+                        } else if (mn == MN_PART) {
+                            if (it == IP_NEW) gui_new();
+                            else if (it == IP_EDIT) {
+                                if (g_sel_part >= 0 && g_sel_part < g_model.num_parts) {
+                                    gui_edit_dialog(g_sel_part); gui_refresh_parts(); gui_update_buttons();
+                                }
+                            }
+                            else if (it == IP_DELETE) gui_delete();
+                            else if (it == IP_SPLIT) gui_split();
+                            else if (it == IP_RESIZE) {
+                                if (g_sel_part >= 0 && g_sel_part < g_model.num_parts)
+                                    gui_resize_dialog(g_sel_part);
+                            }
+                        }
+                        mnum = mi ? mi->NextSelect : MENUNULL;
+                    }
+                    break;
+                }
             }
         }
     }
 
+    ClearMenuStrip(g_win);
+    FreeMenus(g_menu); g_menu = 0;
+    CloseWindow(g_win); g_win = 0;
+    goto cleanup_gad;
+cleanup_win:
+    FreeMenus(g_menu); g_menu = 0;
     CloseWindow(g_win); g_win = 0;
 cleanup_gad:
     FreeGadgets(g_glist); g_glist = 0;
@@ -1463,6 +1550,14 @@ static const char *drv_err_text(int code)
         case DRVL_EINIT:      return "Driver loaded but failed to initialise.";
         default:              return "Could not load that driver.";
     }
+}
+
+static void gui_about(void)
+{
+    gui_msg("About HDPart",
+            "HDPart 0.2\n"
+            "RDB hard-disk partition tool\n"
+            "for AmigaOS 2.04+ (KS V37+).");
 }
 
 /* Ask for a .device file, load it, add it to the Driver cycle, and select it.
