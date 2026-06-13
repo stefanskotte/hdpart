@@ -1763,7 +1763,7 @@ static void gui_draw_partheader(void)
 static void gui_draw_easter(void)
 {
     struct RastPort *rp;
-    int px = 571 + g_leftb, py = 204 + g_topb;   /* bottom-right corner, right of the Save button */
+    int px = 571 + g_leftb, py = 209 + g_topb;   /* bottom-right corner, right of the Save button */
     if (!g_win) return;
     rp = g_win->RPort;
     SetAPen(rp, 1);
@@ -1777,5 +1777,5 @@ static void gui_draw_easter(void)
    rect won't conflict with the Save button to its left. */
 static int gui_hit_easter(int mx, int my)
 {
-    return mx >= 568 + g_leftb && my >= 200 + g_topb;   /* clear of the Save button (ends x=566) */
+    return mx >= 568 + g_leftb && my >= 205 + g_topb;   /* clear of the Save button (ends x=566) */
 }
