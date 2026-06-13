@@ -9,6 +9,8 @@ single window, runs on a real Workbench or boots standalone from its own floppy.
   bar, and keyboard shortcuts.
 - Freestanding 68000 build (no libc) — runs on a stock A500+/A600/A1200/A4000.
 
+![HDPart running on Workbench 2.04](docs/screenshot.png)
+
 ## Credits & attribution
 
 HDPart's RDB handling is **based on `rdbtool`** (part of **amitools**) by
