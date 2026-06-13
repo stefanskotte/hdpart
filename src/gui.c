@@ -1257,7 +1257,7 @@ int gui_run(void)
             modeid = (ULONG)GetVPModeID(&g_pub->ViewPort);
             UnlockPubScreen(0, g_pub); g_pub = 0;
         }
-        if (modeid == INVALID_ID) modeid = HIRES_KEY;
+        if (modeid == (ULONG)INVALID_ID) modeid = HIRES_KEY;
         g_scr = OpenScreenTags(0, SA_DisplayID, modeid,
                                SA_Depth, 2, SA_Title, (ULONG)"HDPart",
                                SA_SysFont, 0,
