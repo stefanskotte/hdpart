@@ -13,6 +13,7 @@
 #include <proto/gadtools.h>
 #include <proto/graphics.h>
 #include <graphics/text.h>
+#include <graphics/modeid.h>      /* HIRES_KEY, INVALID_ID (own-screen display mode) */
 #include <libraries/asl.h>
 #include <proto/asl.h>
 #include <proto/dos.h>
@@ -1246,8 +1247,19 @@ int gui_run(void)
         streq((const char *)g_pub->Font->ta_Name, "topaz.font")) {
         g_scr = g_pub;
     } else {
-        if (g_pub) { UnlockPubScreen(0, g_pub); g_pub = 0; }
-        g_scr = OpenScreenTags(0, SA_Depth, 2, SA_Title, (ULONG)"HDPart",
+        /* Clone the Workbench screen's display mode (it already fits our window)
+           before dropping it; fall back to generic hi-res. A custom screen opened
+           with no SA_DisplayID defaults to LORES (320 wide) — too narrow for the
+           580px window, and lores pixel-doubling makes topaz 8 look oversized.
+           SA_SysFont 0 = the ROM 8-point fixed topaz. */
+        ULONG modeid = INVALID_ID;
+        if (g_pub) {
+            modeid = (ULONG)GetVPModeID(&g_pub->ViewPort);
+            UnlockPubScreen(0, g_pub); g_pub = 0;
+        }
+        if (modeid == INVALID_ID) modeid = HIRES_KEY;
+        g_scr = OpenScreenTags(0, SA_DisplayID, modeid,
+                               SA_Depth, 2, SA_Title, (ULONG)"HDPart",
                                SA_SysFont, 0,
                                SA_Type, CUSTOMSCREEN, TAG_END);
     }
