@@ -1263,7 +1263,7 @@ int gui_run(void)
         WA_Left, 40, WA_Top, 16,
         WA_Width,  g_leftb + 580 + g_scr->WBorRight,
         WA_Height, g_topb + 214 + g_scr->WBorBottom,
-        WA_Title, (ULONG)"HDPart 0.1",
+        WA_Title, (ULONG)"HDPart 0.2",
         WA_Gadgets, (ULONG)g_glist,
         WA_IDCMP, IDCMP_CLOSEWINDOW | IDCMP_REFRESHWINDOW | IDCMP_MOUSEBUTTONS | IDCMP_MENUPICK | IDCMP_VANILLAKEY | CYCLEIDCMP | BUTTONIDCMP | LISTVIEWIDCMP,
         WA_Flags, WFLG_DRAGBAR | WFLG_DEPTHGADGET | WFLG_CLOSEGADGET |
