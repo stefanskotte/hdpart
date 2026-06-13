@@ -1648,9 +1648,13 @@ static const char *drv_err_text(int code)
 static void gui_about(void)
 {
     gui_msg("About HDPart",
-            "HDPart 0.2\n"
+            "HDPart 0.3\n"
             "RDB hard-disk partition tool\n"
-            "for AmigaOS 2.04+ (KS V37+).");
+            "for AmigaOS 2.04+ (KS V37+).\n"
+            "\n"
+            "Based on rdbtool (amitools) by\n"
+            "Christian Vogelgsang, \xA9 2020-23.\n"
+            "github.com/cnvogelg/amitools");
 }
 
 /* Ask for a .device file, load it, add it to the Driver cycle, and select it.
