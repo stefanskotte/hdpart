@@ -1245,22 +1245,51 @@ int gui_run(void)
     g_pub = LockPubScreen(0);
     if (g_pub && g_pub->Font && g_pub->Font->ta_YSize == 8 &&
         streq((const char *)g_pub->Font->ta_Name, "topaz.font")) {
+        /* (1) The Workbench screen is already topaz 8 — render there (window on WB). */
         g_scr = g_pub;
-    } else {
-        /* Clone the Workbench screen's display mode (it already fits our window)
-           before dropping it; fall back to generic hi-res. A custom screen opened
-           with no SA_DisplayID defaults to LORES (320 wide) — too narrow for the
-           580px window, and lores pixel-doubling makes topaz 8 look oversized.
+    } else if (g_pub) {
+        /* (2) Bare-boot Workbench screen is topaz 9. Open our own topaz-8 screen
+           but CLONE the WB screen's display mode, depth, palette and pens so it
+           looks like the system screen, not a flat default one:
+             - SA_DisplayID: same resolution (a bare custom screen defaults to
+               LORES 320, too narrow for the 580px window).
+             - SA_Pens (cloned): sets DRIF_NEWLOOK so GadTools renders the full 3D
+               look — without it gadgets/bevels come out flat with the harsh
+               default palette.
+             - matching depth + copied colours.
            SA_SysFont 0 = the ROM 8-point fixed topaz. */
-        ULONG modeid = INVALID_ID;
-        if (g_pub) {
-            modeid = (ULONG)GetVPModeID(&g_pub->ViewPort);
-            UnlockPubScreen(0, g_pub); g_pub = 0;
+        struct DrawInfo *dri = GetScreenDrawInfo(g_pub);
+        ULONG modeid = (ULONG)GetVPModeID(&g_pub->ViewPort);
+        int   depth  = (dri ? (int)dri->dri_Depth : 2);
+        int   i, np = 0, ncol;
+        static UWORD clonepens[NUMDRIPENS + 1];
+        static UWORD clonepal[256];
+        if (depth < 1) depth = 1;
+        if (depth > 8) depth = 8;
+        ncol = 1 << depth;
+        for (i = 0; i < ncol; i++)
+            clonepal[i] = (UWORD)GetRGB4(g_pub->ViewPort.ColorMap, i);
+        if (dri && dri->dri_Pens) {
+            int n = (int)dri->dri_NumPens;
+            if (n > NUMDRIPENS) n = NUMDRIPENS;
+            for (; np < n; np++) clonepens[np] = dri->dri_Pens[np];
         }
+        clonepens[np] = (UWORD)~0;
+        if (dri) FreeScreenDrawInfo(g_pub, dri);
         if (modeid == (ULONG)INVALID_ID) modeid = HIRES_KEY;
-        g_scr = OpenScreenTags(0, SA_DisplayID, modeid,
-                               SA_Depth, 2, SA_Title, (ULONG)"HDPart",
-                               SA_SysFont, 0,
+        UnlockPubScreen(0, g_pub); g_pub = 0;
+        g_scr = OpenScreenTags(0, SA_DisplayID, modeid, SA_Depth, depth,
+                               SA_Pens, (ULONG)clonepens,
+                               SA_Title, (ULONG)"HDPart", SA_SysFont, 0,
+                               SA_Type, CUSTOMSCREEN, TAG_END);
+        if (g_scr)
+            for (i = 0; i < ncol; i++)
+                SetRGB4(&g_scr->ViewPort, i, (clonepal[i] >> 8) & 0xF,
+                        (clonepal[i] >> 4) & 0xF, clonepal[i] & 0xF);
+    } else {
+        /* (3) No Workbench screen at all — basic own topaz-8 hi-res screen. */
+        g_scr = OpenScreenTags(0, SA_DisplayID, HIRES_KEY, SA_Depth, 2,
+                               SA_Title, (ULONG)"HDPart", SA_SysFont, 0,
                                SA_Type, CUSTOMSCREEN, TAG_END);
     }
     if (!g_scr) goto cleanup_libs;
