@@ -1,0 +1,94 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'release-*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Derive version from tag
+        id: ver
+        run: |
+          VERSION="${GITHUB_REF_NAME#release-}"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Building HDPart release version: $VERSION"
+
+      - name: Guard - tag version must match Makefile ADFVER
+        run: |
+          VERSION="${{ steps.ver.outputs.version }}"
+          MK_VER=$(sed -n 's/^ADFVER = //p' Makefile | tr -d '[:space:]')
+          if [ "$MK_VER" != "$VERSION" ]; then
+            echo "::error::tag release-$VERSION does not match Makefile ADFVER=$MK_VER. Bump the gui.c window title + Makefile ADFVER to match the tag before releasing."
+            exit 1
+          fi
+          echo "Version guard OK: $VERSION"
+
+      - name: Cache Amiga toolchain
+        id: toolcache
+        uses: actions/cache@v4
+        with:
+          path: ~/amiga-toolchain
+          key: bartman-amiga-debug-1.8.2
+
+      - name: Download + extract Bartman toolchain (.vsix)
+        if: steps.toolcache.outputs.cache-hit != 'true'
+        run: |
+          curl -L --compressed -o ext.vsix \
+            "https://marketplace.visualstudio.com/_apis/public/gallery/publishers/bartmanabyss/vsextensions/amiga-debug/1.8.2/vspackage"
+          file ext.vsix
+          mkdir -p ~/amiga-toolchain
+          unzip -q ext.vsix -d ~/amiga-toolchain
+          chmod -R +x ~/amiga-toolchain/extension/bin/linux
+
+      - name: Put toolchain on PATH
+        run: |
+          BIN="$HOME/amiga-toolchain/extension/bin/linux"
+          echo "$BIN/opt/bin" >> "$GITHUB_PATH"
+          echo "$BIN" >> "$GITHUB_PATH"
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Install amitools (xdftool)
+        run: pip install amitools
+
+      - name: Verify tooling
+        run: |
+          m68k-amiga-elf-gcc --version | head -1
+          command -v elf2hunk
+          command -v xdftool
+
+      - name: Engine host tests
+        run: ./tests/run-host-tests.sh
+
+      - name: Build executable
+        run: make
+
+      - name: Build ADF
+        run: make adf ADFVER="${{ steps.ver.outputs.version }}"
+
+      - name: Collect versioned artifacts
+        run: |
+          VERSION="${{ steps.ver.outputs.version }}"
+          cp out/HDPart.exe "out/HDPart-$VERSION.exe"
+          ls -la "out/HDPart-$VERSION.adf" "out/HDPart-$VERSION.exe"
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: HDPart ${{ steps.ver.outputs.version }}
+          generate_release_notes: true
+          files: |
+            out/HDPart-${{ steps.ver.outputs.version }}.adf
+            out/HDPart-${{ steps.ver.outputs.version }}.exe
