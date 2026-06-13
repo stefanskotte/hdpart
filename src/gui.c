@@ -371,6 +371,34 @@ static void gui_draw_text(struct Window *w, const char *body, int x, int y)
     }
 }
 
+/* Shared modal-dialog scaffolding. Each dialog supplies its own gadgets + body
+   logic; these own the centering, the OpenWindowTags flags, the standard refresh
+   response, and cleanup. */
+static void dlg_center(int w, int h, int *left, int *top)
+{
+    int L = g_win->LeftEdge + (g_win->Width  - w) / 2;
+    int T = g_win->TopEdge  + (g_win->Height - h) / 2;
+    *left = L < 0 ? 0 : L;
+    *top  = T < 0 ? 0 : T;
+}
+static struct Window *dlg_open(const char *title, int L, int T, int w, int h,
+                               ULONG idcmp, struct Gadget *glist)
+{
+    return OpenWindowTags(0,
+        WA_Left, L, WA_Top, T, WA_Width, w, WA_Height, h,
+        WA_Title, (ULONG)title, WA_Gadgets, (ULONG)glist,
+        WA_IDCMP, IDCMP_CLOSEWINDOW | IDCMP_REFRESHWINDOW | idcmp,
+        WA_Flags, WFLG_DRAGBAR | WFLG_DEPTHGADGET | WFLG_ACTIVATE | WFLG_SMART_REFRESH,
+        g_pub ? WA_PubScreen : WA_CustomScreen, (ULONG)g_scr,
+        TAG_END);
+}
+static void dlg_refresh(struct Window *w) { GT_BeginRefresh(w); GT_EndRefresh(w, TRUE); }
+static void dlg_close(struct Window *w, struct Gadget *glist)
+{
+    if (w) CloseWindow(w);
+    if (glist) FreeGadgets(glist);
+}
+
 /* Modal requester centered over the main window. twoButtons=1 -> Proceed/Cancel
    (returns 1 for Proceed, 0 for Cancel/close); twoButtons=0 -> single OK. */
 static int gui_request(const char *title, const char *body, int twoButtons,
@@ -396,8 +424,6 @@ static int gui_request(const char *title, const char *body, int twoButtons,
     btnY  = dt + 8 + nlines * 10 + 8;
     dwW   = dl + textW + 24 + g_scr->WBorRight;
     dwH   = btnY + 14 + 8 + g_scr->WBorBottom;
-    dwL   = g_win->LeftEdge + (g_win->Width  - dwW) / 2; if (dwL < 0) dwL = 0;
-    dwT   = g_win->TopEdge  + (g_win->Height - dwH) / 2; if (dwT < 0) dwT = 0;
 
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wincompatible-pointer-types"
@@ -418,13 +444,8 @@ static int gui_request(const char *title, const char *body, int twoButtons,
     }
     if (!g) { FreeGadgets(glist); return 0; }
 
-    dw = OpenWindowTags(0,
-        WA_Left, dwL, WA_Top, dwT, WA_Width, dwW, WA_Height, dwH,
-        WA_Title, (ULONG)title, WA_Gadgets, (ULONG)glist,
-        WA_IDCMP, IDCMP_CLOSEWINDOW | IDCMP_REFRESHWINDOW | BUTTONIDCMP,
-        WA_Flags, WFLG_DRAGBAR | WFLG_DEPTHGADGET | WFLG_ACTIVATE | WFLG_SMART_REFRESH,
-        g_pub ? WA_PubScreen : WA_CustomScreen, (ULONG)g_scr,
-        TAG_END);
+    dwL = 0; dwT = 0; dlg_center(dwW, dwH, &dwL, &dwT);
+    dw = dlg_open(title, dwL, dwT, dwW, dwH, BUTTONIDCMP, glist);
     if (!dw) { FreeGadgets(glist); return 0; }
     GT_RefreshWindow(dw, 0);
     gui_draw_text(dw, body, dl + 12, dt + 6);
@@ -442,8 +463,7 @@ static int gui_request(const char *title, const char *body, int twoButtons,
             } else if (cl == IDCMP_GADGETUP) { result = (ig->GadgetID == 1) ? 1 : 0; done = 1; }
         }
     }
-    CloseWindow(dw);
-    FreeGadgets(glist);
+    dlg_close(dw, glist);
     return result;
 }
 
