@@ -770,21 +770,12 @@ static int gui_edit_dialog(int index)
     g = CreateGadget(BUTTON_KIND, g, &ng, TAG_END);
     if (!g) { FreeGadgets(dglist); return 0; }
 
-    {   /* center the dialog over the main window */
-        int dwW = dl + 350 + g_scr->WBorRight;
+    {   int dwW = dl + 350 + g_scr->WBorRight;
         int dwH = dt + 190 + g_scr->WBorBottom;
-        int dwL = g_win->LeftEdge + (g_win->Width  - dwW) / 2;
-        int dwT = g_win->TopEdge  + (g_win->Height - dwH) / 2;
-        if (dwL < 0) dwL = 0;
-        if (dwT < 0) dwT = 0;
-        dw = OpenWindowTags(0,
-            WA_Left, dwL, WA_Top, dwT, WA_Width, dwW, WA_Height, dwH,
-            WA_Title, (ULONG)"Edit Partition",
-            WA_Gadgets, (ULONG)dglist,
-            WA_IDCMP, IDCMP_CLOSEWINDOW | IDCMP_REFRESHWINDOW | BUTTONIDCMP | STRINGIDCMP | INTEGERIDCMP | CHECKBOXIDCMP | CYCLEIDCMP,
-            WA_Flags, WFLG_DRAGBAR | WFLG_DEPTHGADGET | WFLG_ACTIVATE | WFLG_SMART_REFRESH,
-            g_pub ? WA_PubScreen : WA_CustomScreen, (ULONG)g_scr,
-            TAG_END);
+        int dwL = 0, dwT = 0;
+        dlg_center(dwW, dwH, &dwL, &dwT);
+        dw = dlg_open("Edit Partition", dwL, dwT, dwW, dwH,
+                      BUTTONIDCMP | STRINGIDCMP | INTEGERIDCMP | CHECKBOXIDCMP | CYCLEIDCMP, dglist);
     }
     if (!dw) { FreeGadgets(dglist); return 0; }
     GT_RefreshWindow(dw, 0);
@@ -798,7 +789,7 @@ static int gui_edit_dialog(int index)
             UWORD code = im->Code;
             GT_ReplyIMsg(im);
             if (cl == IDCMP_CLOSEWINDOW) { done = 1; }
-            else if (cl == IDCMP_REFRESHWINDOW) { GT_BeginRefresh(dw); GT_EndRefresh(dw, TRUE); }
+            else if (cl == IDCMP_REFRESHWINDOW) { dlg_refresh(dw); }
             else if (cl == IDCMP_GADGETUP) {
                 if (ig == gMaxTCyc) {
                     preset_apply(dw, gMaxT, gMaxTHelp, (int)code, kMaxTValues, N_MAXT, kMaxTHelp);
@@ -863,8 +854,7 @@ static int gui_edit_dialog(int index)
         }
     }
 
-    CloseWindow(dw);
-    FreeGadgets(dglist);
+    dlg_close(dw, dglist);
     if (applied) g_dirty = 1;
     return applied;
 }
@@ -1012,17 +1002,10 @@ static int gui_resize_dialog(int index)
 
     {   int dwW = dl + 380 + g_scr->WBorRight;
         int dwH = dt + 102 + g_scr->WBorBottom;
-        int dwL = g_win->LeftEdge + (g_win->Width  - dwW) / 2;
-        int dwT = g_win->TopEdge  + (g_win->Height - dwH) / 2;
-        if (dwL < 0) dwL = 0;
-        if (dwT < 0) dwT = 0;
-        dw = OpenWindowTags(0,
-            WA_Left, dwL, WA_Top, dwT, WA_Width, dwW, WA_Height, dwH,
-            WA_Title, (ULONG)"Resize partition", WA_Gadgets, (ULONG)dglist,
-            WA_IDCMP, IDCMP_CLOSEWINDOW | IDCMP_REFRESHWINDOW | BUTTONIDCMP | INTEGERIDCMP | CYCLEIDCMP,
-            WA_Flags, WFLG_DRAGBAR | WFLG_DEPTHGADGET | WFLG_ACTIVATE | WFLG_SMART_REFRESH,
-            g_pub ? WA_PubScreen : WA_CustomScreen, (ULONG)g_scr,
-            TAG_END);
+        int dwL = 0, dwT = 0;
+        dlg_center(dwW, dwH, &dwL, &dwT);
+        dw = dlg_open("Resize partition", dwL, dwT, dwW, dwH,
+                      BUTTONIDCMP | INTEGERIDCMP | CYCLEIDCMP, dglist);
     }
     if (!dw) { FreeGadgets(dglist); return 0; }
     GT_RefreshWindow(dw, 0);
@@ -1064,7 +1047,7 @@ static int gui_resize_dialog(int index)
             UWORD code = im->Code;
             GT_ReplyIMsg(im);
             if (cl == IDCMP_CLOSEWINDOW) { done = 1; }
-            else if (cl == IDCMP_REFRESHWINDOW) { GT_BeginRefresh(dw); GT_EndRefresh(dw, TRUE); }
+            else if (cl == IDCMP_REFRESHWINDOW) { dlg_refresh(dw); }
             else if (cl == IDCMP_GADGETUP) {
                 if (ig == gAnchor) { anchor = (int)code; RZ_RECOMPUTE(); }
                 else if (ig == gSize) {
@@ -1097,8 +1080,7 @@ static int gui_resize_dialog(int index)
         }
     }
 #undef RZ_RECOMPUTE
-    CloseWindow(dw);
-    FreeGadgets(dglist);
+    dlg_close(dw, dglist);
     if (applied) { gui_refresh_parts(); gui_update_buttons(); }
     return applied;
 }
@@ -1180,17 +1162,10 @@ static void gui_split(void)
 
     {   int dwW = dl + 290 + g_scr->WBorRight;
         int dwH = dt + 70 + g_scr->WBorBottom;
-        int dwL = g_win->LeftEdge + (g_win->Width  - dwW) / 2;
-        int dwT = g_win->TopEdge  + (g_win->Height - dwH) / 2;
-        if (dwL < 0) dwL = 0;
-        if (dwT < 0) dwT = 0;
-        dw = OpenWindowTags(0,
-            WA_Left, dwL, WA_Top, dwT, WA_Width, dwW, WA_Height, dwH,
-            WA_Title, (ULONG)"Split remaining free space", WA_Gadgets, (ULONG)dglist,
-            WA_IDCMP, IDCMP_CLOSEWINDOW | IDCMP_REFRESHWINDOW | BUTTONIDCMP | INTEGERIDCMP,
-            WA_Flags, WFLG_DRAGBAR | WFLG_DEPTHGADGET | WFLG_ACTIVATE | WFLG_SMART_REFRESH,
-            g_pub ? WA_PubScreen : WA_CustomScreen, (ULONG)g_scr,
-            TAG_END);
+        int dwL = 0, dwT = 0;
+        dlg_center(dwW, dwH, &dwL, &dwT);
+        dw = dlg_open("Split remaining free space", dwL, dwT, dwW, dwH,
+                      BUTTONIDCMP | INTEGERIDCMP, dglist);
     }
     if (!dw) { FreeGadgets(dglist); return; }
     GT_RefreshWindow(dw, 0);
@@ -1203,7 +1178,7 @@ static void gui_split(void)
             struct Gadget *ig = (struct Gadget *)im->IAddress;
             GT_ReplyIMsg(im);
             if (cl == IDCMP_CLOSEWINDOW) { done = 1; }
-            else if (cl == IDCMP_REFRESHWINDOW) { GT_BeginRefresh(dw); GT_EndRefresh(dw, TRUE); }
+            else if (cl == IDCMP_REFRESHWINDOW) { dlg_refresh(dw); }
             else if (cl == IDCMP_GADGETUP) {
                 int id = ig->GadgetID;
                 if (id == 2 || id == 3) {                        /* < / > steppers */
@@ -1218,8 +1193,7 @@ static void gui_split(void)
             }
         }
     }
-    CloseWindow(dw);
-    FreeGadgets(dglist);
+    dlg_close(dw, dglist);
     if (!applied) return;
 
     /* Additive: split the free gap, keeping existing partitions. On a blank disk,
