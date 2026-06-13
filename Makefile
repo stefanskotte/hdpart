@@ -16,6 +16,12 @@ OUT   = $(program)
 c_sources := $(wildcard src/*.c)
 c_objects := $(addprefix obj/,$(patsubst src/%.c,%.o,$(c_sources)))
 
+# Ensure build output dirs exist on a fresh checkout (CI / new clone) so -MMD can
+# write obj/*.d and the linker can write out/. Parse-time; Unix shells only.
+ifndef WINDOWS
+$(shell mkdir -p obj out)
+endif
+
 ifdef WINDOWS
 	SDKDIR = $(abspath $(dir $(shell where $(CC)))..\m68k-amiga-elf\sys-include)
 else
