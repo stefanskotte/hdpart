@@ -1234,13 +1234,19 @@ int gui_run(void)
     }
     AslBase = OpenLibrary("asl.library", 37);   /* optional: Driver... disabled if absent */
 
+    /* Render on the Workbench screen ONLY if its font is the 8-point topaz our
+       fixed-pixel layout is designed for. On a bare ADF boot Intuition opens a
+       Workbench screen with no prefs loaded (topaz 9): the window title, the
+       menu bar, and our directly-drawn text (captions/header/bar, which inherit
+       the screen font) would all render oversized vs the topaz-8 gadgets. In
+       that case drop the pubscreen and open our own screen with SA_SysFont 0 =
+       the ROM 8-point fixed topaz (ROM-resident; no diskfont.library needed). */
     g_pub = LockPubScreen(0);
-    if (g_pub) g_scr = g_pub;
-    else {
-        /* SA_SysFont 0 = the ROM 8-point fixed topaz. Without it, a custom screen
-           inherits the system default font (topaz 9 on a bare boot with no WB
-           prefs), so the screen title + menu bar render larger than the topaz-8
-           gadgets. topaz 8 is ROM-resident — no diskfont.library needed. */
+    if (g_pub && g_pub->Font && g_pub->Font->ta_YSize == 8 &&
+        streq((const char *)g_pub->Font->ta_Name, "topaz.font")) {
+        g_scr = g_pub;
+    } else {
+        if (g_pub) { UnlockPubScreen(0, g_pub); g_pub = 0; }
         g_scr = OpenScreenTags(0, SA_Depth, 2, SA_Title, (ULONG)"HDPart",
                                SA_SysFont, 0,
                                SA_Type, CUSTOMSCREEN, TAG_END);
