@@ -1315,7 +1315,6 @@ int gui_run(void)
                     else if (gad->GadgetID == GID_DRIVER) gui_load_driver();
                     else if (gad->GadgetID == GID_PARTS) gui_set_selection((int)code);
                     else if (gad->GadgetID == GID_SAVE) gui_save();
-                    else if (gad->GadgetID == GID_INIT) gui_init_disk();
                     else if (gad->GadgetID == GID_SPLIT) gui_split();
                     else if (gad->GadgetID == GID_DELETE) gui_delete();
                     else if (gad->GadgetID == GID_NEW) gui_new();
