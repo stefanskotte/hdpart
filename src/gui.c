@@ -43,6 +43,7 @@ static APTR            g_vi;          /* VisualInfo */
 static struct Gadget  *g_glist;      /* gadtools context list */
 static struct Gadget  *g_gad[16];    /* gadget pointers by a small index */
 static struct TextAttr g_font = { (STRPTR)"topaz.font", 8, 0, 0 };
+static struct TextFont *g_sfont = 0;  /* explicit topaz 8 for our own screen (NULL if unavailable) */
 static struct Menu    *g_menu = 0;   /* menu strip attached to g_win */
 
 /* Discovery + current selection (static: keep off the stack). */
@@ -1240,8 +1241,12 @@ int gui_run(void)
        Workbench screen with no prefs loaded (topaz 9): the window title, the
        menu bar, and our directly-drawn text (captions/header/bar, which inherit
        the screen font) would all render oversized vs the topaz-8 gadgets. In
-       that case drop the pubscreen and open our own screen with SA_SysFont 0 =
-       the ROM 8-point fixed topaz (ROM-resident; no diskfont.library needed). */
+       that case drop the pubscreen and open our own screen forced to topaz 8.
+       SA_Font (explicit topaz 8) is used rather than SA_SysFont 0 — the latter
+       selects the system DefaultFont, which on a bare boot IS topaz 9. If topaz 8
+       can't be opened at all (not in ROM, no diskfont/FONTS:), fall back to
+       SA_SysFont 0 so the screen still opens (just larger). */
+    g_sfont = OpenFont(&g_font);   /* topaz 8; NULL -> not available on this boot */
     g_pub = LockPubScreen(0);
     if (g_pub && g_pub->Font && g_pub->Font->ta_YSize == 8 &&
         streq((const char *)g_pub->Font->ta_Name, "topaz.font")) {
@@ -1257,7 +1262,7 @@ int gui_run(void)
                look — without it gadgets/bevels come out flat with the harsh
                default palette.
              - matching depth + copied colours.
-           SA_SysFont 0 = the ROM 8-point fixed topaz. */
+           Screen font: SA_Font (explicit topaz 8) when available, else SA_SysFont 0. */
         struct DrawInfo *dri = GetScreenDrawInfo(g_pub);
         ULONG modeid = (ULONG)GetVPModeID(&g_pub->ViewPort);
         int   depth  = (dri ? (int)dri->dri_Depth : 2);
@@ -1280,7 +1285,9 @@ int gui_run(void)
         UnlockPubScreen(0, g_pub); g_pub = 0;
         g_scr = OpenScreenTags(0, SA_DisplayID, modeid, SA_Depth, depth,
                                SA_Pens, (ULONG)clonepens,
-                               SA_Title, (ULONG)"HDPart", SA_SysFont, 0,
+                               SA_Title, (ULONG)"HDPart",
+                               (g_sfont ? SA_Font : SA_SysFont),
+                               (g_sfont ? (ULONG)&g_font : 0),
                                SA_Type, CUSTOMSCREEN, TAG_END);
         if (g_scr)
             for (i = 0; i < ncol; i++)
@@ -1289,7 +1296,9 @@ int gui_run(void)
     } else {
         /* (3) No Workbench screen at all — basic own topaz-8 hi-res screen. */
         g_scr = OpenScreenTags(0, SA_DisplayID, HIRES_KEY, SA_Depth, 2,
-                               SA_Title, (ULONG)"HDPart", SA_SysFont, 0,
+                               SA_Title, (ULONG)"HDPart",
+                               (g_sfont ? SA_Font : SA_SysFont),
+                               (g_sfont ? (ULONG)&g_font : 0),
                                SA_Type, CUSTOMSCREEN, TAG_END);
     }
     if (!g_scr) goto cleanup_libs;
@@ -1453,6 +1462,7 @@ cleanup_scr:
     if (g_pub) UnlockPubScreen(0, g_pub);
     g_scr = 0; g_pub = 0;
 cleanup_libs:
+    if (g_sfont) { CloseFont(g_sfont); g_sfont = 0; }   /* before GfxBase */
     if (AslBase) { CloseLibrary(AslBase); AslBase = 0; }
     CloseLibrary((struct Library *)GfxBase);
     CloseLibrary(GadToolsBase);
