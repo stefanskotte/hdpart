@@ -19,6 +19,11 @@ against `rdbtool`** (`tests/verify-rdbtool.sh`). With thanks.
 - Docs: https://amitools.readthedocs.io/en/latest/tools/rdbtool.html
 - Source: https://github.com/cnvogelg/amitools
 
+Built entirely with **Bartman's `vscode-amiga-debug`** C/C++ toolchain &
+extension (m68k-amiga-elf GCC, `elf2hunk`, and the Amiga SDK) — thank you.
+
+- Source: https://github.com/BartmanAbyss/vscode-amiga-debug
+
 ## Building
 
 Uses the Bartman `amiga-debug` GCC cross-toolchain (m68k-amiga-elf, gcc 15.x),
@@ -47,8 +52,9 @@ release with the versioned ADF and executable. The tag version must match the
 
 ## License
 
-amitools / rdbtool are © Christian Vogelgsang and distributed under their own
-license; **HDPart bundles no amitools, Commodore, or Amiga files** (the toolchain,
-Kickstart ROM, and Workbench fonts are all external to this repo). A license for
-HDPart's own source is still to be chosen — add a `LICENSE` file before relying on
-reuse terms.
+HDPart's own source is released under the **MIT License** — see [`LICENSE`](LICENSE).
+
+amitools / rdbtool are © Christian Vogelgsang and the Bartman toolchain is © its
+authors, each under their own license; **HDPart bundles no amitools, Bartman,
+Commodore, or Amiga files** (the toolchain, Kickstart ROM, and Workbench fonts are
+all external to this repo).
