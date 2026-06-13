@@ -1237,7 +1237,12 @@ int gui_run(void)
     g_pub = LockPubScreen(0);
     if (g_pub) g_scr = g_pub;
     else {
+        /* SA_SysFont 0 = the ROM 8-point fixed topaz. Without it, a custom screen
+           inherits the system default font (topaz 9 on a bare boot with no WB
+           prefs), so the screen title + menu bar render larger than the topaz-8
+           gadgets. topaz 8 is ROM-resident — no diskfont.library needed. */
         g_scr = OpenScreenTags(0, SA_Depth, 2, SA_Title, (ULONG)"HDPart",
+                               SA_SysFont, 0,
                                SA_Type, CUSTOMSCREEN, TAG_END);
     }
     if (!g_scr) goto cleanup_libs;
