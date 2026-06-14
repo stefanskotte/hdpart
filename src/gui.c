@@ -1226,9 +1226,18 @@ static void gui_split(void)
 /* Create + layout the menu strip and attach it to g_win. Returns 1 on success. */
 static int build_menus(void)
 {
+    /* Lay menus out CLASSIC (no GTMN_NewLookMenus) on every Kickstart. NewLook
+       menus (V39+) render the highlighted item with the screen's FILLPEN /
+       FILLTEXTPEN DrawInfo pens; HDPart runs on the user's Workbench public
+       screen, and on customised WBs those pens are not guaranteed to contrast
+       (seen on an OS 3.2 setup: FILLTEXTPEN = black over a blue FILLPEN -> the
+       hovered item is invisible). Classic menus instead use the screen's
+       DetailPen / BlockPen, the fundamental window pens, which are always high
+       contrast — giving readable, consistent menus across KS2.0..3.2+ and
+       matching the classic look on the V37 baseline. */
     g_menu = CreateMenus(g_newmenu, TAG_END);
     if (!g_menu) return 0;
-    if (!LayoutMenus(g_menu, g_vi, GTMN_NewLookMenus, TRUE, TAG_END)) {
+    if (!LayoutMenus(g_menu, g_vi, TAG_END)) {
         FreeMenus(g_menu); g_menu = 0; return 0;
     }
     SetMenuStrip(g_win, g_menu);
