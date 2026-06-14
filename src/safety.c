@@ -8,6 +8,7 @@
 #include <dos/dostags.h>
 #include <proto/exec.h>
 #include <proto/dos.h>
+#include "discover.h"
 #endif
 #include <string.h>
 #include "safety.h"
@@ -71,6 +72,7 @@ static int dev_backing(struct DosList *dl, char *out_driver, uint32_t *out_unit)
     for (i = 0; i < len; i++) out_driver[i] = (char)bstr[1 + i];
     out_driver[len] = 0;
     *out_unit = (uint32_t)fssm->fssm_Unit;
+    if (!disc_is_device_name(out_driver)) return 0;
     return 1;
 }
 
@@ -109,7 +111,8 @@ DevLiveness safety_classify(const char *driver, uint32_t unit,
     dl = LockDosList(LDF_DEVICES | LDF_READ);
     {
         struct DosList *e = dl;
-        while ((e = NextDosEntry(e, LDF_DEVICES | LDF_READ)) != 0) {
+        int guard = 0;
+        while ((e = NextDosEntry(e, LDF_DEVICES | LDF_READ)) != 0 && ++guard < 256) {
             char drv[40]; uint32_t u;
             if (!dev_backing(e, drv, &u)) continue;
             if (n_mounts < 32) {
