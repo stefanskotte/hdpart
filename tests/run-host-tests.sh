@@ -10,3 +10,5 @@ cc -std=c99 -Wall -Wextra -g -o /tmp/hdpart_driver tests/test_driver.c src/drive
 /tmp/hdpart_driver
 cc -std=c99 -Wall -Wextra -g -o /tmp/hdpart_safety tests/test_safety.c src/safety.c
 /tmp/hdpart_safety
+cc -std=c99 -Wall -Wextra -g -o /tmp/hdpart_format tests/test_format.c src/format.c src/rdb.c
+/tmp/hdpart_format
