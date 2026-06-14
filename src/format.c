@@ -94,7 +94,10 @@ static int bind_rom_handler(struct DeviceNode *dn, ULONG dos_type)
             for (bit = 0; bit < 9; bit++)
                 if (flags & (1u << bit)) dst[bit] = src[bit];
         }
-        applied = 1;
+        /* Bit 7 of PatchFlags = SegList must be patched in for the handler to
+           launch. Reject entries that matched DosType but carry no SegList;
+           keep scanning so a later (better) entry can still satisfy the request. */
+        if (fse->fse_PatchFlags & (1u << 7)) applied = 1;
         break;
     }
     Permit();
@@ -148,7 +151,10 @@ FmtResult format_partition(const char *driver, uint32_t unit,
 
     if (!bind_rom_handler(dn, (ULONG)p->dos_type)) {
         /* No ROM handler for this dostype: non-ROM FS, not supported in v1.
-           The node is not added to DOS; do not call AddDosNode. */
+           The node is not added to DOS; do not call AddDosNode.
+           MakeDosNode allocation is intentionally not freed here: there is no
+           public FreeDosNode API, this path is rare and one-shot, and the
+           caller can correct the error (e.g. load the FS first). */
         CloseLibrary(ExpansionBase);
         return FMT_ERR_NO_HANDLER;
     }
