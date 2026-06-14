@@ -22,6 +22,8 @@
 #include "device.h"
 #include "driver.h"
 #include "rdb.h"
+#include "format.h"
+#include "safety.h"
 
 extern struct IntuitionBase *IntuitionBase;   /* opened in main.c */
 struct Library *GadToolsBase = 0;
@@ -130,6 +132,7 @@ static void gui_select_unit(int unitIdx);     /* Unit cycle: show that disk's pa
 static void gui_scan_selected(void);          /* probe the target driver (Scan button) */
 static void gui_refresh_current(void);        /* re-probe the currently shown device+unit */
 static int  gui_resize_dialog(int index);     /* grow/shrink the selected partition */
+static void gui_format(int index);            /* format selected partition into empty volume */
 static void gui_draw_chrome(void);        /* BevelBox group frames + captions */
 void gui_draw_bar(void);
 static void gui_draw_partheader(void);    /* column headings above the listview */
@@ -1102,6 +1105,83 @@ static int gui_resize_dialog(int index)
     return applied;
 }
 
+/* Format the selected partition into an empty volume, live (no reboot).
+   Preconditions: saved (not dirty), not the boot device, name free, ROM FFS. */
+static void gui_format(int index)
+{
+    static char names[8][8];
+    static char vol[36];
+    static char msg[256];
+    RdbPartition *pt;
+    DevLiveness lv;
+    int nn = 0, i, p;
+
+    if (!g_have_model || index < 0 || index >= g_model.num_parts) return;
+    pt = &g_model.parts[index];
+
+    /* Save-first: the partition must persist before we format it. */
+    if (g_dirty) {
+        gui_msg("Format", "Save the partition table first,\nthen format.");
+        return;
+    }
+
+    /* Boot/mount safety on the physical device HDPart is editing. */
+    lv = safety_classify(g_cur_driver, g_cur_unit, names, 8, &nn);
+    if (lv == DEV_BOOT) {
+        gui_msg("Format",
+                "You booted from this device.\n"
+                "Formatting it now would corrupt the\n"
+                "running system. Boot from floppy (or\n"
+                "another disk) to format this one.");
+        return;
+    }
+    if (lv == DEV_MOUNTED) {
+        /* Build a warning listing mounted volumes, require explicit confirm. */
+        p = 0;
+        s_cat(msg, &p, "This disk has mounted volumes (");
+        for (i = 0; i < nn && p < 180; i++) {
+            if (i) { msg[p++] = ','; msg[p++] = ' '; }
+            s_cat(msg, &p, names[i]);
+        }
+        s_cat(msg, &p, ").\nFormatting may destroy data. Proceed?");
+        msg[p] = 0;
+        if (!gui_confirm("Format", msg)) return;
+    } else {
+        /* DEV_CLEAR: still destructive. */
+        if (!gui_confirm("Format",
+                "Format this partition into an empty\n"
+                "volume? All data on it is lost.")) return;
+    }
+
+    /* Default volume label = partition name. */
+    for (i = 0; i < 35 && pt->name[i]; i++) vol[i] = pt->name[i];
+    vol[i] = 0;
+
+    switch (format_partition(g_cur_driver, g_cur_unit, &g_model, index, vol)) {
+    case FMT_OK:
+        p = 0;
+        s_cat(msg, &p, "Formatted ");
+        s_cat(msg, &p, pt->name);
+        s_cat(msg, &p, ": as an empty volume.");
+        msg[p] = 0;
+        gui_status(msg);
+        break;
+    case FMT_ERR_NO_HANDLER:
+        gui_msg("Format", "No ROM filesystem for this type.\nNon-ROM filesystems need embedded-FS\nsupport (not available yet).");
+        break;
+    case FMT_ERR_NAME_TAKEN:
+        gui_msg("Format", "A device with this name is already\nmounted. Reboot to reformat it.");
+        break;
+    case FMT_ERR_RANGE:
+    case FMT_ERR_MAKENODE:
+    case FMT_ERR_ADDNODE:
+    case FMT_ERR_FORMAT:
+    default:
+        gui_msg("Format", "Could not format the partition.");
+        break;
+    }
+}
+
 /* Quick partitioning: split the largest free gap into N equal partitions,
    keeping existing ones (on a blank disk the gap is the whole disk). */
 static void gui_split(void)
@@ -1397,6 +1477,10 @@ int gui_run(void)
                         if (g_sel_part >= 0 && g_sel_part < g_model.num_parts)
                             gui_resize_dialog(g_sel_part);
                     }
+                    else if (gad->GadgetID == GID_FORMAT) {
+                        if (g_sel_part >= 0 && g_sel_part < g_model.num_parts)
+                            gui_format(g_sel_part);
+                    }
                     else if (gad->GadgetID == GID_DRIVER) gui_load_driver();
                     else if (gad->GadgetID == GID_PARTS) gui_set_selection((int)code);
                     else if (gad->GadgetID == GID_SAVE) gui_save();
@@ -1441,6 +1525,10 @@ int gui_run(void)
                                 if (g_sel_part >= 0 && g_sel_part < g_model.num_parts)
                                     gui_resize_dialog(g_sel_part);
                             }
+                            else if (it == IP_FORMAT) {
+                                if (g_sel_part >= 0 && g_sel_part < g_model.num_parts)
+                                    gui_format(g_sel_part);
+                            }
                         }
                         mnum = mi ? mi->NextSelect : MENUNULL;
                     }
@@ -1463,6 +1551,10 @@ int gui_run(void)
                         case 'r':
                             if (g_sel_part >= 0 && g_sel_part < g_model.num_parts)
                                 gui_resize_dialog(g_sel_part);
+                            break;
+                        case 'o':
+                            if (g_sel_part >= 0 && g_sel_part < g_model.num_parts)
+                                gui_format(g_sel_part);
                             break;
                     }
                     break;
