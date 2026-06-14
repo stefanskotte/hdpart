@@ -498,6 +498,26 @@ static int gui_save(void)
     g_msgbuf[p] = 0;
     if (!gui_confirm("Save", g_msgbuf)) return 0;
 
+    {
+        static char snames[8][8];
+        int snn = 0;
+        DevLiveness slv = safety_classify(g_cur_driver, g_cur_unit, snames, 8, &snn);
+        if (slv == DEV_BOOT) {
+            gui_msg("Save",
+                    "You booted from this device.\n"
+                    "Writing a new partition table now would\n"
+                    "corrupt the running system. Boot from\n"
+                    "floppy (or another disk) to modify it.");
+            return 0;
+        }
+        if (slv == DEV_MOUNTED) {
+            if (!gui_confirm("Save",
+                    "This disk has mounted volumes. Writing a\n"
+                    "new table may disturb them. Proceed?"))
+                return 0;
+        }
+    }
+
     h = dev_open(g_cur_driver, g_cur_unit);
     if (!h) { gui_msg("Save", "Could not open the device."); return 0; }
     if (rdb_serialize(&g_model, dev_block_io, h) == RDB_OK) {
