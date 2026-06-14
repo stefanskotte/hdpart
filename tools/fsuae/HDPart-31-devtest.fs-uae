@@ -1,0 +1,33 @@
+# HDPart menu/visual test: Kickstart 3.x (A4000, exec V40 — the V39+ "NewLook
+# menu" path) + Workbench 3.x, with the same three scratch hardfiles as the 2.04
+# devtest attached as block devices (uaehf.device). Use this to compare the menu
+# bar rendering against HDPart-204-devtest (Kickstart 2.04 / classic menus).
+#
+# Boots a real Workbench 3.x (Harddisk.hdf + ResourceHD) which provides the public
+# screen HDPart opens on. After WB boots, open a Shell and run:  HDPart:HDPart
+# (or `HDPart:HDPart scan` to populate the scratch disks: DH4/DH5).
+#
+# NB: the available ROM set tops out at Kickstart 3.1 (rev 40.x = exec V40); there
+# is no 3.0 (39.x) ROM present. V40 still exercises the V39+ NewLook-menu code
+# path, so it reproduces the "white menus on 3.x" behaviour we are addressing.
+#
+# Install: `make install-fsuae` copies this to ~/Documents/FS-UAE/Configurations/.
+# Refresh the binary after each build with `make hd`.
+
+[fs-uae]
+amiga_model = A4000
+accelerator_memory = 32768
+bsdsocket_library = 1
+chip_memory = 2048
+fast_memory = 8192
+graphics_card = uaegfx-z3
+graphics_memory = 8192
+kickstart_file = kicka4000.rom
+hard_drive_0 = Harddisk.hdf
+hard_drive_1 = ResourceHD
+hard_drive_2 = /Users/sfs/Devel/party/amiga_hd
+hard_drive_2_label = HDPart
+hard_drive_3 = /Users/sfs/Devel/party/amiga_scratch/scratch_blank.hdf
+hard_drive_4 = /Users/sfs/Devel/party/amiga_scratch/scratch_rdb.hdf
+hard_drive_5 = /Users/sfs/Devel/party/amiga_scratch/scratch_150mb.hdf
+save_disk = 0
