@@ -32,7 +32,7 @@ extern struct DosLibrary *DOSBase;   /* opened in startup.c (for AddPart) */
 /* Gadget IDs */
 enum { GID_DEVICE = 1, GID_SCAN, GID_DRIVER, GID_PARTS, GID_NEW, GID_DELETE,
        GID_EDIT, GID_INIT, GID_SAVE, GID_STATUS, GID_UNIT, GID_SPLIT, GID_REFRESH,
-       GID_RESIZE };
+       GID_RESIZE, GID_FORMAT };
 /* GID_DEVICE is the Driver cycle; GID_UNIT is the Unit cycle. */
 
 /* Module state for one GUI session. */
@@ -160,7 +160,7 @@ static void gui_status(const char *s)
 enum { MN_PROJECT=0, MN_DISK=1, MN_PART=2 };
 enum { IT_ABOUT=0, IT_SAVE=2, IT_QUIT=4 };               /* Project items */
 enum { ID_SCAN=0, ID_LOAD=1, ID_REFRESH=3, ID_INIT=4 };  /* Disk items   */
-enum { IP_NEW=0, IP_EDIT=1, IP_DELETE=2, IP_SPLIT=4, IP_RESIZE=5 }; /* Partition items */
+enum { IP_NEW=0, IP_EDIT=1, IP_DELETE=2, IP_SPLIT=4, IP_RESIZE=5, IP_FORMAT=6 }; /* Partition items */
 
 /* Enable/disable one menu item (menu,item) on the attached strip. */
 static void gui_menu_enable(UWORD menu, UWORD item, int on)
@@ -184,6 +184,7 @@ static void gui_update_buttons(void)
     GT_SetGadgetAttrs(g_gad[GID_SCAN],   g_win, 0, GA_Disabled, (ULONG)(g_target_driver[0] == 0), TAG_END);
     GT_SetGadgetAttrs(g_gad[GID_REFRESH],g_win, 0, GA_Disabled, (ULONG)(g_cur_unitidx < 0), TAG_END);
     GT_SetGadgetAttrs(g_gad[GID_RESIZE], g_win, 0, GA_Disabled, (ULONG)!hasSel, TAG_END);
+    GT_SetGadgetAttrs(g_gad[GID_FORMAT], g_win, 0, GA_Disabled, (ULONG)!hasSel, TAG_END);
     gui_menu_enable(MN_PROJECT, IT_SAVE,    hasModel && g_dirty);
     gui_menu_enable(MN_DISK,    ID_SCAN,    g_target_driver[0] != 0);
     gui_menu_enable(MN_DISK,    ID_REFRESH, g_cur_unitidx >= 0);
@@ -193,6 +194,7 @@ static void gui_update_buttons(void)
     gui_menu_enable(MN_PART,    IP_DELETE,  hasSel);
     gui_menu_enable(MN_PART,    IP_SPLIT,   hasGeo);
     gui_menu_enable(MN_PART,    IP_RESIZE,  hasSel);
+    gui_menu_enable(MN_PART,    IP_FORMAT,  hasSel);
 }
 
 /* Rebuild the partition listview + status text + bar from g_model. */
@@ -267,6 +269,7 @@ static struct NewMenu g_newmenu[] = {
     {  NM_ITEM, NM_BARLABEL,     0,  0, 0, 0 },
     {  NM_ITEM, "Split...",     "T", 0, 0, 0 },
     {  NM_ITEM, "Resize...",    "R", 0, 0, 0 },
+    {  NM_ITEM, "Format...",    "O", 0, 0, 0 },
     { NM_END, 0, 0, 0, 0, 0 }
 };
 static struct Gadget *build_gadgets(void)
@@ -322,10 +325,10 @@ static struct Gadget *build_gadgets(void)
         static const struct { int id; const char *txt; int x; int w; } pbtn[] = {
             { GID_NEW,    "_New",     16,  56 }, { GID_EDIT,   "_Edit...", 78,  72 },
             { GID_DELETE, "_Delete", 156,  72 }, { GID_SPLIT,  "Spli_t...",234, 74 },
-            { GID_RESIZE, "_Resize...",314, 88 }
+            { GID_RESIZE, "_Resize...",314, 88 }, { GID_FORMAT, "F_ormat...",408, 92 }
         };
         int k;
-        for (k = 0; k < 5; k++) {
+        for (k = 0; k < 6; k++) {
             ng.ng_LeftEdge = pbtn[k].x + g_leftb; ng.ng_TopEdge = 174 + g_topb;
             ng.ng_Width = pbtn[k].w; ng.ng_Height = 14;
             ng.ng_GadgetText = (UBYTE *)pbtn[k].txt; ng.ng_GadgetID = pbtn[k].id;
