@@ -884,7 +884,7 @@ static void gui_new(void)
 {
     uint32_t gs = 0, ge = 0;
     char name[32];
-    int idx;
+    int idx, prev_sel, prev_dirty;
     if (!g_have_model) return;
     if (!rdb_largest_free_gap(&g_model, &gs, &ge)) {
         gui_msg("New Partition", "No free space on this disk."); return;
@@ -894,10 +894,22 @@ static void gui_new(void)
        would floor away the fractional cylinders and waste space. */
     idx = rdb_add_partition_cyl(&g_model, name, gs, ge, RDB_DOSTYPE_FFS_INTL);
     if (idx < 0) { gui_msg("New Partition", "Could not add the partition."); return; }
+    /* The partition must exist in the model for the editor to size/name it, but
+       it isn't committed until the user accepts. Remember the prior state so a
+       Cancel removes the just-added partition instead of leaving it behind.
+       rdb_add_partition_cyl appends, so idx is the last entry and prior indices
+       are unaffected. */
+    prev_sel = g_sel_part;
+    prev_dirty = g_dirty;
     g_sel_part = idx;
-    g_dirty = 1;
     gui_refresh_parts();
-    gui_edit_dialog(idx);            /* let the user adjust size/name immediately */
+    if (gui_edit_dialog(idx)) {      /* Ok -> keep it (dialog set g_dirty) */
+        g_dirty = 1;
+    } else {                         /* Cancel -> undo the add */
+        rdb_delete_partition(&g_model, idx);
+        g_sel_part = prev_sel;
+        g_dirty = prev_dirty;
+    }
     gui_refresh_parts();
     gui_update_buttons();
 }
