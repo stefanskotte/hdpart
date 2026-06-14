@@ -580,7 +580,7 @@ OS-bound; verified on-target in Task 8. Open `expansion.library` locally (HDPart
 > RISK / on-target verification points (call out during review):
 > - `MakeDosNode` parmPacket strings (`pp[0]`, `pp[1]`) are **C strings** (MakeDosNode builds the BSTRs). Unit at `pp[2]`, flags `pp[3]=0`, then the env from `pp[4]` (= `de_TableSize`).
 > - `FileSysEntry` patch: copy each longword from `&fse->fse_Type` into `&dn->dn_Type` where the corresponding `fse_PatchFlags` bit is set (bit 0 → dn_Type, bit 1 → dn_Task, … bit 8 → dn_GlobalVec). `dn_SegList` (bit 7) is the critical one.
-> - `ACTION_FORMAT` (= 1227) is not in the toolchain headers — `#define` it. arg1 = **BSTR** volume name, arg2 = DosType ULONG.
+> - `ACTION_FORMAT` is 1020 (it IS in dos/dosextens.h; `#ifndef`-guard the define as a fallback). arg1 = **BSTR** volume name, arg2 = DosType ULONG.
 
 - [ ] **Step 1: Append the OS wrapper to `src/format.c`**
 
@@ -588,7 +588,7 @@ OS-bound; verified on-target in Task 8. Open `expansion.library` locally (HDPart
 #ifdef HDPART_AMIGA
 
 #ifndef ACTION_FORMAT
-#define ACTION_FORMAT 1227L
+#define ACTION_FORMAT 1020L
 #endif
 
 /* Copy a C string into a long-aligned BSTR buffer (len byte + chars).
