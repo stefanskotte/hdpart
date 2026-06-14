@@ -489,15 +489,6 @@ static int gui_save(void)
     if (!g_have_model) return 0;
     if (rdb_validate(&g_model) != RDB_OK) { gui_msg("Save", "Partition layout is invalid."); return 0; }
 
-    /* Build a confirm message naming the device (no % in the string). */
-    s_cat(g_msgbuf, &p, "Write the partition table to\n");
-    { int k; for (k = 0; g_cur_driver[k] && p < 100; k++) g_msgbuf[p++] = g_cur_driver[k]; }
-    s_cat(g_msgbuf, &p, " unit ");
-    p += u2s(g_msgbuf + p, g_cur_unit);
-    s_cat(g_msgbuf, &p, " ?\nThis overwrites the disk's RDB.");
-    g_msgbuf[p] = 0;
-    if (!gui_confirm("Save", g_msgbuf)) return 0;
-
     {
         static char snames[8][8];
         int snn = 0;
@@ -517,6 +508,15 @@ static int gui_save(void)
                 return 0;
         }
     }
+
+    /* Build a confirm message naming the device (no % in the string). */
+    s_cat(g_msgbuf, &p, "Write the partition table to\n");
+    { int k; for (k = 0; g_cur_driver[k] && p < 100; k++) g_msgbuf[p++] = g_cur_driver[k]; }
+    s_cat(g_msgbuf, &p, " unit ");
+    p += u2s(g_msgbuf + p, g_cur_unit);
+    s_cat(g_msgbuf, &p, " ?\nThis overwrites the disk's RDB.");
+    g_msgbuf[p] = 0;
+    if (!gui_confirm("Save", g_msgbuf)) return 0;
 
     h = dev_open(g_cur_driver, g_cur_unit);
     if (!h) { gui_msg("Save", "Could not open the device."); return 0; }
