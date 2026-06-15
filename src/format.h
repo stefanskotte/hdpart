@@ -5,12 +5,13 @@
 
 typedef enum {
     FMT_OK = 0,
-    FMT_ERR_RANGE,        /* bad part_index */
-    FMT_ERR_NO_HANDLER,   /* DosType not in FileSystem.resource (non-ROM FS) */
-    FMT_ERR_NAME_TAKEN,   /* DOS device name already live */
-    FMT_ERR_MAKENODE,     /* MakeDosNode failed */
-    FMT_ERR_ADDNODE,      /* AddDosNode failed */
-    FMT_ERR_FORMAT        /* ACTION_FORMAT packet failed */
+    FMT_ERR_RANGE,           /* bad part_index */
+    FMT_ERR_NO_HANDLER,      /* DosType not in FileSystem.resource (non-ROM FS) */
+    FMT_ERR_NAME_TAKEN,      /* DOS device name already live (kept; may be referenced) */
+    FMT_ERR_ALREADY_MOUNTED, /* THIS partition (these blocks) is already mounted */
+    FMT_ERR_MAKENODE,        /* MakeDosNode failed */
+    FMT_ERR_ADDNODE,         /* AddDosNode failed / no free ephemeral name */
+    FMT_ERR_FORMAT           /* ACTION_FORMAT packet failed */
 } FmtResult;
 
 /* DosEnvec built up to and including de_DosType (index DE_DOSTYPE=16).

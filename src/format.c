@@ -11,6 +11,7 @@
 #include <proto/exec.h>
 #include <proto/dos.h>
 #include <proto/expansion.h>
+#include "safety.h"
 #endif
 #include "format.h"
 
@@ -63,6 +64,35 @@ static BPTR cstr_to_bstr(const char *s, UBYTE *buf)
     return MKBADDR(buf);
 }
 
+/* Pick a DOS device name not currently in use (HDP0..HDP999).
+   out must be >= 10 bytes; outcolon must be >= 12 bytes.
+   Returns 1 on success, 0 if all 1000 names are taken. */
+static int pick_free_devname(char *out, char *outcolon)
+{
+    int n;
+    for (n = 0; n < 1000; n++) {
+        char nm[10];
+        int  p = 0, v = n, k;
+        nm[p++] = 'H'; nm[p++] = 'D'; nm[p++] = 'P';
+        /* Append decimal digits of n (0..999) without libc. */
+        if (v >= 100) { nm[p++] = (char)('0' + v / 100); v %= 100; }
+        if (v >= 10)  { nm[p++] = (char)('0' + v / 10);  v %= 10; }
+        nm[p++] = (char)('0' + v);
+        nm[p]   = 0;
+        {
+            struct DosList *dl = LockDosList(LDF_DEVICES | LDF_READ);
+            struct DosList *f  = FindDosEntry(dl, (STRPTR)nm, LDF_DEVICES);
+            UnLockDosList(LDF_DEVICES | LDF_READ);
+            if (!f) {
+                for (k = 0; nm[k]; k++) { out[k] = nm[k]; outcolon[k] = nm[k]; }
+                out[k] = 0; outcolon[k] = ':'; outcolon[k + 1] = 0;
+                return 1;
+            }
+        }
+    }
+    return 0;
+}
+
 /* Find the ROM FFS handler seglist for dos_type and patch it into dn. Returns 1
    if a handler was found and applied, 0 otherwise.
    Verified against real headers:
@@ -111,36 +141,43 @@ FmtResult format_partition(const char *driver, uint32_t unit,
     uint32_t env[FMT_ENV_LONGS];
     static ULONG pp[4 + FMT_ENV_LONGS];   /* static: keep off the 4KB stack */
     static char  driverbuf[40];
-    static char  dosnamebuf[8];
+    static char  devname[10];              /* ephemeral "HDP0" */
+    static char  devcolon[12];             /* ephemeral "HDP0:" */
     static UBYTE volbstr[34];
     struct DeviceNode *dn;
     const RdbPartition *p;
-    char dosdev[10];                      /* "DHx:" */
     int i, k;
 
     if (format_build_envec(m, part_index, env) != 0) return FMT_ERR_RANGE;
     p = &m->parts[part_index];
 
-    /* Copies into stable static buffers for MakeDosNode parmPacket strings. */
+    /* Refuse if THIS partition (these blocks) is already mounted — name-
+       independent: matches by driver+unit+cylinder overlap, so an unrelated
+       same-named device on another disk does not false-trigger, and a renamed
+       collision (DH5_1) is still detected. */
+    {
+        char livename[8];
+        if (safety_partition_mounted(driver, unit, p->low_cyl, p->high_cyl, livename))
+            return FMT_ERR_ALREADY_MOUNTED;
+    }
+
+    /* Copy driver into a stable static buffer for MakeDosNode parmPacket. */
     for (k = 0; k < 39 && driver[k]; k++) driverbuf[k] = driver[k];
     driverbuf[k] = 0;
-    for (k = 0; k < 7 && p->name[k]; k++) dosnamebuf[k] = p->name[k];
-    dosnamebuf[k] = 0;
 
-    /* Refuse if a device of this name is already mounted. */
-    {
-        struct DosList *dl = LockDosList(LDF_DEVICES | LDF_READ);
-        struct DosList *f  = FindDosEntry(dl, (STRPTR)dosnamebuf, LDF_DEVICES);
-        UnLockDosList(LDF_DEVICES | LDF_READ);
-        if (f) return FMT_ERR_NAME_TAKEN;
-    }
+    /* Pick a guaranteed-unique ephemeral device name (HDP0..HDP999).
+       Never touches the RDB partition name; the partition name is used only
+       as the volume label written by ACTION_FORMAT (persistent; user-visible).
+       On reboot the RDB name mounts normally — the ephemeral name is discarded. */
+    if (!pick_free_devname(devname, devcolon)) return FMT_ERR_ADDNODE;
 
     ExpansionBase = OpenLibrary((STRPTR)"expansion.library", 37);
     if (!ExpansionBase) return FMT_ERR_MAKENODE;
 
     /* MakeDosNode parmPacket: pp[0]=devname (C string), pp[1]=driver (C string),
-       pp[2]=unit, pp[3]=flags=0, pp[4..]=env starting at de_TableSize. */
-    pp[0] = (ULONG)dosnamebuf;
+       pp[2]=unit, pp[3]=flags=0, pp[4..]=env starting at de_TableSize.
+       pp[0] is the ephemeral name (HDP0), NOT the partition name (DH5). */
+    pp[0] = (ULONG)devname;
     pp[1] = (ULONG)driverbuf;
     pp[2] = (ULONG)unit;
     pp[3] = 0;
@@ -165,19 +202,20 @@ FmtResult format_partition(const char *driver, uint32_t unit,
     }
     CloseLibrary(ExpansionBase);   /* node is now owned by DOS */
 
-    /* Build "DHx:" and format via the handler. */
-    for (k = 0; k < 7 && dosnamebuf[k]; k++) dosdev[k] = dosnamebuf[k];
-    dosdev[k++] = ':'; dosdev[k] = 0;
-
+    /* Format via the ephemeral device (devcolon = "HDP0:").
+       All three of DeviceProc, Inhibit(TRUE), Inhibit(FALSE) use devcolon.
+       The volume LABEL (written to disk by ACTION_FORMAT, user-visible) is the
+       partition name (p->name) or the caller-supplied volname — never the
+       ephemeral device name. */
     {
-        struct MsgPort *port = DeviceProc((STRPTR)dosdev);
+        struct MsgPort *port = DeviceProc((STRPTR)devcolon);
         BPTR  vb;
         LONG  ok;
         if (!port) return FMT_ERR_FORMAT;
-        Inhibit((STRPTR)dosdev, DOSTRUE);
-        vb = cstr_to_bstr(volname && volname[0] ? volname : dosnamebuf, volbstr);
+        Inhibit((STRPTR)devcolon, DOSTRUE);
+        vb = cstr_to_bstr(volname && volname[0] ? volname : p->name, volbstr);
         ok = DoPkt(port, ACTION_FORMAT, (LONG)vb, (LONG)p->dos_type, 0L, 0L, 0L);
-        Inhibit((STRPTR)dosdev, DOSFALSE);
+        Inhibit((STRPTR)devcolon, DOSFALSE);
         if (!ok) return FMT_ERR_FORMAT;
     }
     return FMT_OK;
