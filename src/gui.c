@@ -1192,6 +1192,9 @@ static void gui_format(int index)
     case FMT_ERR_NAME_TAKEN:
         gui_msg("Format", "A device with this name is already\nmounted. Reboot to reformat it.");
         break;
+    case FMT_ERR_ALREADY_MOUNTED:
+        gui_msg("Format", "This partition is currently mounted.\nReboot to reformat it.");
+        break;
     case FMT_ERR_RANGE:
     case FMT_ERR_MAKENODE:
     case FMT_ERR_ADDNODE:
