@@ -52,6 +52,25 @@ DevLiveness safety_decide(const char *driver, uint32_t unit,
     return DEV_CLEAR;
 }
 
+int safety_part_conflict(const char *driver, uint32_t unit,
+                         uint32_t low_cyl, uint32_t high_cyl,
+                         const MountedPart parts[], int n_parts,
+                         char out_name[8])
+{
+    int i, k;
+    for (i = 0; i < n_parts; i++) {
+        if (parts[i].unit != unit) continue;
+        if (!dev_eq(parts[i].driver, driver)) continue;
+        if (!(low_cyl <= parts[i].high_cyl && parts[i].low_cyl <= high_cyl)) continue;
+        if (out_name) {
+            for (k = 0; k < 7 && parts[i].name[k]; k++) out_name[k] = parts[i].name[k];
+            out_name[k] = 0;
+        }
+        return 1;
+    }
+    return 0;
+}
+
 #ifdef HDPART_AMIGA
 /* Read the exec device name + unit backing a DLT_DEVICE DOS entry from its
    FileSysStartupMsg. Returns 1 on success. Guards BPTR derefs (see discover.c).
@@ -135,5 +154,48 @@ DevLiveness safety_classify(const char *driver, uint32_t unit,
 
     return safety_decide(driver, unit, boot_known, boot_driver, boot_unit,
                          mounts, n_mounts, out_names, max_names, n_names);
+}
+
+int safety_partition_mounted(const char *driver, uint32_t unit,
+                             uint32_t low_cyl, uint32_t high_cyl, char out_name[8])
+{
+    static MountedPart parts[32];
+    int n = 0;
+    struct DosList *dl;
+
+    dl = LockDosList(LDF_DEVICES | LDF_READ);
+    {
+        struct DosList *e = dl;
+        int guard = 0;
+        while ((e = NextDosEntry(e, LDF_DEVICES | LDF_READ)) != 0 && ++guard < 256) {
+            char drv[40]; uint32_t u;
+            struct FileSysStartupMsg *fssm;
+            struct DosEnvec *env;
+            if (!dev_backing(e, drv, &u)) continue;
+            if (!e->dol_misc.dol_handler.dol_Startup) continue;
+            if (TypeOfMem((void *)BADDR(e->dol_misc.dol_handler.dol_Startup)) == 0) continue;
+            fssm = (struct FileSysStartupMsg *)BADDR(e->dol_misc.dol_handler.dol_Startup);
+            if (!fssm->fssm_Environ) continue;
+            if (TypeOfMem((void *)BADDR(fssm->fssm_Environ)) == 0) continue;
+            env = (struct DosEnvec *)BADDR(fssm->fssm_Environ);
+            /* DE_UPPERCYL == 10; de_HighCyl is at offset 10 in DosEnvec.
+               Note: the header defines DE_UPPERCYL (not DE_HIGHCYL) as the
+               index macro for de_HighCyl. Guard: de_TableSize must be >= 10. */
+            if (env->de_TableSize < DE_UPPERCYL) continue;
+            if (n < 32) {
+                int k;
+                for (k = 0; k < 39 && drv[k]; k++) parts[n].driver[k] = drv[k];
+                parts[n].driver[k] = 0;
+                parts[n].unit = u;
+                parts[n].low_cyl  = (uint32_t)env->de_LowCyl;
+                parts[n].high_cyl = (uint32_t)env->de_HighCyl;
+                dev_dosname(e, parts[n].name);
+                n++;
+            }
+        }
+    }
+    UnLockDosList(LDF_DEVICES | LDF_READ);
+
+    return safety_part_conflict(driver, unit, low_cyl, high_cyl, parts, n, out_name);
 }
 #endif /* HDPART_AMIGA */
