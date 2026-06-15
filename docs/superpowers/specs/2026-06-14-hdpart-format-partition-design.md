@@ -208,3 +208,37 @@ On-target (FS-UAE):
 - Embed a filesystem (FSHD/LSEG) from disk/file so non-ROM FS (PFS3/SFS) can be
   selected and formatted ("feature B").
 - Reformat an already-mounted partition (Inhibit + reuse existing node).
+
+## Amendment 2026-06-15 — duplicate-name fix
+
+**Bug:** `format_partition` used the RDB partition name (e.g. `DH5`) as the live
+DOS device name for both the in-use check and `DeviceProc`/`Inhibit`/
+`ACTION_FORMAT`. DOS device names must be unique system-wide but RDB partition
+names are not, so (a) an unrelated mounted `DH5` on another disk made
+`FindDosEntry` false-refuse formatting an *unused* scratch disk, and (b) the OS
+disambiguates a name collision (the `DH5_1` suffix), so addressing by `DH5` would
+hit the wrong node.
+
+**Fix (implemented):**
+1. **Mount+format under a guaranteed-unique ephemeral device name** (`HDP0`,
+   `HDP1`, … picked via `FindDosEntry` until free). `MakeDosNode` parmPacket[0],
+   `DeviceProc`, and both `Inhibit` calls use that ephemeral name; the **volume
+   label** written by `ACTION_FORMAT` stays the partition name (or the passed
+   `volname`). The ephemeral device name is live-only (never written to disk); on
+   reboot the RDB's real partition name mounts. This removes the false-refusal and
+   the wrong-node addressing.
+2. **Replaced the name-based clash check with a name-independent partition-
+   identity check** — `safety_partition_mounted(driver,unit,low_cyl,high_cyl)` in
+   `src/safety.c` scans live DOS devices and matches by driver+unit + cylinder-
+   range overlap (reads each device's `DosEnvec` `de_LowCyl`/`de_HighCyl`, guarded
+   by `de_TableSize >= DE_UPPERCYL`=10). If the *exact* partition's blocks are
+   live → `FMT_ERR_ALREADY_MOUNTED` ("currently mounted; reboot to reformat").
+   Pure `safety_part_conflict` (inclusive-range overlap) is host-tested. This is
+   correct regardless of the device's live name (no false positives from
+   unrelated same-named disks, no false negatives from `_1` renames) and still
+   blocks the real corruption case. The old `FMT_ERR_NAME_TAKEN` enum is retained
+   but no longer returned.
+
+Note: two disks with the same **volume label** will still display as `DH5` /
+`DH5_1` on Workbench — normal AmigaDOS volume-name display, harmless, separate
+from this device-name fix.
