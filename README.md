@@ -11,7 +11,7 @@ single window, runs on a real Workbench or boots standalone from its own floppy.
   bar, and keyboard shortcuts.
 - Freestanding 68000 build — runs on a stock A500+/A600/A1200/A4000.
 
-![HDPart running on Workbench 2.04](docs/screenshot.png)
+![HDPart 0.5 partitioning a disk](docs/screenshot.png)
 
 ## Credits & attribution
 
