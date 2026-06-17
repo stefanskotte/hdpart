@@ -5,9 +5,11 @@ usable HDToolBox replacement aimed at CF/SD-on-IDE retro setups. GadTools GUI,
 single window, runs on a real Workbench or boots standalone from its own floppy.
 
 - Discover a device → read its Rigid Disk Block → init / partition / resize / split → save.
+- **Format** a partition into a ready, empty volume live — no reboot — using the
+  ROM filesystem (FFS/OFS, Intl, DirCache). Won't touch the disk you booted from.
 - Two-panel GUI (Disk / Partitions) with a disk-map bar, a screen-top Amiga menu
   bar, and keyboard shortcuts.
-- Freestanding 68000 build (no libc) — runs on a stock A500+/A600/A1200/A4000.
+- Freestanding 68000 build — runs on a stock A500+/A600/A1200/A4000.
 
 ![HDPart running on Workbench 2.04](docs/screenshot.png)
 
