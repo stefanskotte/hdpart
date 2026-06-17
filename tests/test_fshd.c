@@ -120,6 +120,31 @@ static void test_roundtrip(void)
     free(m.fs[0].seg_data); free(d);
 }
 
+static void test_preserve_on_resave(void)
+{
+    /* A disk with an embedded FS, parsed and re-saved, keeps the FS. */
+    RamDisk *d = (RamDisk *)calloc(1, sizeof *d);
+    RdbModel m; memset(&m, 0, sizeof m);
+    rdb_init_model(&m, 100, 16, 63);
+    CHECK(rdb_add_partition(&m, "DH0", 20, RDB_DOSTYPE_FFS_INTL) == RDB_OK);
+    m.num_fs = 1; m.fs[0].dos_type = 0x50465303u; m.fs[0].seg_len = 600;
+    m.fs[0].seg_data = fake_seg(600);
+    CHECK(rdb_serialize(&m, ram_io, d) == RDB_OK);
+
+    RdbModel r; memset(&r, 0, sizeof r);
+    CHECK(rdb_parse(&r, ram_io, d) == RDB_OK);
+    CHECK(r.num_fs == 1);
+    /* re-save the parsed model to a second disk, parse again */
+    RamDisk *d2 = (RamDisk *)calloc(1, sizeof *d2);
+    CHECK(rdb_serialize(&r, ram_io, d2) == RDB_OK);
+    RdbModel r2; memset(&r2, 0, sizeof r2);
+    CHECK(rdb_parse(&r2, ram_io, d2) == RDB_OK);
+    CHECK(r2.num_fs == 1);
+    CHECK(r2.fs[0].seg_len >= 600);   /* padded to LSEG_PAYLOAD multiples */
+    rdb_model_free(&r); rdb_model_free(&r2);
+    free(m.fs[0].seg_data); free(d); free(d2);
+}
+
 int main(void)
 {
     test_lseg_block_count();
@@ -127,6 +152,7 @@ int main(void)
     test_serialize_with_fs();
     test_capacity_guard();
     test_roundtrip();
+    test_preserve_on_resave();
     printf("test_fshd: %d run, %d failed\n", tests_run, tests_failed);
     return tests_failed ? 1 : 0;
 }

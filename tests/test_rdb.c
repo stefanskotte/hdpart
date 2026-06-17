@@ -439,6 +439,36 @@ int main(int argc, char **argv)
         printf("wrote %s (%u blocks)\n", outpath, total);
         return 0;
     }
+    if (argc >= 2 && strcmp(argv[1], "--emit-fs") == 0) {
+        /* Like --emit but embeds a fake PFS\3 filesystem in the RDB so that
+           rdbtool can independently verify the FSHD/LSEG chain.
+           Same geometry: 64 cyl * 4 heads * 32 sec = 8192 blocks = 4 MB. */
+        const char *outpath = "/tmp/hdpart_test_fs.img";
+        FILE *f = fopen(outpath, "wb+");
+        static uint8_t z2[RDB_BLOCK_BYTES];
+        /* Fake hunk image: HUNK_HEADER magic + filler, 984 bytes (2 LSEG blocks). */
+        static uint8_t fake_hunk[984];
+        uint32_t i2, total2 = 64u * 4u * 32u;
+        FileCtx c2;
+        RdbModel m2;
+        if (!f) { perror("fopen"); return 2; }
+        for (i2 = 0; i2 < total2; i2++) fwrite(z2, 1, RDB_BLOCK_BYTES, f);
+        c2.f = f;
+        fake_hunk[0]=0x00; fake_hunk[1]=0x00; fake_hunk[2]=0x03; fake_hunk[3]=0xF3;
+        for (i2 = 4; i2 < 984; i2++) fake_hunk[i2] = (uint8_t)(i2 * 7u + 1u);
+        rdb_init_model(&m2, 64, 4, 32);
+        rdb_add_partition(&m2, "DH0", 1, RDB_DOSTYPE_FFS_INTL);
+        m2.num_fs = 1;
+        m2.fs[0].dos_type = 0x50465303u;   /* PFS\3 */
+        m2.fs[0].version  = (53u << 16) | 3u;
+        m2.fs[0].seg_len  = 984;
+        m2.fs[0].seg_data = fake_hunk;
+        if (rdb_serialize(&m2, file_io, &c2) != RDB_OK) { fclose(f); return 3; }
+        m2.fs[0].seg_data = 0;             /* not heap-owned; prevent free */
+        fclose(f);
+        printf("wrote %s (%u blocks, embedded PFS\\3 FS)\n", outpath, total2);
+        return 0;
+    }
 
     test_endian();
     test_checksum();
