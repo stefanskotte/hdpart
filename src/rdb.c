@@ -3,6 +3,26 @@
 #include <string.h>
 /* implementation grows over the following tasks */
 
+#define LSEG_PAYLOAD 492u   /* raw hunk bytes carried per LSEG block */
+
+#ifdef HDPART_AMIGA
+#include <exec/memory.h>
+#include <proto/exec.h>
+/* Amiga FreeMem needs the size; we store it in a header longword. */
+static void *rdb_alloc_sized(uint32_t n) {
+    uint32_t *p = (uint32_t *)AllocMem(n + 4, MEMF_PUBLIC | MEMF_CLEAR);
+    if (!p) return 0; p[0] = n + 4; return p + 1;
+}
+static void rdb_free_sized(void *p) {
+    if (!p) return; uint32_t *h = (uint32_t *)p - 1; FreeMem(h, h[0]);
+}
+#else
+#include <stdlib.h>
+static void *rdb_alloc_sized(uint32_t n) __attribute__((unused));
+static void *rdb_alloc_sized(uint32_t n) { return calloc(1, n ? n : 1); }
+static void rdb_free_sized(void *p) { free(p); }
+#endif
+
 static int str_eq(const char *a, const char *b)
 {
     while (*a && (*a == *b)) { a++; b++; }
@@ -70,6 +90,21 @@ void rdb_init_model(RdbModel *m, uint32_t cyl, uint32_t heads, uint32_t sectors)
     m->rdb_blocks_lo = 0;
     m->rdb_blocks_hi = RDB_RESERVED_CYLS * m->cyl_blocks - 1;
     m->num_parts   = 0;
+}
+
+uint32_t rdb_lseg_block_count(uint32_t seg_len)
+{
+    return (seg_len + LSEG_PAYLOAD - 1u) / LSEG_PAYLOAD;
+}
+
+void rdb_model_free(RdbModel *m)
+{
+    int i;
+    if (!m) return;
+    for (i = 0; i < m->num_fs; i++) {
+        if (m->fs[i].seg_data) { rdb_free_sized(m->fs[i].seg_data); m->fs[i].seg_data = 0; }
+    }
+    m->num_fs = 0;
 }
 
 static uint32_t next_free_cyl(const RdbModel *m)
