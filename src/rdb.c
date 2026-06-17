@@ -394,6 +394,10 @@ int rdb_validate(const RdbModel *m)
 /* ---- RDB on-disk constants (byte offsets within a 512-byte block) ---- */
 #define ID_RDSK 0x5244534Bu
 #define ID_PART 0x50415254u
+#define ID_FSHD 0x46534844u
+#define ID_LSEG 0x4C534547u
+#define FSHD_SUMMEDLONGS 64u
+#define LSEG_SUMMEDLONGS 128u
 #define RDB_LOCATION_LIMIT 16u
 #define NULLPTR 0xFFFFFFFFu
 
@@ -456,6 +460,24 @@ int rdb_validate(const RdbModel *m)
 #define DE_BootPri       15
 #define DE_DosType       16
 
+/* FSHD field offsets within the 512-byte block. */
+#define FSHD_o_Next       16
+#define FSHD_o_Flags      20
+#define FSHD_o_DosType    32
+#define FSHD_o_Version    36
+#define FSHD_o_PatchFlags 40
+#define FSHD_o_Type       44   /* dn_Type */
+#define FSHD_o_Task       48
+#define FSHD_o_Lock       52
+#define FSHD_o_Handler    56
+#define FSHD_o_StackSize  60
+#define FSHD_o_Priority   64
+#define FSHD_o_Startup    68
+#define FSHD_o_SegList    72   /* first LSEG block# */
+#define FSHD_o_GlobalVec  76
+#define LSEG_o_Next       16
+#define LSEG_o_LoadData   20
+
 static void env_put(uint8_t *blk, int idx, uint32_t v)
 {
     be_put32(blk + PART_o_Environment + idx * 4, v);
@@ -503,12 +525,72 @@ static void write_partition_block(uint8_t *blk, const RdbModel *m,
     rdb_set_checksum(blk, PART_SUMMEDLONGS, PART_o_ChkSum);
 }
 
+static void write_fshd_block(uint8_t *blk, const RdbFileSys *fs,
+                             uint32_t next_blk, uint32_t first_lseg)
+{
+    memset(blk, 0, 512);
+    be_put32(blk + 0,  ID_FSHD);
+    be_put32(blk + 4,  FSHD_SUMMEDLONGS);
+    be_put32(blk + 12, 7u);                 /* HostID */
+    be_put32(blk + FSHD_o_Next,      next_blk);
+    be_put32(blk + FSHD_o_Flags,     0u);
+    be_put32(blk + FSHD_o_DosType,   fs->dos_type);
+    be_put32(blk + FSHD_o_Version,   fs->version);
+    be_put32(blk + FSHD_o_PatchFlags,fs->patch_flags);
+    be_put32(blk + FSHD_o_Type,      fs->dn_type);
+    be_put32(blk + FSHD_o_Task,      fs->dn_task);
+    be_put32(blk + FSHD_o_Lock,      fs->dn_lock);
+    be_put32(blk + FSHD_o_Handler,   fs->dn_handler);
+    be_put32(blk + FSHD_o_StackSize, fs->dn_stack);
+    be_put32(blk + FSHD_o_Priority,  fs->dn_pri);
+    be_put32(blk + FSHD_o_Startup,   fs->dn_startup);
+    be_put32(blk + FSHD_o_SegList,   first_lseg);
+    be_put32(blk + FSHD_o_GlobalVec, fs->dn_globalvec);
+    rdb_set_checksum(blk, FSHD_SUMMEDLONGS, 8);
+}
+
+static void write_lseg_block(uint8_t *blk, const uint8_t *data, uint32_t len,
+                             uint32_t next_blk)
+{
+    memset(blk, 0, 512);
+    be_put32(blk + 0,  ID_LSEG);
+    be_put32(blk + 4,  LSEG_SUMMEDLONGS);
+    be_put32(blk + 12, 7u);
+    be_put32(blk + LSEG_o_Next, next_blk);
+    if (len > LSEG_PAYLOAD) len = LSEG_PAYLOAD;
+    memcpy(blk + LSEG_o_LoadData, data, len);
+    rdb_set_checksum(blk, LSEG_SUMMEDLONGS, 8);
+}
+
 int rdb_serialize(const RdbModel *m, BlockIO io, void *ctx)
 {
     uint8_t blk[RDB_BLOCK_BYTES];
     uint32_t part_block_first, i;
+    uint32_t high_rdsk;
     int v = rdb_validate(m);
     if (v != RDB_OK) return v;
+
+    /* Capacity check + linear allocation for FSHD/LSEG, after PART blocks.
+       Run this BEFORE any I/O so that a too-big model writes nothing. */
+    {
+        uint32_t next = 1u + (uint32_t)m->num_parts;   /* first free block */
+        uint32_t reserved_hi = m->rdb_blocks_hi;       /* inclusive */
+        uint32_t total = next;
+        for (i = 0; i < (uint32_t)m->num_fs; i++)
+            total += 1u + rdb_lseg_block_count(m->fs[i].seg_len); /* FSHD + LSEGs */
+        if (m->num_fs > 0 && total - 1u > reserved_hi)
+            return RDB_ERR_NO_RDB_SPACE;
+    }
+
+    /* Compute HighRDSKBlock (last used block) before writing block 0, since
+       block 0 carries this field. */
+    high_rdsk = (uint32_t)m->num_parts;   /* default (parts only, or 0) */
+    if (m->num_fs > 0) {
+        uint32_t t = 1u + (uint32_t)m->num_parts;
+        for (i = 0; i < (uint32_t)m->num_fs; i++)
+            t += 1u + rdb_lseg_block_count(m->fs[i].seg_len);
+        high_rdsk = t - 1u;
+    }
 
     /* PART blocks occupy blocks 1..num_parts (block 0 is RDSK). */
     part_block_first = (m->num_parts > 0) ? 1u : NULLPTR;
@@ -522,7 +604,8 @@ int rdb_serialize(const RdbModel *m, BlockIO io, void *ctx)
     be_put32(blk + RDB_o_Flags, 0);
     be_put32(blk + RDB_o_BadBlockList, NULLPTR);
     be_put32(blk + RDB_o_PartitionList, part_block_first);
-    be_put32(blk + RDB_o_FileSysHdr, NULLPTR);
+    be_put32(blk + RDB_o_FileSysHdr,
+             m->num_fs > 0 ? (1u + (uint32_t)m->num_parts) : NULLPTR);
     be_put32(blk + RDB_o_DriveInit, NULLPTR);
     be_put32(blk + RDB_o_Cylinders, m->cylinders);
     be_put32(blk + RDB_o_Sectors, m->sectors);
@@ -538,7 +621,7 @@ int rdb_serialize(const RdbModel *m, BlockIO io, void *ctx)
     be_put32(blk + RDB_o_HiCylinder, m->hi_cyl);
     be_put32(blk + RDB_o_CylBlocks, m->cyl_blocks);
     be_put32(blk + RDB_o_AutoParkSecs, 0);
-    be_put32(blk + RDB_o_HighRDSKBlock, m->num_parts > 0 ? (uint32_t)m->num_parts : 0u);
+    be_put32(blk + RDB_o_HighRDSKBlock, high_rdsk);
     rdb_set_checksum(blk, RDB_SUMMEDLONGS, RDB_o_ChkSum);
     if (io(ctx, 0, blk, 1)) return RDB_ERR_IO;
 
@@ -547,6 +630,32 @@ int rdb_serialize(const RdbModel *m, BlockIO io, void *ctx)
         uint32_t next = (i + 1 < (uint32_t)m->num_parts) ? (i + 2) : NULLPTR;
         write_partition_block(blk, m, &m->parts[i], next);
         if (io(ctx, 1 + i, blk, 1)) return RDB_ERR_IO;
+    }
+
+    /* Write FSHD/LSEG chains after the PART blocks. */
+    {
+        uint32_t cur = 1u + (uint32_t)m->num_parts;   /* current FSHD block */
+        for (i = 0; i < (uint32_t)m->num_fs; i++) {
+            const RdbFileSys *fs = &m->fs[i];
+            uint32_t nseg = rdb_lseg_block_count(fs->seg_len);
+            uint32_t first_lseg = nseg ? cur + 1u : NULLPTR;
+            uint32_t fshd_blk = cur;
+            uint32_t next_fshd;
+            uint32_t s, off = 0u;
+            cur += 1u + nseg;                          /* advance past FSHD+LSEGs */
+            next_fshd = (i + 1u < (uint32_t)m->num_fs) ? cur : NULLPTR;
+            write_fshd_block(blk, fs, next_fshd, first_lseg);
+            if (io(ctx, fshd_blk, blk, 1)) return RDB_ERR_IO;
+            for (s = 0; s < nseg; s++) {
+                uint32_t lseg_blk = fshd_blk + 1u + s;
+                uint32_t next_lseg = (s + 1u < nseg) ? lseg_blk + 1u : NULLPTR;
+                uint32_t chunk = fs->seg_len - off;
+                if (chunk > LSEG_PAYLOAD) chunk = LSEG_PAYLOAD;
+                write_lseg_block(blk, fs->seg_data + off, chunk, next_lseg);
+                if (io(ctx, lseg_blk, blk, 1)) return RDB_ERR_IO;
+                off += chunk;
+            }
+        }
     }
     return RDB_OK;
 }
