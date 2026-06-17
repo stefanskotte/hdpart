@@ -93,45 +93,81 @@ static int pick_free_devname(char *out, char *outcolon)
     return 0;
 }
 
-/* Find the ROM FFS handler seglist for dos_type and patch it into dn. Returns 1
-   if a handler was found and applied, 0 otherwise.
-   Verified against real headers:
-   - FileSysEntry patchable run: fse_Type .. fse_GlobalVec (9 longwords, bits 0-8)
-   - DeviceNode:                 dn_Type  .. dn_GlobalVec  (same layout, same count)
-   Copying src[bit] -> dst[bit] where bit is set in fse_PatchFlags is valid. */
-static int bind_rom_handler(struct DeviceNode *dn, ULONG dos_type)
+/* Bind a filesystem handler (SegList + launch params) for dos_type into dn.
+   This only finds the CODE to run; the formatted volume's type is ALWAYS the
+   selected dos_type (carried in the env + ACTION_FORMAT). Matching is by FS
+   FAMILY (top 3 bytes, e.g. "DOS"/"PFS"/"SFS"), so FFS-Intl uses the FFS handler
+   and a future PFS\x uses a PFS handler — never cross-family, never altering the
+   chosen type.
+
+   Strategy 1 (preferred): clone the handler fields from a LIVE mounted partition
+   of the same family. Every field is OS-validated and proven to launch, and it
+   covers custom filesystems (e.g. a PFS handler loaded from a booted disk's RDB)
+   as well as ROM FFS. Reading another node's seglist pointer is harmless even if
+   that node is the boot disk.
+   Strategy 2 (fallback): the FileSystem.resource entry's fse_SegList field
+   directly — AmigaOS 3.2 leaves fse_PatchFlags == 0 but still populates
+   fse_SegList (the older "patch by PatchFlags bits" approach binds nothing here).
+
+   Returns 1 if a SegList was bound, else 0 (caller -> FMT_ERR_NO_HANDLER). */
+static int bind_handler(struct DeviceNode *dn, ULONG dos_type)
 {
-    struct FileSysResource *fsr;
-    struct FileSysEntry *fse;
-    ULONG *src, *dst;
-    int applied = 0;
+    ULONG fam = dos_type & 0xFFFFFF00u;
 
-    fsr = (struct FileSysResource *)OpenResource((STRPTR)FSRNAME);
-    if (!fsr) return 0;
-
-    Forbid();
-    for (fse = (struct FileSysEntry *)fsr->fsr_FileSysEntries.lh_Head;
-         fse->fse_Node.ln_Succ;
-         fse = (struct FileSysEntry *)fse->fse_Node.ln_Succ) {
-        if (fse->fse_DosType != dos_type) continue;
-        /* Patch DeviceNode fields selected by fse_PatchFlags. The patchable run
-           starts at fse_Type (mirrors dn_Type) and is contiguous (9 longwords). */
-        src = (ULONG *)&fse->fse_Type;
-        dst = (ULONG *)&dn->dn_Type;
-        {
-            ULONG flags = fse->fse_PatchFlags;
-            int bit;
-            for (bit = 0; bit < 9; bit++)
-                if (flags & (1u << bit)) dst[bit] = src[bit];
+    /* Strategy 1: clone from a live mount of the same FS family. */
+    {
+        struct DosList *e = LockDosList(LDF_DEVICES | LDF_READ);
+        int   guard = 0, found = 0;
+        ULONG type = 0, seg = 0, gv = 0;
+        LONG  stack = 0, pri = 0;
+        while ((e = NextDosEntry(e, LDF_DEVICES | LDF_READ)) != 0 && ++guard < 256) {
+            struct FileSysStartupMsg *fssm;
+            struct DosEnvec *env;
+            struct DeviceNode *en;
+            BPTR startup = e->dol_misc.dol_handler.dol_Startup;
+            if (!startup || TypeOfMem((void *)BADDR(startup)) == 0) continue;
+            fssm = (struct FileSysStartupMsg *)BADDR(startup);
+            if (!fssm->fssm_Environ || TypeOfMem((void *)BADDR(fssm->fssm_Environ)) == 0) continue;
+            env = (struct DosEnvec *)BADDR(fssm->fssm_Environ);
+            if (env->de_TableSize < DE_DOSTYPE) continue;
+            if ((env->de_DosType & 0xFFFFFF00u) != fam) continue;
+            en = (struct DeviceNode *)e;        /* DLT_DEVICE DosList aliases DeviceNode */
+            if (!en->dn_SegList) continue;
+            type = en->dn_Type; seg = (ULONG)en->dn_SegList; gv = (ULONG)en->dn_GlobalVec;
+            stack = en->dn_StackSize; pri = en->dn_Priority; found = 1; break;
         }
-        /* Bit 7 of PatchFlags = SegList must be patched in for the handler to
-           launch. Reject entries that matched DosType but carry no SegList;
-           keep scanning so a later (better) entry can still satisfy the request. */
-        if (fse->fse_PatchFlags & (1u << 7)) applied = 1;
-        break;
+        UnLockDosList(LDF_DEVICES | LDF_READ);
+        if (found) {
+            dn->dn_Type      = type;
+            dn->dn_SegList   = (BPTR)seg;
+            dn->dn_GlobalVec = (BPTR)gv;
+            if (stack > 0) dn->dn_StackSize = stack;
+            if (pri   > 0) dn->dn_Priority  = pri;
+            return 1;
+        }
     }
-    Permit();
-    return applied;
+
+    /* Strategy 2: FileSystem.resource fse_SegList (PatchFlags is 0 on 3.2). */
+    {
+        struct FileSysResource *fsr = (struct FileSysResource *)OpenResource((STRPTR)FSRNAME);
+        struct FileSysEntry *fse;
+        if (!fsr) return 0;
+        Forbid();
+        for (fse = (struct FileSysEntry *)fsr->fsr_FileSysEntries.lh_Head;
+             fse->fse_Node.ln_Succ;
+             fse = (struct FileSysEntry *)fse->fse_Node.ln_Succ) {
+            if (fse->fse_DosType != dos_type && (fse->fse_DosType & 0xFFFFFF00u) != fam) continue;
+            if (!fse->fse_SegList) continue;
+            dn->dn_SegList   = fse->fse_SegList;
+            dn->dn_GlobalVec = (BPTR)-1;        /* FFS/PFS handlers are not BCPL */
+            if (dn->dn_StackSize == 0) dn->dn_StackSize = 4096;
+            if (dn->dn_Priority  == 0) dn->dn_Priority  = 10;
+            Permit();
+            return 1;
+        }
+        Permit();
+    }
+    return 0;
 }
 
 FmtResult format_partition(const char *driver, uint32_t unit,
@@ -151,14 +187,29 @@ FmtResult format_partition(const char *driver, uint32_t unit,
     if (format_build_envec(m, part_index, env) != 0) return FMT_ERR_RANGE;
     p = &m->parts[part_index];
 
-    /* Refuse if THIS partition (these blocks) is already mounted — name-
-       independent: matches by driver+unit+cylinder overlap, so an unrelated
-       same-named device on another disk does not false-trigger, and a renamed
-       collision (DH5_1) is still detected. */
+    /* If THIS partition's blocks are already mounted (matched name-independently
+       by driver+unit+cylinder overlap — handles auto-mounted and renamed/_N
+       collisions), reformat the EXISTING live volume the way C:Format/Workbench
+       do: inhibit it, ACTION_FORMAT, un-inhibit. We must NOT add a second node on
+       top of mounted blocks. The boot device is already hard-blocked upstream
+       (safety_classify in the GUI), and the user has confirmed the destructive
+       action, so reformatting a non-boot mounted volume is the intended path. */
     {
+        static char livecolon[10];
         char livename[8];
-        if (safety_partition_mounted(driver, unit, p->low_cyl, p->high_cyl, livename))
-            return FMT_ERR_ALREADY_MOUNTED;
+        if (safety_partition_mounted(driver, unit, p->low_cyl, p->high_cyl, livename)) {
+            struct MsgPort *port;
+            BPTR vb; LONG ok; int kk;
+            for (kk = 0; kk < 7 && livename[kk]; kk++) livecolon[kk] = livename[kk];
+            livecolon[kk++] = ':'; livecolon[kk] = 0;
+            port = DeviceProc((STRPTR)livecolon);
+            if (!port) return FMT_ERR_FORMAT;
+            Inhibit((STRPTR)livecolon, DOSTRUE);
+            vb = cstr_to_bstr(volname && volname[0] ? volname : p->name, volbstr);
+            ok = DoPkt(port, ACTION_FORMAT, (LONG)vb, (LONG)p->dos_type, 0L, 0L, 0L);
+            Inhibit((STRPTR)livecolon, DOSFALSE);
+            return ok ? FMT_OK : FMT_ERR_FORMAT;
+        }
     }
 
     /* Copy driver into a stable static buffer for MakeDosNode parmPacket. */
@@ -186,8 +237,10 @@ FmtResult format_partition(const char *driver, uint32_t unit,
     dn = (struct DeviceNode *)MakeDosNode((APTR)pp);
     if (!dn) { CloseLibrary(ExpansionBase); return FMT_ERR_MAKENODE; }
 
-    if (!bind_rom_handler(dn, (ULONG)p->dos_type)) {
-        /* No ROM handler for this dostype: non-ROM FS, not supported in v1.
+    if (!bind_handler(dn, (ULONG)p->dos_type)) {
+        /* No handler found for this dostype's family (no live mount of that
+           family and no FileSystem.resource entry). For a custom FS not yet
+           loaded this needs embedded-FS support (feature B).
            The node is not added to DOS; do not call AddDosNode.
            MakeDosNode allocation is intentionally not freed here: there is no
            public FreeDosNode API, this path is rare and one-shot, and the

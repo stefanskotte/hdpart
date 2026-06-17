@@ -1187,13 +1187,7 @@ static void gui_format(int index)
         gui_status(msg);
         break;
     case FMT_ERR_NO_HANDLER:
-        gui_msg("Format", "No ROM filesystem for this type.\nNon-ROM filesystems need embedded-FS\nsupport (not available yet).");
-        break;
-    case FMT_ERR_NAME_TAKEN:
-        gui_msg("Format", "A device with this name is already\nmounted. Reboot to reformat it.");
-        break;
-    case FMT_ERR_ALREADY_MOUNTED:
-        gui_msg("Format", "This partition is currently mounted.\nReboot to reformat it.");
+        gui_msg("Format", "No filesystem handler for this type.\nNon-ROM filesystems need embedded-FS\nsupport (not available yet).");
         break;
     case FMT_ERR_RANGE:
     case FMT_ERR_MAKENODE:

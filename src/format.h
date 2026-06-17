@@ -6,12 +6,10 @@
 typedef enum {
     FMT_OK = 0,
     FMT_ERR_RANGE,           /* bad part_index */
-    FMT_ERR_NO_HANDLER,      /* DosType not in FileSystem.resource (non-ROM FS) */
-    FMT_ERR_NAME_TAKEN,      /* DOS device name already live (kept; may be referenced) */
-    FMT_ERR_ALREADY_MOUNTED, /* THIS partition (these blocks) is already mounted */
-    FMT_ERR_MAKENODE,        /* MakeDosNode failed */
+    FMT_ERR_NO_HANDLER,      /* no FS handler for this DosType's family */
+    FMT_ERR_MAKENODE,        /* MakeDosNode / OpenLibrary failed */
     FMT_ERR_ADDNODE,         /* AddDosNode failed / no free ephemeral name */
-    FMT_ERR_FORMAT           /* ACTION_FORMAT packet failed */
+    FMT_ERR_FORMAT           /* DeviceProc or ACTION_FORMAT packet failed */
 } FmtResult;
 
 /* DosEnvec built up to and including de_DosType (index DE_DOSTYPE=16).
@@ -23,9 +21,12 @@ typedef enum {
 int format_build_envec(const RdbModel *m, int part_index, uint32_t env[FMT_ENV_LONGS]);
 
 #ifdef HDPART_AMIGA
-/* OS: MakeDosNode + bind ROM FFS handler + AddDosNode(STARTPROC) +
-   Inhibit + ACTION_FORMAT(volname, dostype) + Inhibit. volname = volume label
-   (no colon). Returns FmtResult. */
+/* OS: format the partition live (no reboot). If its blocks are already mounted,
+   reformat the existing volume the C:Format/Workbench way (Inhibit +
+   ACTION_FORMAT + Inhibit); otherwise MakeDosNode + bind the FS-family handler +
+   AddDosNode(STARTPROC) + Inhibit + ACTION_FORMAT + Inhibit. The volume is always
+   formatted as the partition's selected DosType; volname = volume label (no
+   colon). Returns FmtResult. */
 FmtResult format_partition(const char *driver, uint32_t unit,
                            const RdbModel *m, int part_index, const char *volname);
 #endif
