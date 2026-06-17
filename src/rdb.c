@@ -660,10 +660,84 @@ int rdb_serialize(const RdbModel *m, BlockIO io, void *ctx)
     return RDB_OK;
 }
 
+/* Printable 3 chars + version byte, e.g. "PFS\3"; hex fallback. out >= 16. */
+static void dostype_name(char *out, uint32_t t)
+{
+    unsigned char c0=(t>>24)&0xff, c1=(t>>16)&0xff, c2=(t>>8)&0xff, v=t&0xff;
+    if (c0>=32&&c0<127&&c1>=32&&c1<127&&c2>=32&&c2<127) {
+        out[0]=(char)c0; out[1]=(char)c1; out[2]=(char)c2; out[3]='\\';
+        out[4]=(char)('0'+(v<=9?v:0)); out[5]=0;
+    } else {
+        static const char *h="0123456789ABCDEF"; int i;
+        out[0]='0'; out[1]='x';
+        for (i=0;i<8;i++) out[2+i]=h[(t>>((7-i)*4))&0xf];
+        out[10]=0;
+    }
+}
+
+/* Read the FSHD chain starting at block `fshd_blk` into m->fs[]. Returns RDB_OK
+   or RDB_ERR_IO. Silently stops at RDB_MAX_FS or a bad/zero pointer. */
+static int read_fshd_chain(RdbModel *m, BlockIO io, void *ctx, uint32_t fshd_blk)
+{
+    uint8_t blk[512];
+    int guard = 0;
+    while (fshd_blk != NULLPTR && fshd_blk != 0 && m->num_fs < RDB_MAX_FS
+           && ++guard < 64) {
+        RdbFileSys *fs = &m->fs[m->num_fs];
+        uint32_t seg_blk, seg_len = 0, cap, off = 0;
+        int sguard = 0;
+        if (io(ctx, fshd_blk, blk, 0)) return RDB_ERR_IO;
+        if (be_get32(blk + 0) != ID_FSHD ||
+            !rdb_checksum_ok(blk, FSHD_SUMMEDLONGS)) break;
+        memset(fs, 0, sizeof *fs);
+        fs->dos_type     = be_get32(blk + FSHD_o_DosType);
+        fs->version      = be_get32(blk + FSHD_o_Version);
+        fs->patch_flags  = be_get32(blk + FSHD_o_PatchFlags);
+        fs->dn_type      = be_get32(blk + FSHD_o_Type);
+        fs->dn_task      = be_get32(blk + FSHD_o_Task);
+        fs->dn_lock      = be_get32(blk + FSHD_o_Lock);
+        fs->dn_handler   = be_get32(blk + FSHD_o_Handler);
+        fs->dn_stack     = be_get32(blk + FSHD_o_StackSize);
+        fs->dn_pri       = be_get32(blk + FSHD_o_Priority);
+        fs->dn_startup   = be_get32(blk + FSHD_o_Startup);
+        fs->dn_globalvec = be_get32(blk + FSHD_o_GlobalVec);
+        fs->source       = RDB_FS_EMBEDDED;
+        dostype_name(fs->name, fs->dos_type);   /* readable default name */
+
+        /* First pass: count LSEG payload bytes. */
+        seg_blk = be_get32(blk + FSHD_o_SegList);
+        { uint32_t b = seg_blk; int g = 0;
+          while (b != NULLPTR && b != 0 && ++g < 4096) {
+            uint8_t lb[512];
+            if (io(ctx, b, lb, 0)) return RDB_ERR_IO;
+            if (be_get32(lb + 0) != ID_LSEG) break;
+            seg_len += LSEG_PAYLOAD;
+            b = be_get32(lb + LSEG_o_Next);
+          } }
+        cap = seg_len;
+        fs->seg_data = (uint8_t *)rdb_alloc_sized(cap ? cap : 1);
+        if (!fs->seg_data) return RDB_ERR_IO;
+        /* Second pass: copy payloads. */
+        { uint32_t b = seg_blk;
+          while (b != NULLPTR && b != 0 && ++sguard < 4096 && off < cap) {
+            uint8_t lb[512];
+            if (io(ctx, b, lb, 0)) return RDB_ERR_IO;
+            if (be_get32(lb + 0) != ID_LSEG) break;
+            memcpy(fs->seg_data + off, lb + LSEG_o_LoadData, LSEG_PAYLOAD);
+            off += LSEG_PAYLOAD;
+            b = be_get32(lb + LSEG_o_Next);
+          } }
+        fs->seg_len = off;
+        m->num_fs++;
+        fshd_blk = be_get32(blk + FSHD_o_Next);
+    }
+    return RDB_OK;
+}
+
 int rdb_parse(RdbModel *m, BlockIO io, void *ctx)
 {
     uint8_t blk[RDB_BLOCK_BYTES];
-    uint32_t b, part_ptr;
+    uint32_t b, part_ptr, fshd_ptr;
     int found = 0;
 
     memset(m, 0, sizeof(*m));
@@ -690,6 +764,7 @@ int rdb_parse(RdbModel *m, BlockIO io, void *ctx)
     m->rdb_blocks_lo = be_get32(blk + RDB_o_RDBBlocksLo);
     m->rdb_blocks_hi = be_get32(blk + RDB_o_RDBBlocksHi);
     part_ptr         = be_get32(blk + RDB_o_PartitionList);
+    fshd_ptr         = be_get32(blk + RDB_o_FileSysHdr);  /* capture before PART walk reuses blk */
 
     while (part_ptr != NULLPTR && part_ptr != 0 && m->num_parts < RDB_MAX_PARTS) {
         RdbPartition *p;
@@ -714,6 +789,11 @@ int rdb_parse(RdbModel *m, BlockIO io, void *ctx)
         p->bootable    = (be_get32(blk + PART_o_Flags) & 1u) ? 1 : 0;
 
         part_ptr = be_get32(blk + PART_o_Next);
+    }
+
+    {
+        int rc = read_fshd_chain(m, io, ctx, fshd_ptr);
+        if (rc != RDB_OK) return rc;
     }
     return RDB_OK;
 }

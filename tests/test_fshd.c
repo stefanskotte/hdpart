@@ -90,12 +90,43 @@ static void test_capacity_guard(void)
     free(m.fs[0].seg_data); free(d);
 }
 
+static void test_roundtrip(void)
+{
+    RamDisk *d = (RamDisk *)calloc(1, sizeof *d);
+    RdbModel m; memset(&m, 0, sizeof m);
+    rdb_init_model(&m, 100, 16, 63);
+    CHECK(rdb_add_partition(&m, "DH0", 20, RDB_DOSTYPE_FFS_INTL) == RDB_OK);
+    m.num_fs = 1;
+    m.fs[0].dos_type = 0x50465303u;
+    m.fs[0].version  = (53u << 16) | 3u;
+    m.fs[0].seg_len  = 1000;
+    m.fs[0].seg_data = fake_seg(1000);
+    strcpy(m.fs[0].name, "PFSFileSystem");
+    CHECK(rdb_serialize(&m, ram_io, d) == RDB_OK);
+
+    RdbModel r; memset(&r, 0, sizeof r);
+    CHECK(rdb_parse(&r, ram_io, d) == RDB_OK);
+    CHECK(r.num_fs == 1);
+    CHECK(r.fs[0].dos_type == 0x50465303u);
+    CHECK(r.fs[0].version  == ((53u<<16)|3u));
+    CHECK(r.fs[0].seg_len  >= 1000);   /* padded to LSEG_PAYLOAD multiples */
+    CHECK(r.fs[0].seg_data != 0);
+    {
+        uint8_t *orig = fake_seg(1000);
+        CHECK(memcmp(r.fs[0].seg_data, orig, 1000) == 0);  /* bytes preserved */
+        free(orig);
+    }
+    rdb_model_free(&r);
+    free(m.fs[0].seg_data); free(d);
+}
+
 int main(void)
 {
     test_lseg_block_count();
     test_model_free_safe();
     test_serialize_with_fs();
     test_capacity_guard();
+    test_roundtrip();
     printf("test_fshd: %d run, %d failed\n", tests_run, tests_failed);
     return tests_failed ? 1 : 0;
 }
