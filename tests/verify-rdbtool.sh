@@ -11,45 +11,51 @@ rdbtool /tmp/hdpart_test.img info
 
 # ── Embedded-FS cross-check ────────────────────────────────────────────────
 # Emit a second image that includes an embedded PFS\3 filesystem (FSHD+LSEG).
-# NOTE: rdbtool 0.4.0 (the brew-installed version) crashes with a Python 3
-# bytes/str bug (FileSystem.py:47 "data += ls.get_data()") whenever it opens
-# any image that has a populated FileSysHdr list. The crash happens inside
-# rdbtool's open() call, before any subcommand runs, so there is no rdbtool
-# subcommand that can show or verify the embedded FS with this build.
-# Therefore we assert the FSHD block directly from the raw image bytes using
-# a small python3 one-liner, which is always available on this platform.
-# This is a strict cross-check: it verifies the FSHD magic, the expected
-# DosType (0x50465303 = PFS\3), and that the SegList pointer is not FFFFFFFF.
+#
+# WHY we do NOT use rdbtool subcommands here:
+#   amitools 0.4.0 (the brew-installed build) has a Python 3 bug in
+#   amitools/fs/FileSystem.py:47 — it does `data += ls.get_data()` where
+#   `data` starts as "" (str) but get_data() returns bytes.  This crashes with
+#   a TypeError the instant rdbtool tries to open ANY image whose RDSK block
+#   has a populated FileSysHdr list, i.e. before any subcommand executes.
+#   The amitools *block parsers* (FSHeaderBlock.read / LoadSegBlock.read) are
+#   unaffected; only the higher-level FileSystem glue is broken.
+#
+# WHAT we do instead:
+#   Import amitools' own block-parser classes directly (bypassing FileSystem.py)
+#   and feed them our image.  This gives us a genuine third-party validation of
+#   every FSHD and LSEG block we emit — stronger than raw-byte offsets.
 echo ""
-echo "=== emit FS image ==="
+echo "=== amitools block-parser cross-check (embedded FS) ==="
 /tmp/hdpart_tests --emit-fs
-echo "=== raw FSHD cross-check (rdbtool 0.4.0 unavailable for FS images) ==="
-python3 -c "
-import struct, sys
-with open('/tmp/hdpart_test_fs.img', 'rb') as f:
-    rdsk = f.read(512)
-fshd_ptr = struct.unpack('>I', rdsk[32:36])[0]
-print(f'RDSK FileSysHdr pointer: 0x{fshd_ptr:08X}')
-if fshd_ptr == 0xFFFFFFFF:
-    print('FAIL: FileSysHdr is FFFFFFFF (no embedded FS)')
-    sys.exit(1)
-with open('/tmp/hdpart_test_fs.img', 'rb') as f:
-    f.seek(fshd_ptr * 512)
-    fshd = f.read(512)
-magic = fshd[0:4]
-dos_type = struct.unpack('>I', fshd[32:36])[0]
-lseg_ptr = struct.unpack('>I', fshd[72:76])[0]
-print(f'FSHD magic : {magic}')
-print(f'FSHD DosType: 0x{dos_type:08X}')
-print(f'FSHD SegList: 0x{lseg_ptr:08X}')
-if magic != b'FSHD':
-    print('FAIL: block at FileSysHdr is not FSHD')
-    sys.exit(1)
-if dos_type != 0x50465303:
-    print(f'FAIL: expected DosType 0x50465303 (PFS\\\\3), got 0x{dos_type:08X}')
-    sys.exit(1)
-if lseg_ptr == 0xFFFFFFFF:
-    print('FAIL: FSHD SegList is FFFFFFFF (no LSEG data)')
-    sys.exit(1)
-print('PASS: embedded PFS\\\\3 FS verified in raw image bytes')
-"
+python3 - <<'PY'
+import sys, glob
+# locate amitools site-packages (brew Cellar) without importing the buggy CLI
+for p in glob.glob("/opt/homebrew/Cellar/amitools/*/libexec/lib/python*/site-packages"):
+    sys.path.insert(0, p)
+from amitools.fs.blkdev.RawBlockDevice import RawBlockDevice
+from amitools.fs.block.rdb.RDBlock import RDBlock
+from amitools.fs.block.rdb.FSHeaderBlock import FSHeaderBlock
+from amitools.fs.block.rdb.LoadSegBlock import LoadSegBlock
+dev = RawBlockDevice("/tmp/hdpart_test_fs.img"); dev.open()
+rdsk = None
+for b in range(16):
+    r = RDBlock(dev, b)
+    if r.read(): rdsk = r; break
+assert rdsk, "no RDSK found"
+assert rdsk.fs_list != 0xffffffff, "RDSK FileSysHdr is NULL (FS not embedded)"
+fsh = FSHeaderBlock(dev, rdsk.fs_list)
+assert fsh.read() and fsh.valid, "amitools rejected our FSHD block"
+assert fsh.dos_type == 0x50465303, "FSHD dos_type mismatch: 0x%08X" % fsh.dos_type
+seg = fsh.dev_node.seg_list_blk
+data = b""; n = 0
+while seg != 0xffffffff:
+    ls = LoadSegBlock(dev, seg)
+    assert ls.read(), "amitools rejected an LSEG block at %d" % seg
+    data += bytes(ls.get_data()); seg = ls.next; n += 1
+assert n >= 1, "no LSEG blocks"
+assert data[:4] == b"\x00\x00\x03\xf3", "reconstructed payload missing HUNK header"
+print("amitools parsers accept our FSHD (dos_type=0x%08X) + %d LSEG blocks, %d bytes" % (fsh.dos_type, n, len(data)))
+dev.close()
+PY
+echo "amitools cross-check OK"
