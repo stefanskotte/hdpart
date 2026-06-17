@@ -32,6 +32,23 @@ typedef struct {
     uint32_t mask;               /* DOSEnvVec de_Mask */
 } RdbPartition;
 
+#define RDB_MAX_FS 8
+
+/* Source of an embedded filesystem (display only). */
+enum { RDB_FS_EMBEDDED = 0, RDB_FS_FILE = 1, RDB_FS_COPIED = 2 };
+
+typedef struct {
+    uint32_t dos_type;        /* fhb_DosType, e.g. 0x50465303 = PFS\3 */
+    uint32_t version;         /* fhb_Version (ver<<16 | patch) */
+    uint32_t patch_flags;     /* fhb_PatchFlags: which dn_* fields are valid */
+    uint32_t dn_type, dn_task, dn_lock, dn_handler;
+    uint32_t dn_stack, dn_pri, dn_startup, dn_globalvec;
+    uint32_t seg_len;         /* bytes of the hunk image in seg_data */
+    uint8_t *seg_data;        /* heap-owned hunk image (rdb_model_free releases) */
+    char     name[RDB_NAME_LEN]; /* display name, e.g. "PFSFileSystem" */
+    uint8_t  source;          /* RDB_FS_* */
+} RdbFileSys;
+
 typedef struct {
     uint32_t cylinders, heads, sectors;
     uint32_t block_bytes;
@@ -40,6 +57,8 @@ typedef struct {
     uint32_t rdb_blocks_lo, rdb_blocks_hi;
     int          num_parts;
     RdbPartition parts[RDB_MAX_PARTS];
+    RdbFileSys   fs[RDB_MAX_FS];
+    int          num_fs;
 } RdbModel;
 
 #define RDB_RESERVED_CYLS 2u     /* cylinders reserved for RDB metadata */
@@ -61,7 +80,8 @@ enum {
     RDB_ERR_OVERLAP  = -5,
     RDB_ERR_IO       = -6,
     RDB_ERR_NO_RDB   = -7,
-    RDB_ERR_RANGE    = -8
+    RDB_ERR_RANGE    = -8,
+    RDB_ERR_NO_RDB_SPACE = -9
 };
 
 /* Find the largest unallocated cylinder range within [lo_cyl, hi_cyl].
@@ -144,5 +164,13 @@ int rdb_serialize(const RdbModel *m, BlockIO io, void *ctx);
    for RDSK, reads geometry, walks the PART chain. Returns RDB_OK,
    RDB_ERR_NO_RDB, or RDB_ERR_IO. */
 int rdb_parse(RdbModel *m, BlockIO io, void *ctx);
+
+/* Release all heap owned by the model (each fs[].seg_data) and zero num_fs.
+   Safe to call repeatedly and on a zero-initialized model. */
+void rdb_model_free(RdbModel *m);
+
+/* Number of 512-byte LSEG blocks needed to store seg_len bytes
+   (492 payload bytes per LSEG block; 0 bytes -> 0 blocks). */
+uint32_t rdb_lseg_block_count(uint32_t seg_len);
 
 #endif
