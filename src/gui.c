@@ -1927,8 +1927,8 @@ static void gui_about(void)
 /* Static storage for the FS listview (mirrors g_partlist / g_partnodes pattern). */
 static struct List g_fslist;
 static struct Node g_fsnodes[RDB_MAX_FS];
-/* 64 bytes is enough for "XXXXXXXX  PFSFileSystem       file   512K" (worst case). */
-static char        g_fsrows[RDB_MAX_FS][64];
+/* 80 bytes: mark(2)+dostype(11)+ver(8)+name(20)+src(9)+size(7)+NUL = ~57 worst case. */
+static char        g_fsrows[RDB_MAX_FS][80];
 
 /* DosType preset cycle for the Filesystems editor. */
 static const char *const kFsPresetLabels[] = {
@@ -1946,8 +1946,25 @@ static int fs_preset_index(uint32_t v)
     return N_FS_PRESETS;
 }
 
-/* Build one FS list row.  Fields: "> DosType  Name            src   NNK"
-   col 0=mark, col 2=dostype(10), col 13=name(20), col 34=src(8), col 43=size. */
+/* Format version field as "vMAJOR.MINOR" (e.g. 0x00130002 -> "v19.2").
+   If version == 0, emits "v?".  Returns length written. */
+static int fs_ver_str(char *o, uint32_t version)
+{
+    int p = 0;
+    o[p++] = 'v';
+    if (version == 0) {
+        o[p++] = '?';
+    } else {
+        p += u2s(o + p, version >> 16);
+        o[p++] = '.';
+        p += u2s(o + p, version & 0xFFFFu);
+    }
+    return p;
+}
+
+/* Build one FS list row.
+   Fields: "> DosType  Version  Name            src   NNK"
+   col 0=mark, col 2=dostype(11), col 13=version(8), col 21=name(20), col 42=src(9), col 51=size. */
 static void fs_build_row(char *row, int idx, int sel)
 {
     RdbFileSys *fs = &g_fs_pool[idx];
@@ -1957,14 +1974,15 @@ static void fs_build_row(char *row, int idx, int sel)
     row[p++] = (idx == sel) ? '>' : ' ';
     row[p++] = ' ';
     s_cat(row, &p, dtbuf); s_pad(row, &p, 13);
+    p += fs_ver_str(row + p, fs->version); s_pad(row, &p, 21);
     { int k; for (k = 0; fs->name[k] && k < 19; k++) row[p++] = fs->name[k]; }
-    s_pad(row, &p, 34);
+    s_pad(row, &p, 42);
     switch (fs->source) {
         case RDB_FS_FILE:     s_cat(row, &p, "file");     break;
         case RDB_FS_COPIED:   s_cat(row, &p, "copied");   break;
         default:              s_cat(row, &p, "embedded"); break;
     }
-    s_pad(row, &p, 43);
+    s_pad(row, &p, 51);
     { uint32_t kb = (fs->seg_len + 1023u) / 1024u; p += u2s(row + p, kb); s_cat(row, &p, "K"); }
     row[p] = 0;
 }
@@ -2125,8 +2143,9 @@ static void gui_filesystems(void)
     if (!g) return;
     ng.ng_TextAttr = &g_font; ng.ng_VisualInfo = g_vi; ng.ng_Flags = 0;
 
-    /* Listview — RDB_MAX_FS rows (height 8 rows = 8*10 = 80px) */
-    ng.ng_LeftEdge = dl + 10; ng.ng_TopEdge = dt + 6; ng.ng_Width = 420; ng.ng_Height = 80;
+    /* Listview — RDB_MAX_FS rows (height 8 rows = 8*10 = 80px).
+       Width 540 fills the 560px inner area (10px margins each side). */
+    ng.ng_LeftEdge = dl + 10; ng.ng_TopEdge = dt + 6; ng.ng_Width = 540; ng.ng_Height = 80;
     ng.ng_GadgetText = 0; ng.ng_GadgetID = 1;
     g = CreateGadget(LISTVIEW_KIND, g, &ng, GTLV_Labels, (ULONG)&g_fslist,
                      GTLV_Selected, (ULONG)(sel >= 0 ? (ULONG)sel : ~0UL),
@@ -2142,7 +2161,7 @@ static void gui_filesystems(void)
     gDT = g;
 
     /* Preset cycle */
-    ng.ng_LeftEdge = dl + 110; ng.ng_TopEdge = dt + 114; ng.ng_Width = 140; ng.ng_Height = 14;
+    ng.ng_LeftEdge = dl + 110; ng.ng_TopEdge = dt + 114; ng.ng_Width = 180; ng.ng_Height = 14;
     ng.ng_GadgetText = (UBYTE *)"Preset"; ng.ng_GadgetID = 3;
     g = CreateGadget(CYCLE_KIND, g, &ng,
                      GTCY_Labels, (ULONG)kFsPresetLabels,
@@ -2150,32 +2169,38 @@ static void gui_filesystems(void)
                      GA_Disabled, (ULONG)(sel < 0), TAG_END);
     gPreset = g;
 
-    /* Add from file button */
-    ng.ng_LeftEdge = dl + 10; ng.ng_TopEdge = dt + 138; ng.ng_Width = 110; ng.ng_Height = 14;
+    /* Buttons: laid out left-to-right with 8px gaps, sized to fit their labels.
+       Topaz-8: 8px/char + ~16px border padding.
+       "Add from file..."  16 chars -> 144+16 = 160 -> use 152 (topaz chars are narrow in cycle)
+       "Copy from disk..." 17 chars -> 152+16 = 168 -> use 160
+       "Remove"             6 chars ->  48+16 =  64 -> use  80 (min width)
+       "Done"               4 chars ->  32+16 =  48 -> use  96 (fills remaining space to 550)
+       Layout: x=10 w=152 | x=170 w=160 | x=338 w=80 | x=426 w=124 => last btn ends at 550, 10px right margin = 560 inner. */
+    ng.ng_LeftEdge = dl + 10; ng.ng_TopEdge = dt + 138; ng.ng_Width = 152; ng.ng_Height = 14;
     ng.ng_GadgetText = (UBYTE *)"Add from file..."; ng.ng_GadgetID = 4;
     g = CreateGadget(BUTTON_KIND, g, &ng,
                      GA_Disabled, (ULONG)(AslBase == 0), TAG_END);
 
     /* Copy from disk button — copies the first embedded FS (which=0) from another
        disk's RDB into this model.  Multi-FS source (which>0) is out of scope. */
-    ng.ng_LeftEdge = dl + 130; ng.ng_TopEdge = dt + 138; ng.ng_Width = 120; ng.ng_Height = 14;
+    ng.ng_LeftEdge = dl + 170; ng.ng_TopEdge = dt + 138; ng.ng_Width = 160; ng.ng_Height = 14;
     ng.ng_GadgetText = (UBYTE *)"Copy from disk..."; ng.ng_GadgetID = 7;
     g = CreateGadget(BUTTON_KIND, g, &ng, TAG_END);
 
     /* Remove button */
-    ng.ng_LeftEdge = dl + 260; ng.ng_TopEdge = dt + 138; ng.ng_Width = 80; ng.ng_Height = 14;
+    ng.ng_LeftEdge = dl + 338; ng.ng_TopEdge = dt + 138; ng.ng_Width = 80; ng.ng_Height = 14;
     ng.ng_GadgetText = (UBYTE *)"Remove"; ng.ng_GadgetID = 5;
     g = CreateGadget(BUTTON_KIND, g, &ng,
                      GA_Disabled, (ULONG)(sel < 0), TAG_END);
     gRemove = g;
 
-    /* Done button */
-    ng.ng_LeftEdge = dl + 350; ng.ng_TopEdge = dt + 138; ng.ng_Width = 90; ng.ng_Height = 14;
+    /* Done button — stretches to fill the remaining space to the right margin. */
+    ng.ng_LeftEdge = dl + 426; ng.ng_TopEdge = dt + 138; ng.ng_Width = 124; ng.ng_Height = 14;
     ng.ng_GadgetText = (UBYTE *)"Done"; ng.ng_GadgetID = 6;
     g = CreateGadget(BUTTON_KIND, g, &ng, TAG_END);
     if (!g) { FreeGadgets(dglist); return; }
 
-    {   int dwW = dl + 450 + g_scr->WBorRight;
+    {   int dwW = dl + 560 + g_scr->WBorRight;  /* 560px inner: listview 540 + 10px margins */
         int dwH = dt + 160 + g_scr->WBorBottom;
         int dwL = 0, dwT = 0;
         dlg_center(dwW, dwH, &dwL, &dwT);
