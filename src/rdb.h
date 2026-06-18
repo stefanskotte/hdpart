@@ -20,6 +20,10 @@ uint32_t rdb_sum_longs(const uint8_t *blk, uint32_t summed_longs);
 uint32_t rdb_mb_to_cyls(uint32_t mb, uint32_t cyl_blocks, uint32_t block_bytes);
 uint32_t rdb_cyls_to_mb(uint32_t cyls, uint32_t cyl_blocks, uint32_t block_bytes);
 
+/* pb_Flags bit definitions (PartitionBlock) */
+#define RDB_PBFF_BOOTABLE 1u   /* bit 0: partition is bootable */
+#define RDB_PBFF_NOMOUNT  2u   /* bit 1: OS must NOT auto-mount this partition */
+
 typedef struct {
     char     name[RDB_NAME_LEN]; /* NUL-terminated device name, e.g. "DH0" */
     uint32_t low_cyl;
@@ -27,7 +31,8 @@ typedef struct {
     uint32_t dos_type;           /* e.g. 0x444F5303 = DOS\3 (FFS Intl) */
     uint32_t num_buffers;
     int32_t  boot_pri;
-    uint8_t  bootable;           /* 0/1 */
+    uint8_t  bootable;           /* 0/1 — mirrors bit 0 of flags */
+    uint32_t flags;              /* pb_Flags: bit0=BOOTABLE, bit1=NOMOUNT, ... */
     uint32_t maxtransfer;        /* DOSEnvVec de_MaxTransfer */
     uint32_t mask;               /* DOSEnvVec de_Mask */
 } RdbPartition;
