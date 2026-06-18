@@ -918,7 +918,7 @@ int fsload_from_file(const char *path, RdbFileSys *out)
 #endif
 ```
 
-NOTE: confirm the exact `fhb_PatchFlags` bit values against `dos/filehandler.h` (`FSF_*`). The `0x180` is `FSB_STACKSIZE|FSB_PRIORITY|FSB_GLOBALVEC` placeholder — fix to the real macro OR-combination during implementation. Use the SDK header, do not guess.
+NOTE (mounter finding A2/A3 — DO NOT skip): confirm the exact `fhb_PatchFlags` bit values against `dos/filehandler.h` (`FSB_*`/`FSF_*`) AND against `/tmp/mounter/mounter.c` `ProcessPatchFlags` (~line 938), which is the authority for which bit maps to which `dn_*` field (Type/Task/Lock/Handler/StackSize/Priority/Startup/SegListBlocks/GlobalVec). Replace the `0x180` placeholder with the real `FSB_STACKSIZE|FSB_PRIORITY|FSB_GLOBALVEC` OR-combination from the SDK header — do not guess. Also (A2): on any error AFTER `seg_data` is allocated, free it with `rdb_free_sized` (the matching sized-free), NOT raw `FreeMem` — and remove the duplicate/dead `Seek` calls in the sketch (one Seek-to-end + one Seek-to-begin is enough to size the file).
 
 - [ ] **Step 2: Build for target to verify it compiles**
 
@@ -1050,7 +1050,9 @@ In `src/format.c`, after Strategy 2 (FileSystem.resource) and before the final `
     }
 ```
 
-Add the `embedded_loadseg` helper (above `bind_handler`): a wrapper around `InternalLoadSeg` with an in-memory read hook over `(seg_data, seg_len)`. Implement the read-hook funcarray per the confirmed ABI from Step 1. The hook tracks an offset into `seg_data` and copies the requested byte count out. On success returns the BPTR seglist; never `UnLoadSeg` it (owned by the mount).
+Add the `embedded_loadseg` helper (above `bind_handler`): a wrapper around `InternalLoadSeg` with an in-memory read hook over `(seg_data, seg_len)`. Implement the read-hook funcarray per the confirmed ABI from Step 1. The hook tracks an offset into `seg_data` and copies the requested byte count out. On success returns the BPTR seglist; on a SUCCESSFUL bind it is owned by the mount — never `UnLoadSeg` it.
+
+NOTE (mounter finding A1 — DO NOT skip): `InternalLoadSeg` is V36+. Guard it with `SysBase->LibNode.lib_Version >= 36` (our floor is V37, so this always holds, but assert it rather than assume). Crucially, if Strategy 3 reconstructs a seglist but a LATER step in `format_partition` fails (MakeDosNode/bind/AddDosNode/ACTION_FORMAT) before the mount takes ownership, the seglist LEAKS — call `InternalUnLoadSeg(seg, &__UnLoadSeg_funcarray)` (or `UnLoadSeg`) on every such error exit. Mirror the mounter's load/relocate lifetime discipline. The mounter avoids `InternalLoadSeg` only because it runs pre-DOS at boot; at format-time dos.library is open, so `InternalLoadSeg` is correct and simpler than copying `fsrelocate`.
 
 - [ ] **Step 3: Build for target**
 
