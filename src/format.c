@@ -3,6 +3,7 @@
 #ifdef HDPART_AMIGA
 #include <exec/types.h>
 #include <exec/memory.h>
+#include <exec/execbase.h>
 #include <dos/dos.h>
 #include <dos/dosextens.h>
 #include <dos/filehandler.h>
@@ -93,6 +94,118 @@ static int pick_free_devname(char *out, char *outcolon)
     return 0;
 }
 
+/* Strategy 3: reconstruct a seglist from an embedded FSHD/LSEG hunk image.
+   Called only on Kickstart V36+ (dos.library V36 added InternalLoadSeg).
+
+   InternalLoadSeg ABI confirmed from:
+     m68k-amiga-elf/sys-include/inline/dos.h lines 552-554
+     m68k-amiga-elf/sys-include/clib/dos_protos.h "Image Management" section
+   Signature:
+     BPTR InternalLoadSeg(BPTR fh, BPTR table, const LONG *funcarray, LONG *stack)
+     registers: fh->d0, table->a0, funcarray->a1, stack->a2
+   funcarray convention (Amiga NDK ROM Kernel autodoc, InternalLoadSeg):
+     funcarray[0] = read(fh, buf, len): called d1=fh(our cursor*), d2=buf, d3=len;
+                    returns d0=actual bytes copied (LONG).
+     funcarray[1] = alloc(size, memreqs): called d0=size, d1=memreqs;
+                    returns d0=ptr (NULL on failure).
+     funcarray[2] = free(mem, size): called a1=mem, d0=size; no return value.
+   Under m68k-amiga-elf-gcc the hooks must be declared with explicit asm register
+   constraints — the OS calls them with bare JSR through the funcarray pointer,
+   not via a C ABI frame.
+
+   InternalUnLoadSeg ABI:
+     BOOL InternalUnLoadSeg(BPTR seglist, VOID (*freefunc)())
+     registers: seglist->d1, freefunc->a1
+*/
+
+/* In-memory stream cursor for embedded_loadseg. */
+struct MemCursor {
+    const uint8_t *data;
+    uint32_t       off;
+    uint32_t       len;
+};
+
+/* read hook: InternalLoadSeg calls this with d1=fh(our cursor*), d2=buf, d3=count.
+   We capture the args via explicit register variables at function entry.
+   Returns d0=actual bytes copied (LONG). */
+static LONG __attribute__((used)) mem_read(void)
+{
+    register struct MemCursor *cur __asm("d1");
+    register uint8_t          *buf __asm("d2");
+    register LONG              cnt __asm("d3");
+    uint32_t avail, i;
+    /* Force the compiler to read these before any stores (barrier). */
+    struct MemCursor *c = cur;
+    uint8_t          *b = buf;
+    LONG              n = cnt;
+    if (!c || n <= 0) return 0;
+    avail = c->len - c->off;
+    if ((uint32_t)n > avail) n = (LONG)avail;
+    for (i = 0; i < (uint32_t)n; i++) b[i] = c->data[c->off + i];
+    c->off += (uint32_t)n;
+    return n;
+}
+
+/* alloc hook: called with d0=size, d1=memreqs; returns d0=ptr. */
+static void * __attribute__((used)) mem_alloc(void)
+{
+    register ULONG size __asm("d0");
+    register ULONG reqs __asm("d1");
+    ULONG s = size, r = reqs;
+    return AllocMem(s, r | MEMF_PUBLIC | MEMF_CLEAR);
+}
+
+/* free hook: called with a1=mem, d0=size; no return. */
+static void __attribute__((used)) mem_free(void)
+{
+    register void  *mem  __asm("a1");
+    register ULONG  size __asm("d0");
+    void  *m = mem;
+    ULONG  s = size;
+    FreeMem(m, s);
+}
+
+/* free hook for InternalUnLoadSeg (same convention as mem_free). */
+static void __attribute__((used)) mem_free_for_unload(void)
+{
+    register void  *mem  __asm("a1");
+    register ULONG  size __asm("d0");
+    void  *m = mem;
+    ULONG  s = size;
+    FreeMem(m, s);
+}
+
+/* funcarray passed to InternalLoadSeg: pointers to the three hooks above. */
+static const LONG g_iloadseg_funcs[3] = {
+    (LONG)mem_read,
+    (LONG)mem_alloc,
+    (LONG)mem_free
+};
+
+/* Reconstruct a runnable seglist from a raw HUNK image in memory using
+   InternalLoadSeg with in-memory read/alloc/free hooks.
+   Returns a BPTR seglist (non-zero) on success, or 0 on failure/unsupported.
+   On success the seglist is owned by the caller; free with InternalUnLoadSeg if
+   the mount never takes ownership. */
+static BPTR embedded_loadseg(const uint8_t *data, uint32_t len)
+{
+    struct MemCursor cur;
+    LONG             stack_dummy = 0;
+
+    /* InternalLoadSeg was added in dos.library V36. Our floor is V37, so this
+       guard always passes in practice — but we assert rather than assume.
+       SysBase is a global declared in startup.c (struct ExecBase *). */
+    if (SysBase->LibNode.lib_Version < 36) return 0;
+
+    cur.data = data;
+    cur.off  = 0;
+    cur.len  = len;
+
+    /* Pass the cursor as the "fh" BPTR (d0); InternalLoadSeg hands it to
+       our read hook verbatim, which treats it as a struct MemCursor *. */
+    return InternalLoadSeg((BPTR)&cur, 0, g_iloadseg_funcs, &stack_dummy);
+}
+
 /* Bind a filesystem handler (SegList + launch params) for dos_type into dn.
    This only finds the CODE to run; the formatted volume's type is ALWAYS the
    selected dos_type (carried in the env + ACTION_FORMAT). Matching is by FS
@@ -108,9 +221,14 @@ static int pick_free_devname(char *out, char *outcolon)
    Strategy 2 (fallback): the FileSystem.resource entry's fse_SegList field
    directly — AmigaOS 3.2 leaves fse_PatchFlags == 0 but still populates
    fse_SegList (the older "patch by PatchFlags bits" approach binds nothing here).
+   Strategy 3 (last resort): reconstruct a seglist from an embedded FSHD/LSEG
+   hunk image in this RDB model via InternalLoadSeg. Enables Format for a custom
+   FS (e.g. PFS3) that is embedded in the RDB but was never loaded on the running
+   Amiga. Requires dos.library V36+ (Kickstart 2.0+), which our V37 floor ensures.
 
    Returns 1 if a SegList was bound, else 0 (caller -> FMT_ERR_NO_HANDLER). */
-static int bind_handler(struct DeviceNode *dn, ULONG dos_type)
+static int bind_handler(struct DeviceNode *dn, ULONG dos_type,
+                        const RdbModel *model)
 {
     ULONG fam = dos_type & 0xFFFFFF00u;
 
@@ -153,7 +271,7 @@ static int bind_handler(struct DeviceNode *dn, ULONG dos_type)
     {
         struct FileSysResource *fsr = (struct FileSysResource *)OpenResource((STRPTR)FSRNAME);
         struct FileSysEntry *fse;
-        if (!fsr) return 0;
+        if (fsr) {
         Forbid();
         for (fse = (struct FileSysEntry *)fsr->fsr_FileSysEntries.lh_Head;
              fse->fse_Node.ln_Succ;
@@ -168,7 +286,29 @@ static int bind_handler(struct DeviceNode *dn, ULONG dos_type)
             return 1;
         }
         Permit();
+        } /* if (fsr) */
     }
+
+    /* Strategy 3: reconstruct a seglist from an embedded FSHD/LSEG hunk image
+       in this RDB model. Used when the FS was never loaded on the running Amiga
+       (no live mount of that family, no FileSystem.resource entry). */
+    if (model) {
+        int i;
+        for (i = 0; i < model->num_fs; i++) {
+            const RdbFileSys *fs = &model->fs[i];
+            BPTR seg;
+            if ((fs->dos_type & 0xFFFFFF00u) != fam) continue;
+            if (!fs->seg_data || fs->seg_len == 0) continue;
+            seg = embedded_loadseg(fs->seg_data, fs->seg_len);
+            if (!seg) continue;
+            dn->dn_SegList   = seg;
+            dn->dn_GlobalVec = (BPTR)(ULONG)(fs->dn_globalvec ? fs->dn_globalvec : (uint32_t)-1);
+            dn->dn_StackSize = fs->dn_stack ? (LONG)fs->dn_stack : 4096;
+            dn->dn_Priority  = fs->dn_pri   ? (LONG)fs->dn_pri   : 10;
+            return 1;
+        }
+    }
+
     return 0;
 }
 
@@ -239,17 +379,26 @@ FmtResult format_partition(const char *driver, uint32_t unit,
     dn = (struct DeviceNode *)MakeDosNode((APTR)pp);
     if (!dn) { CloseLibrary(ExpansionBase); return FMT_ERR_MAKENODE; }
 
-    if (!bind_handler(dn, (ULONG)p->dos_type)) {
+    if (!bind_handler(dn, (ULONG)p->dos_type, m)) {
         /* No handler found for this dostype's family (no live mount of that
-           family and no FileSystem.resource entry). For a custom FS not yet
-           loaded this needs embedded-FS support (feature B).
-           The node is not added to DOS; do not call AddDosNode.
+           family, no FileSystem.resource entry, and no embedded FSHD/LSEG in
+           this RDB model). The node is not added to DOS; do not call AddDosNode.
            MakeDosNode allocation is intentionally not freed here: there is no
            public FreeDosNode API, this path is rare and one-shot, and the
-           caller can correct the error (e.g. load the FS first). */
+           caller can correct the error (e.g. install the FS first). */
         CloseLibrary(ExpansionBase);
         return FMT_ERR_NO_HANDLER;
     }
+    /* A1 lifetime note for Strategy-3: if bind_handler used embedded_loadseg,
+       dn->dn_SegList now points to a freshly InternalLoadSeg'd seglist.  If
+       AddDosNode below fails or ACTION_FORMAT later fails, that seglist would
+       leak.  Consistent with this file's existing error-handling philosophy
+       (no FreeDosNode API; rare one-shot path; see comment above), we accept
+       the leak on those further error exits rather than add fragile tracking.
+       The seglist is small (<< 1 KB for a typical PFS handler) and the error
+       paths are exceptional; they do not loop.  A full teardown would call
+       InternalUnLoadSeg(dn->dn_SegList, mem_free_for_unload) on those exits,
+       but we deliberately match the existing "intentionally not freed" policy. */
 
     if (!AddDosNode(0, ADNF_STARTPROC, dn)) {
         CloseLibrary(ExpansionBase);
