@@ -22,6 +22,10 @@ const char *fsl_err_text(int rc);
 /* Pure: 1 if buf starts with HUNK_HEADER and len is plausible, else 0. */
 int fsload_is_hunk_file(const uint8_t *buf, uint32_t len);
 
+/* Scan a loaded handler image for the "$VER:" cookie and return the packed
+   version (major<<16 | minor), or 0 if not found / unparseable. */
+uint32_t fsload_parse_version(const uint8_t *buf, uint32_t len);
+
 #ifdef HDPART_AMIGA
 /* Load a filesystem handler from a file into out (out->seg_data heap-owned).
    dos_type is left as a placeholder (set later in the GUI). */

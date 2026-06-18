@@ -238,6 +238,22 @@ static void test_pbff_nomount_roundtrip(void)
     free(d); free(d2); free(d3);
 }
 
+static void test_parse_version(void)
+{
+    const char *a = "junk\0$VER: PFS3 5.3 (12.10.18)\0more";   /* note embedded NULs */
+    /* build a buffer with the cookie */
+    uint8_t b1[64]; int i; for (i=0;i<64;i++) b1[i]=0;
+    memcpy(b1, "....$VER: pfs3aio 19.2 (x)", 26);
+    CHECK(fsload_parse_version(b1, 26) == ((19u<<16)|2u));
+    { uint8_t b2[32]; int k; for(k=0;k<32;k++) b2[k]=0;
+      memcpy(b2, "$VER: Name 5.13", 15);
+      CHECK(fsload_parse_version(b2, 15) == ((5u<<16)|13u)); }
+    { uint8_t b3[16]; int k; for(k=0;k<16;k++) b3[k]=0;
+      memcpy(b3, "no version here", 15);
+      CHECK(fsload_parse_version(b3, 15) == 0u); }
+    (void)a;
+}
+
 static void test_is_hunk_file(void)
 {
     uint8_t good[8] = {0x00,0x00,0x03,0xF3, 0,0,0,0};
@@ -308,6 +324,7 @@ int main(void)
     test_preserve_on_resave();
     test_lseg_bad_checksum_rejected();
     test_pbff_nomount_roundtrip();
+    test_parse_version();
     test_is_hunk_file();
     test_reserve_real_geometry();
     test_reserve_small_geometry();

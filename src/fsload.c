@@ -50,7 +50,7 @@ int fsload_from_file(const char *path, RdbFileSys *out)
     out->seg_data    = buf;
     out->seg_len     = (uint32_t)flen;
     out->dos_type    = 0x50465303u;   /* placeholder PFS\3; caller sets the real type */
-    out->version     = 0;
+    out->version     = fsload_parse_version(buf, (uint32_t)flen);
     /* PatchFlags: StackSize | Priority | GlobalVec — the three handler params
        we provide.  Bit positions from mounter.c ProcessPatchFlags():
        FSF_STACKSIZE (0x010) | FSF_PRIORITY (0x020) | FSF_GLOBALVEC (0x100). */
@@ -106,6 +106,65 @@ int fsload_is_hunk_file(const uint8_t *buf, uint32_t len)
 {
     if (!buf || len < 4) return 0;
     return be32(buf) == HUNK_HEADER ? 1 : 0;
+}
+
+uint32_t fsload_parse_version(const uint8_t *buf, uint32_t len)
+{
+    /* Search for the 5-byte literal "$VER:" */
+    static const uint8_t cookie[5] = {0x24,0x56,0x45,0x52,0x3A};
+    uint32_t i, end;
+
+    if (!buf || len < 5) return 0;
+
+    for (i = 0; i <= len - 5; i++) {
+        if (buf[i]   == cookie[0] && buf[i+1] == cookie[1] &&
+            buf[i+2] == cookie[2] && buf[i+3] == cookie[3] &&
+            buf[i+4] == cookie[4]) {
+            /* Found the cookie. Advance past it. */
+            uint32_t pos = i + 5;
+            /* Limit the scan window to 200 bytes after cookie or end of buffer. */
+            end = pos + 200u;
+            if (end > len) end = len;
+
+            /* Scan forward to find first "<digits>.<digits>" pattern.
+               Skip any leading space(s) and the name token. */
+            while (pos < end) {
+                uint8_t c = buf[pos];
+                if (c >= '0' && c <= '9') {
+                    /* Potential start of major version. Consume digit run. */
+                    uint32_t major = 0, minor = 0, p2;
+                    uint32_t p = pos;
+                    while (p < end && buf[p] >= '0' && buf[p] <= '9') {
+                        uint32_t d = (uint32_t)(buf[p] - '0');
+                        if (major <= 6553u) major = major * 10u + d;
+                        else major = 65535u;
+                        p++;
+                    }
+                    /* Must be followed by '.' then at least one digit. */
+                    if (p < end && buf[p] == '.') {
+                        p2 = p + 1;
+                        if (p2 < end && buf[p2] >= '0' && buf[p2] <= '9') {
+                            while (p2 < end && buf[p2] >= '0' && buf[p2] <= '9') {
+                                uint32_t d = (uint32_t)(buf[p2] - '0');
+                                if (minor <= 6553u) minor = minor * 10u + d;
+                                else minor = 65535u;
+                                p2++;
+                            }
+                            if (major > 65535u) major = 65535u;
+                            if (minor > 65535u) minor = 65535u;
+                            return (major << 16) | minor;
+                        }
+                    }
+                    /* Digit run not followed by '.' + digit — skip past it and continue. */
+                    pos = p;
+                } else {
+                    pos++;
+                }
+            }
+            return 0;   /* cookie found but no valid N.M in window */
+        }
+    }
+    return 0;   /* cookie not found */
 }
 
 const char *fsl_err_text(int rc)
