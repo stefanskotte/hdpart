@@ -70,6 +70,10 @@ static WORD     g_topb, g_leftb;     /* window border offsets (title bar / left 
                                         gadget coords are relative to the window's
                                         outer top-left, so all gadgets shift by these */
 
+/* Session filesystem pool — survives Refresh/disk-switch.  Owns each seg_data. */
+static RdbFileSys g_fs_pool[RDB_MAX_FS];
+static int        g_fs_npool;
+
 /* Exec list of partition rows for the listview. */
 static struct List g_partlist;
 static struct Node g_partnodes[RDB_MAX_PARTS];
@@ -88,6 +92,56 @@ static int u2s(char *o, ULONG v)   /* write decimal, return length */
 }
 static void s_cat(char *o, int *p, const char *s) { while (*s) o[(*p)++] = *s++; }
 static void s_pad(char *o, int *p, int col) { while (*p < col) o[(*p)++] = ' '; }
+
+/* ---------- Session filesystem pool helpers -------------------------------- */
+
+/* Deep-copy one filesystem into the pool.  Returns 1 ok, 0 if full or OOM. */
+static int fs_pool_add_copy(const RdbFileSys *src)
+{
+    RdbFileSys *d;
+    if (g_fs_npool >= RDB_MAX_FS) return 0;
+    d = &g_fs_pool[g_fs_npool];
+    *d = *src;
+    d->seg_data = (uint8_t *)rdb_seg_alloc(src->seg_len ? src->seg_len : 1);
+    if (!d->seg_data) return 0;
+    { uint32_t i; for (i = 0; i < src->seg_len; i++) d->seg_data[i] = src->seg_data[i]; }
+    g_fs_npool++;
+    return 1;
+}
+
+/* Has the pool already got an entry for this dos_type? */
+static int fs_pool_has(uint32_t dostype)
+{
+    int i; for (i = 0; i < g_fs_npool; i++) if (g_fs_pool[i].dos_type == dostype) return 1; return 0;
+}
+
+/* Merge a freshly-parsed disk's embedded FS into the pool (dedup by dos_type). */
+static void fs_pool_merge_from_model(const RdbModel *m)
+{
+    int i; for (i = 0; i < m->num_fs && g_fs_npool < RDB_MAX_FS; i++)
+        if (!fs_pool_has(m->fs[i].dos_type)) fs_pool_add_copy(&m->fs[i]);
+}
+
+/* Free the whole pool (app exit). */
+static void fs_pool_free(void)
+{
+    int i; for (i = 0; i < g_fs_npool; i++)
+        if (g_fs_pool[i].seg_data) { rdb_seg_free(g_fs_pool[i].seg_data); g_fs_pool[i].seg_data = 0; }
+    g_fs_npool = 0;
+}
+
+/* Remove pool entry idx (free its seg_data, shift array down). */
+static void fs_pool_remove(int idx)
+{
+    int i; if (idx < 0 || idx >= g_fs_npool) return;
+    if (g_fs_pool[idx].seg_data) rdb_seg_free(g_fs_pool[idx].seg_data);
+    for (i = idx; i < g_fs_npool - 1; i++) g_fs_pool[i] = g_fs_pool[i + 1];
+    { int z; uint8_t *p = (uint8_t *)&g_fs_pool[g_fs_npool - 1];
+      for (z = 0; z < (int)sizeof(RdbFileSys); z++) p[z] = 0; }
+    g_fs_npool--;
+}
+
+/* -------------------------------------------------------------------------- */
 
 /* Render a DosType to a short label: "DOS\3" / "PFS\3" / "SFS\0" when bytes 0-2
    are printable, else "0x........". out needs >= 12 bytes. */
@@ -531,6 +585,25 @@ static int gui_save(void)
 
     h = dev_open(g_cur_driver, g_cur_unit);
     if (!h) { gui_msg("Save", "Could not open the device."); return 0; }
+
+    /* Stage pool FS referenced by a partition into g_model.fs[] for serialization.
+       Deep-copy (rdb_seg_alloc+memcpy) so pool and model never alias seg_data. */
+    { int pi, qi;
+      rdb_model_free(&g_model);   /* clear stale fs[] staging; parts[] untouched */
+      for (pi = 0; pi < g_fs_npool && g_model.num_fs < RDB_MAX_FS; pi++) {
+          int used = 0;
+          for (qi = 0; qi < g_model.num_parts; qi++)
+              if (g_model.parts[qi].dos_type == g_fs_pool[pi].dos_type) { used = 1; break; }
+          if (!used) continue;
+          { RdbFileSys *d = &g_model.fs[g_model.num_fs];
+            *d = g_fs_pool[pi];
+            d->seg_data = (uint8_t *)rdb_seg_alloc(g_fs_pool[pi].seg_len ? g_fs_pool[pi].seg_len : 1);
+            if (!d->seg_data) continue;
+            { uint32_t z; for (z = 0; z < g_fs_pool[pi].seg_len; z++) d->seg_data[z] = g_fs_pool[pi].seg_data[z]; }
+            g_model.num_fs++; }
+      }
+    }
+
     serr = rdb_serialize(&g_model, dev_block_io, h);
     if (serr == RDB_OK) {
         /* read back and verify the partition count + first/last cylinders */
@@ -681,6 +754,7 @@ static int gui_edit_dialog(int index)
     static const char *fsLabels[4 + RDB_MAX_FS];   /* FFS,OFS,[pool*8],[keep],NULL */
     static int fsPoolIdx[4 + RDB_MAX_FS];
     static char fsKeep[12];
+    static char fsPoolLbl[RDB_MAX_FS][12];  /* stable DosType label strings for cycle */
     int maxtIdx, maskIdx;
     int fsRom, fsActive, fsIdx, fsKeepIdx, fsPoolBase, v39;
     uint32_t startCyl = pt->low_cyl;
@@ -720,10 +794,11 @@ static int gui_edit_dialog(int index)
     { int n = 0, kk;
       fsLabels[n++] = "FFS";
       fsLabels[n++] = "OFS";
-      /* Pool entries from the embedded-FS model (PFS3, SFS, etc.) */
+      /* Pool entries from g_fs_pool (PFS3, SFS, etc.) — label shows DosType (#3 fix). */
       fsPoolBase = n;
-      for (kk = 0; kk < g_model.num_fs && n < (int)(sizeof fsLabels / sizeof fsLabels[0]) - 2; kk++) {
-          fsLabels[n] = g_model.fs[kk].name;
+      for (kk = 0; kk < g_fs_npool && n < (int)(sizeof fsLabels / sizeof fsLabels[0]) - 2; kk++) {
+          dostype_label(fsPoolLbl[kk], g_fs_pool[kk].dos_type);
+          fsLabels[n] = fsPoolLbl[kk];
           fsPoolIdx[n] = kk;
           n++;
       }
@@ -731,7 +806,7 @@ static int gui_edit_dialog(int index)
       if (!fsRom) {
           int inPool = 0, kn;
           for (kn = fsPoolBase; kn < n; kn++) {
-              if (g_model.fs[fsPoolIdx[kn]].dos_type == pt->dos_type) { inPool = 1; break; }
+              if (g_fs_pool[fsPoolIdx[kn]].dos_type == pt->dos_type) { inPool = 1; break; }
           }
           if (!inPool) { dostype_label(fsKeep, pt->dos_type); fsKeepIdx = n; fsLabels[n++] = fsKeep; }
           else fsKeepIdx = -1;
@@ -739,8 +814,8 @@ static int gui_edit_dialog(int index)
       fsLabels[n] = 0; }
     /* Initial selection: prefer pool match, then ROM FFS/OFS, then keep */
     { int kn, matched = 0;
-      for (kn = fsPoolBase; kn < fsPoolBase + g_model.num_fs; kn++) {
-          if (g_model.fs[fsPoolIdx[kn]].dos_type == pt->dos_type) {
+      for (kn = fsPoolBase; kn < fsPoolBase + g_fs_npool; kn++) {
+          if (g_fs_pool[fsPoolIdx[kn]].dos_type == pt->dos_type) {
               fsActive = kn; matched = 1; break;
           }
       }
@@ -895,7 +970,7 @@ static int gui_edit_dialog(int index)
                         if (fsKeepIdx >= 0 && fsIdx == fsKeepIdx) {
                             fdt = pt->dos_type;
                         } else if (fsIdx >= fsPoolBase && (fsKeepIdx < 0 || fsIdx < fsKeepIdx)) {
-                            fdt = g_model.fs[fsPoolIdx[fsIdx]].dos_type;  /* embedded FS */
+                            fdt = g_fs_pool[fsPoolIdx[fsIdx]].dos_type;  /* pool FS */
                         } else {
                             fdt = 0x444F5300u;
                             if (fsIdx == 0)                            fdt |= 1u;  /* FFS */
@@ -1649,6 +1724,7 @@ cleanup_libs:
     if (g_sfont) { CloseFont(g_sfont); g_sfont = 0; }   /* before GfxBase */
     if (AslBase) { CloseLibrary(AslBase); AslBase = 0; }
     rdb_model_free(&g_model);
+    fs_pool_free();
     CloseLibrary((struct Library *)GfxBase);
     CloseLibrary(GadToolsBase);
     return 0;
@@ -1760,7 +1836,10 @@ static void gui_select_unit(int uidx)
     if (h) {
         dev_geometry(h, &g_geo);
         rdb_model_free(&g_model);
-        if (rdb_parse(&g_model, dev_block_io, h) == RDB_OK) g_have_model = 1;
+        if (rdb_parse(&g_model, dev_block_io, h) == RDB_OK) {
+            g_have_model = 1;
+            fs_pool_merge_from_model(&g_model);
+        }
         dev_close(h);
     }
     gui_refresh_parts(); gui_update_buttons();
@@ -1871,7 +1950,7 @@ static int fs_preset_index(uint32_t v)
    col 0=mark, col 2=dostype(10), col 13=name(20), col 34=src(8), col 43=size. */
 static void fs_build_row(char *row, int idx, int sel)
 {
-    RdbFileSys *fs = &g_model.fs[idx];
+    RdbFileSys *fs = &g_fs_pool[idx];
     int p = 0;
     char dtbuf[12];
     dostype_label(dtbuf, fs->dos_type);
@@ -1890,12 +1969,12 @@ static void fs_build_row(char *row, int idx, int sel)
     row[p] = 0;
 }
 
-/* Rebuild g_fslist and g_fsnodes from g_model.fs[0..num_fs). */
+/* Rebuild g_fslist and g_fsnodes from g_fs_pool[0..g_fs_npool). */
 static void fs_rebuild_list(int sel, struct Window *dw, struct Gadget *glv)
 {
     int i;
     NewList(&g_fslist);
-    for (i = 0; i < g_model.num_fs && i < RDB_MAX_FS; i++) {
+    for (i = 0; i < g_fs_npool && i < RDB_MAX_FS; i++) {
         fs_build_row(g_fsrows[i], i, sel);
         g_fsnodes[i].ln_Name = g_fsrows[i];
         AddTail(&g_fslist, &g_fsnodes[i]);
@@ -2027,10 +2106,10 @@ static void gui_filesystems(void)
     if (!g_have_model) return;
 
     /* Pre-select first entry if any. */
-    if (g_model.num_fs > 0) {
+    if (g_fs_npool > 0) {
         sel = 0;
-        u32_to_hex(dtBuf, g_model.fs[0].dos_type);
-        presetIdx = fs_preset_index(g_model.fs[0].dos_type);
+        u32_to_hex(dtBuf, g_fs_pool[0].dos_type);
+        presetIdx = fs_preset_index(g_fs_pool[0].dos_type);
     } else {
         u32_to_hex(dtBuf, 0x00000000u);
         presetIdx = N_FS_PRESETS;
@@ -2125,13 +2204,13 @@ static void gui_filesystems(void)
                 if (gid == 1) {
                     /* Listview selection changed. */
                     int newsel = (int)code;
-                    if (newsel >= 0 && newsel < g_model.num_fs) {
+                    if (newsel >= 0 && newsel < g_fs_npool) {
                         sel = newsel;
                         /* Rebuild labels to move the '>' marker (V37-safe). */
                         fs_rebuild_list(sel, dw, gLV);
                         /* Update DosType field + preset cycle. */
-                        u32_to_hex(dtBuf, g_model.fs[sel].dos_type);
-                        presetIdx = fs_preset_index(g_model.fs[sel].dos_type);
+                        u32_to_hex(dtBuf, g_fs_pool[sel].dos_type);
+                        presetIdx = fs_preset_index(g_fs_pool[sel].dos_type);
                         GT_SetGadgetAttrs(gDT, dw, 0,
                                           GTST_String, (ULONG)dtBuf,
                                           GA_Disabled, FALSE, TAG_END);
@@ -2143,12 +2222,12 @@ static void gui_filesystems(void)
 
                 } else if (gid == 2) {
                     /* DosType string field committed (user pressed Return). */
-                    if (sel >= 0 && sel < g_model.num_fs) {
+                    if (sel >= 0 && sel < g_fs_npool) {
                         const char *s = (const char *)
                             ((struct StringInfo *)gDT->SpecialInfo)->Buffer;
                         uint32_t v;
                         if (parse_hex32(s, &v)) {
-                            g_model.fs[sel].dos_type = v;
+                            g_fs_pool[sel].dos_type = v;
                             g_dirty = 1;
                             /* Re-sync preset cycle. */
                             presetIdx = fs_preset_index(v);
@@ -2163,12 +2242,12 @@ static void gui_filesystems(void)
                 } else if (gid == 3) {
                     /* Preset cycle changed. */
                     presetIdx = (int)code;
-                    if (sel >= 0 && sel < g_model.num_fs) {
+                    if (sel >= 0 && sel < g_fs_npool) {
                         uint32_t v = (presetIdx < N_FS_PRESETS)
                                      ? kFsPresetValues[presetIdx]
-                                     : g_model.fs[sel].dos_type;
+                                     : g_fs_pool[sel].dos_type;
                         if (presetIdx < N_FS_PRESETS) {
-                            g_model.fs[sel].dos_type = v;
+                            g_fs_pool[sel].dos_type = v;
                             g_dirty = 1;
                             u32_to_hex(dtBuf, v);
                             GT_SetGadgetAttrs(gDT, dw, 0,
@@ -2184,7 +2263,7 @@ static void gui_filesystems(void)
                     int rc;
 
                     if (!AslBase) break;
-                    if (g_model.num_fs >= RDB_MAX_FS) {
+                    if (g_fs_npool >= RDB_MAX_FS) {
                         gui_msg("Filesystems", fsl_err_text(FSL_EFULL));
                         break;
                     }
@@ -2202,15 +2281,16 @@ static void gui_filesystems(void)
                     AddPart((STRPTR)fspath, (CONST_STRPTR)fr->fr_File, sizeof(fspath));
                     FreeAslRequest(fr);
 
-                    rc = fsload_from_file(fspath, &g_model.fs[g_model.num_fs]);
+                    /* fsload allocates seg_data; pool takes ownership directly. */
+                    rc = fsload_from_file(fspath, &g_fs_pool[g_fs_npool]);
                     if (rc != FSL_OK) {
                         gui_msg("Filesystems", fsl_err_text(rc));
                     } else {
-                        sel = g_model.num_fs;
-                        g_model.num_fs++;
+                        sel = g_fs_npool;
+                        g_fs_npool++;
                         g_dirty = 1;
-                        u32_to_hex(dtBuf, g_model.fs[sel].dos_type);
-                        presetIdx = fs_preset_index(g_model.fs[sel].dos_type);
+                        u32_to_hex(dtBuf, g_fs_pool[sel].dos_type);
+                        presetIdx = fs_preset_index(g_fs_pool[sel].dos_type);
                         fs_rebuild_list(sel, dw, gLV);
                         GT_SetGadgetAttrs(gDT, dw, 0,
                                           GTST_String, (ULONG)dtBuf,
@@ -2227,21 +2307,22 @@ static void gui_filesystems(void)
                     uint32_t srcUnit;
                     int rc;
 
-                    if (g_model.num_fs >= RDB_MAX_FS) {
+                    if (g_fs_npool >= RDB_MAX_FS) {
                         gui_msg("Filesystems", fsl_err_text(FSL_EFULL));
                         break;
                     }
                     if (!gui_copy_from_disk_picker(srcDrv, &srcUnit)) break; /* cancelled */
 
-                    rc = fsload_from_disk(srcDrv, srcUnit, 0, &g_model.fs[g_model.num_fs]);
+                    /* fsload allocates seg_data; pool takes ownership directly. */
+                    rc = fsload_from_disk(srcDrv, srcUnit, 0, &g_fs_pool[g_fs_npool]);
                     if (rc != FSL_OK) {
                         gui_msg("Filesystems", fsl_err_text(rc));
                     } else {
-                        sel = g_model.num_fs;
-                        g_model.num_fs++;
+                        sel = g_fs_npool;
+                        g_fs_npool++;
                         g_dirty = 1;
-                        u32_to_hex(dtBuf, g_model.fs[sel].dos_type);
-                        presetIdx = fs_preset_index(g_model.fs[sel].dos_type);
+                        u32_to_hex(dtBuf, g_fs_pool[sel].dos_type);
+                        presetIdx = fs_preset_index(g_fs_pool[sel].dos_type);
                         fs_rebuild_list(sel, dw, gLV);
                         GT_SetGadgetAttrs(gDT, dw, 0,
                                           GTST_String, (ULONG)dtBuf,
@@ -2253,13 +2334,12 @@ static void gui_filesystems(void)
                     }
 
                 } else if (gid == 5) {
-                    /* Remove: free seg_data, shift array, decrement num_fs. */
-                    int i;
-                    if (sel < 0 || sel >= g_model.num_fs) break;
+                    /* Remove from pool. */
+                    if (sel < 0 || sel >= g_fs_npool) break;
 
                     /* If any partition uses this dos_type, confirm first. */
                     { int uses = 0, kk;
-                      uint32_t fdt = g_model.fs[sel].dos_type;
+                      uint32_t fdt = g_fs_pool[sel].dos_type;
                       for (kk = 0; kk < g_model.num_parts; kk++)
                           if (g_model.parts[kk].dos_type == fdt) { uses = 1; break; }
                       if (uses) {
@@ -2270,27 +2350,19 @@ static void gui_filesystems(void)
                       }
                     }
 
-                    rdb_seg_free(g_model.fs[sel].seg_data);
-                    g_model.fs[sel].seg_data = 0;
-                    for (i = sel; i < g_model.num_fs - 1; i++)
-                        g_model.fs[i] = g_model.fs[i + 1];
-                    /* zero out the vacated slot */
-                    { RdbFileSys *z = &g_model.fs[g_model.num_fs - 1];
-                      int zz; for (zz = 0; zz < (int)sizeof(RdbFileSys); zz++)
-                          ((uint8_t *)z)[zz] = 0; }
-                    g_model.num_fs--;
+                    fs_pool_remove(sel);
                     g_dirty = 1;
 
                     /* Adjust selection. */
-                    if (g_model.num_fs == 0) {
+                    if (g_fs_npool == 0) {
                         sel = -1;
                         GT_SetGadgetAttrs(gDT,     dw, 0, GA_Disabled, TRUE, TAG_END);
                         GT_SetGadgetAttrs(gPreset, dw, 0, GA_Disabled, TRUE, TAG_END);
                         GT_SetGadgetAttrs(gRemove, dw, 0, GA_Disabled, TRUE, TAG_END);
                     } else {
-                        if (sel >= g_model.num_fs) sel = g_model.num_fs - 1;
-                        u32_to_hex(dtBuf, g_model.fs[sel].dos_type);
-                        presetIdx = fs_preset_index(g_model.fs[sel].dos_type);
+                        if (sel >= g_fs_npool) sel = g_fs_npool - 1;
+                        u32_to_hex(dtBuf, g_fs_pool[sel].dos_type);
+                        presetIdx = fs_preset_index(g_fs_pool[sel].dos_type);
                         GT_SetGadgetAttrs(gDT, dw, 0,
                                           GTST_String, (ULONG)dtBuf, TAG_END);
                         GT_SetGadgetAttrs(gPreset, dw, 0,
