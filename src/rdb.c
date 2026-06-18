@@ -8,19 +8,24 @@
 #ifdef HDPART_AMIGA
 #include <exec/memory.h>
 #include <proto/exec.h>
-/* Amiga FreeMem needs the size; we store it in a header longword. */
-static void *rdb_alloc_sized(uint32_t n) {
+/* Amiga FreeMem needs the size; we store it in a 4-byte size header.
+   Public API (declared in rdb.h) so fsload.c can use the same convention. */
+void *rdb_seg_alloc(uint32_t n) {
     uint32_t *p = (uint32_t *)AllocMem(n + 4, MEMF_PUBLIC | MEMF_CLEAR);
-    if (!p) return 0; p[0] = n + 4; return p + 1;
+    if (!p) return 0;
+    p[0] = n + 4;
+    return p + 1;
 }
-static void rdb_free_sized(void *p) {
-    if (!p) return; uint32_t *h = (uint32_t *)p - 1; FreeMem(h, h[0]);
+void rdb_seg_free(void *p) {
+    uint32_t *h;
+    if (!p) return;
+    h = (uint32_t *)p - 1;
+    FreeMem(h, h[0]);
 }
 #else
 #include <stdlib.h>
-static void *rdb_alloc_sized(uint32_t n) __attribute__((unused));
-static void *rdb_alloc_sized(uint32_t n) { return calloc(1, n ? n : 1); }
-static void rdb_free_sized(void *p) { free(p); }
+void *rdb_seg_alloc(uint32_t n) { return calloc(1, n ? n : 1); }
+void rdb_seg_free(void *p) { free(p); }
 #endif
 
 static int str_eq(const char *a, const char *b)
@@ -102,7 +107,7 @@ void rdb_model_free(RdbModel *m)
     int i;
     if (!m) return;
     for (i = 0; i < m->num_fs; i++) {
-        if (m->fs[i].seg_data) { rdb_free_sized(m->fs[i].seg_data); m->fs[i].seg_data = 0; }
+        if (m->fs[i].seg_data) { rdb_seg_free(m->fs[i].seg_data); m->fs[i].seg_data = 0; }
     }
     m->num_fs = 0;
 }
@@ -731,13 +736,13 @@ static int read_fshd_chain(RdbModel *m, BlockIO io, void *ctx, uint32_t fshd_blk
           }
           if (!lseg_ok) { fshd_blk = be_get32(blk + FSHD_o_Next); continue; } }
         cap = seg_len;
-        fs->seg_data = (uint8_t *)rdb_alloc_sized(cap ? cap : 1);
+        fs->seg_data = (uint8_t *)rdb_seg_alloc(cap ? cap : 1);
         if (!fs->seg_data) return RDB_ERR_IO;
         /* Second pass: copy payloads; reject on bad ID or checksum (free + skip). */
         { uint32_t b = seg_blk; int lseg_ok = 1;
           while (b != NULLPTR && b != 0 && ++sguard < 4096 && off < cap) {
             uint8_t lb[512];
-            if (io(ctx, b, lb, 0)) { rdb_free_sized(fs->seg_data); fs->seg_data = 0;
+            if (io(ctx, b, lb, 0)) { rdb_seg_free(fs->seg_data); fs->seg_data = 0;
                                      return RDB_ERR_IO; }
             if (be_get32(lb + 0) != ID_LSEG ||
                 !rdb_checksum_ok(lb, be_get32(lb + 4))) { lseg_ok = 0; break; }
@@ -745,7 +750,7 @@ static int read_fshd_chain(RdbModel *m, BlockIO io, void *ctx, uint32_t fshd_blk
             off += LSEG_PAYLOAD;
             b = be_get32(lb + LSEG_o_Next);
           }
-          if (!lseg_ok) { rdb_free_sized(fs->seg_data); fs->seg_data = 0;
+          if (!lseg_ok) { rdb_seg_free(fs->seg_data); fs->seg_data = 0;
                           fshd_blk = be_get32(blk + FSHD_o_Next); continue; } }
         fs->seg_len = off;
         m->num_fs++;

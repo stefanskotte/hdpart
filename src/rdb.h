@@ -174,6 +174,13 @@ int rdb_parse(RdbModel *m, BlockIO io, void *ctx);
    Safe to call repeatedly and on a zero-initialized model. */
 void rdb_model_free(RdbModel *m);
 
+/* Allocate/free seg_data with the sized-header convention used by rdb.c
+   (Amiga: AllocMem(n+4) with size in first longword; host: calloc/free).
+   Use these in any code that hands a buffer to RdbFileSys.seg_data so that
+   rdb_model_free can release it correctly. */
+void *rdb_seg_alloc(uint32_t n);
+void  rdb_seg_free(void *p);
+
 /* Number of 512-byte LSEG blocks needed to store seg_len bytes
    (492 payload bytes per LSEG block; 0 bytes -> 0 blocks). */
 uint32_t rdb_lseg_block_count(uint32_t seg_len);
