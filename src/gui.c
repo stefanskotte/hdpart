@@ -495,7 +495,7 @@ static int gui_save(void)
 {
     DeviceHandle *h;
     static RdbModel chk;          /* static: keep off the stack */
-    int ok = 0, p = 0;
+    int ok = 0, serr = RDB_OK, p = 0;
 
     if (!g_have_model) return 0;
     if (rdb_validate(&g_model) != RDB_OK) { gui_msg("Save", "Partition layout is invalid."); return 0; }
@@ -531,7 +531,8 @@ static int gui_save(void)
 
     h = dev_open(g_cur_driver, g_cur_unit);
     if (!h) { gui_msg("Save", "Could not open the device."); return 0; }
-    if (rdb_serialize(&g_model, dev_block_io, h) == RDB_OK) {
+    serr = rdb_serialize(&g_model, dev_block_io, h);
+    if (serr == RDB_OK) {
         /* read back and verify the partition count + first/last cylinders */
         if (rdb_parse(&chk, dev_block_io, h) == RDB_OK &&
             chk.num_parts == g_model.num_parts) {
@@ -540,11 +541,14 @@ static int gui_save(void)
                 if (chk.parts[i].low_cyl  != g_model.parts[i].low_cyl ||
                     chk.parts[i].high_cyl != g_model.parts[i].high_cyl) { ok = 0; break; }
         }
+        rdb_model_free(&chk);
     }
     dev_close(h);
 
     if (ok) { g_dirty = 0; gui_msg("Save", "Saved and verified."); }
-    else      gui_msg("Save", "WRITE FAILED or verify mismatch.\nThe disk RDB may be inconsistent.");
+    else if (serr == RDB_ERR_NO_RDB_SPACE)
+        gui_msg("Save", "Embedded filesystem(s) don't fit the reserved RDB area.\nRemove one or use a smaller handler. Nothing was written.");
+    else gui_msg("Save", "WRITE FAILED or verify mismatch.\nThe disk RDB may be inconsistent.");
     gui_refresh_parts();
     gui_update_buttons();
     return ok;
