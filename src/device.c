@@ -3,6 +3,7 @@
 #include <exec/types.h>
 #include <exec/memory.h>
 #include <exec/io.h>
+#include <exec/errors.h>
 #include <devices/trackdisk.h>
 #include <devices/scsidisk.h>
 #include <proto/exec.h>
@@ -12,6 +13,7 @@ struct DeviceHandle {
     struct MsgPort *port;
     struct IOExtTD *req;
     int             opened;   /* OpenDevice succeeded */
+    ULONG           block_bytes; /* device sector size from geometry; default 512 */
 };
 
 /* OpenDevice initializes a device-specific IORequest whose size varies by
@@ -42,6 +44,7 @@ DeviceHandle *dev_open(const char *driver, ULONG unit)
         return 0;
     }
     h->opened = 1;
+    h->block_bytes = 512; /* safe default before dev_geometry runs */
     return h;
 }
 
@@ -70,6 +73,7 @@ int dev_geometry(DeviceHandle *h, DeviceInfo *out)
     err = DoIO((struct IORequest *)h->req);
 
     out->block_bytes  = dg.dg_SectorSize ? dg.dg_SectorSize : 512;
+    h->block_bytes    = out->block_bytes; /* thread into handle for dev_rw */
     out->cylinders    = dg.dg_Cylinders;
     out->heads        = dg.dg_Heads;
     out->sectors      = dg.dg_TrackSectors;
@@ -81,10 +85,16 @@ int dev_geometry(DeviceHandle *h, DeviceInfo *out)
 
 static int dev_rw(DeviceHandle *h, ULONG block, UBYTE *buf, UWORD cmd)
 {
+    /* All block buffers in this codebase are exactly 512 bytes.  A device
+       reporting block_bytes > 512 (e.g. a CD-ROM at 2048) would overflow the
+       caller's buffer, so we refuse rather than corrupt memory.  For the
+       supported 512-byte CF/SD/IDE media this guard is never triggered. */
+    if (h->block_bytes == 0) h->block_bytes = 512;
+    if (h->block_bytes > 512) return IOERR_BADLENGTH;
     h->req->iotd_Req.io_Command = cmd;
     h->req->iotd_Req.io_Data    = buf;
-    h->req->iotd_Req.io_Length  = 512;
-    h->req->iotd_Req.io_Offset  = block * 512UL;   /* 32-bit: RDB is low */
+    h->req->iotd_Req.io_Length  = h->block_bytes;
+    h->req->iotd_Req.io_Offset  = (ULONG)block * h->block_bytes; /* 32-bit: RDB is low */
     h->req->iotd_Req.io_Actual  = 0;
     return (int)DoIO((struct IORequest *)h->req);
 }
