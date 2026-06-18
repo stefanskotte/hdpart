@@ -24,6 +24,7 @@
 #include "rdb.h"
 #include "format.h"
 #include "safety.h"
+#include "fsload.h"
 
 extern struct IntuitionBase *IntuitionBase;   /* opened in main.c */
 struct Library *GadToolsBase = 0;
@@ -34,7 +35,7 @@ extern struct DosLibrary *DOSBase;   /* opened in startup.c (for AddPart) */
 /* Gadget IDs */
 enum { GID_DEVICE = 1, GID_SCAN, GID_DRIVER, GID_PARTS, GID_NEW, GID_DELETE,
        GID_EDIT, GID_INIT, GID_SAVE, GID_STATUS, GID_UNIT, GID_SPLIT, GID_REFRESH,
-       GID_RESIZE, GID_FORMAT };
+       GID_RESIZE, GID_FORMAT, GID_FS };
 /* GID_DEVICE is the Driver cycle; GID_UNIT is the Unit cycle. */
 
 /* Module state for one GUI session. */
@@ -43,7 +44,7 @@ static struct Screen  *g_pub;        /* locked pubscreen, or NULL */
 static struct Window  *g_win;
 static APTR            g_vi;          /* VisualInfo */
 static struct Gadget  *g_glist;      /* gadtools context list */
-static struct Gadget  *g_gad[16];    /* gadget pointers by a small index */
+static struct Gadget  *g_gad[17];    /* gadget pointers by a small index */
 static struct TextAttr g_font = { (STRPTR)"topaz.font", 8, 0, 0 };
 static struct TextFont *g_sfont = 0;  /* explicit topaz 8 for our own screen (NULL if unavailable) */
 static struct Menu    *g_menu = 0;   /* menu strip attached to g_win */
@@ -125,6 +126,7 @@ static void fstype_label(char *out, uint32_t t)
 /* Forward decls. */
 static void gui_about(void);
 static void gui_load_driver(void);
+static void gui_filesystems(void);
 static void gui_split(void);                  /* quick split-into-N-equal dialog */
 static void gui_init_picker(void);            /* no-probe startup picker */
 static void gui_select_driver(int drvIdx);    /* Driver cycle: pick a scan target (resets) */
@@ -162,7 +164,7 @@ static void gui_status(const char *s)
 /* FULLMENUNUM indices (menu,item) for enable/disable + dispatch readability. */
 enum { MN_PROJECT=0, MN_DISK=1, MN_PART=2 };
 enum { IT_ABOUT=0, IT_SAVE=2, IT_QUIT=4 };               /* Project items */
-enum { ID_SCAN=0, ID_LOAD=1, ID_REFRESH=3, ID_INIT=4 };  /* Disk items   */
+enum { ID_SCAN=0, ID_LOAD=1, ID_REFRESH=3, ID_INIT=4, ID_FS=5 };  /* Disk items   */
 enum { IP_NEW=0, IP_EDIT=1, IP_DELETE=2, IP_SPLIT=4, IP_RESIZE=5, IP_FORMAT=6 }; /* Partition items */
 
 /* Enable/disable one menu item (menu,item) on the attached strip. */
@@ -188,10 +190,12 @@ static void gui_update_buttons(void)
     GT_SetGadgetAttrs(g_gad[GID_REFRESH],g_win, 0, GA_Disabled, (ULONG)(g_cur_unitidx < 0), TAG_END);
     GT_SetGadgetAttrs(g_gad[GID_RESIZE], g_win, 0, GA_Disabled, (ULONG)!hasSel, TAG_END);
     GT_SetGadgetAttrs(g_gad[GID_FORMAT], g_win, 0, GA_Disabled, (ULONG)!hasSel, TAG_END);
+    GT_SetGadgetAttrs(g_gad[GID_FS],     g_win, 0, GA_Disabled, (ULONG)!hasModel, TAG_END);
     gui_menu_enable(MN_PROJECT, IT_SAVE,    hasModel && g_dirty);
     gui_menu_enable(MN_DISK,    ID_SCAN,    g_target_driver[0] != 0);
     gui_menu_enable(MN_DISK,    ID_REFRESH, g_cur_unitidx >= 0);
     gui_menu_enable(MN_DISK,    ID_INIT,    hasGeo);
+    gui_menu_enable(MN_DISK,    ID_FS,      hasModel);
     gui_menu_enable(MN_PART,    IP_NEW,     hasModel);
     gui_menu_enable(MN_PART,    IP_EDIT,    hasSel);
     gui_menu_enable(MN_PART,    IP_DELETE,  hasSel);
@@ -265,6 +269,7 @@ static struct NewMenu g_newmenu[] = {
     {  NM_ITEM, NM_BARLABEL,     0,  0, 0, 0 },
     {  NM_ITEM, "Refresh",      "F", 0, 0, 0 },
     {  NM_ITEM, "Init Disk...", "I", 0, 0, 0 },
+    {  NM_ITEM, "Filesystems...", "Y", 0, 0, 0 },
     { NM_TITLE, "Partition",     0,  0, 0, 0 },
     {  NM_ITEM, "New",          "N", 0, 0, 0 },
     {  NM_ITEM, "Edit...",      "E", 0, 0, 0 },
@@ -280,7 +285,7 @@ static struct Gadget *build_gadgets(void)
     struct NewGadget ng;
     struct Gadget *g;
     int i;
-    for (i = 0; i < 16; i++) g_gad[i] = 0;
+    for (i = 0; i < 17; i++) g_gad[i] = 0;
 
     /* CreateContext's inline macro (LP1) declares the input register as
        'volatile t1' which in GCC 14+ triggers -Wincompatible-pointer-types
@@ -317,8 +322,14 @@ static struct Gadget *build_gadgets(void)
     g = CreateGadget(BUTTON_KIND, g, &ng, TAG_END);
     g_gad[GID_SCAN] = g;
 
-    /* Partition listview (inside Partitions panel, under bar+header) */
-    ng.ng_LeftEdge = 16 + g_leftb; ng.ng_TopEdge = 106 + g_topb; ng.ng_Width = 550; ng.ng_Height = 66;
+    /* Row 3 — Disk panel: Filesystems button (enabled only when g_have_model) */
+    ng.ng_LeftEdge = 484 + g_leftb; ng.ng_TopEdge = 54 + g_topb; ng.ng_Width = 82; ng.ng_Height = 14;
+    ng.ng_GadgetText = (UBYTE *)"File_sys..."; ng.ng_GadgetID = GID_FS;
+    g = CreateGadget(BUTTON_KIND, g, &ng, GA_Disabled, TRUE, GT_Underscore, (ULONG)'_', TAG_END);
+    g_gad[GID_FS] = g;
+
+    /* Partition listview (inside Partitions panel, under bar+header; y shifted +18) */
+    ng.ng_LeftEdge = 16 + g_leftb; ng.ng_TopEdge = 124 + g_topb; ng.ng_Width = 550; ng.ng_Height = 66;
     ng.ng_GadgetText = 0; ng.ng_GadgetID = GID_PARTS;
     g = CreateGadget(LISTVIEW_KIND, g, &ng, GTLV_Labels, 0, GTLV_ShowSelected, 0, TAG_END);
     g_gad[GID_PARTS] = g;
@@ -332,7 +343,7 @@ static struct Gadget *build_gadgets(void)
         };
         int k;
         for (k = 0; k < 6; k++) {
-            ng.ng_LeftEdge = pbtn[k].x + g_leftb; ng.ng_TopEdge = 174 + g_topb;
+            ng.ng_LeftEdge = pbtn[k].x + g_leftb; ng.ng_TopEdge = 192 + g_topb;
             ng.ng_Width = pbtn[k].w; ng.ng_Height = 14;
             ng.ng_GadgetText = (UBYTE *)pbtn[k].txt; ng.ng_GadgetID = pbtn[k].id;
             g = CreateGadget(BUTTON_KIND, g, &ng, GA_Disabled, TRUE, GT_Underscore, (ULONG)'_', TAG_END);
@@ -342,17 +353,17 @@ static struct Gadget *build_gadgets(void)
 
     /* Footer: status text (left, aligned with bevel content column) + Refresh + Save (right).
        No GadTools label — "Status: " is baked into the text by gui_status(). */
-    ng.ng_LeftEdge = 16 + g_leftb; ng.ng_TopEdge = 196 + g_topb; ng.ng_Width = 374; ng.ng_Height = 12;
+    ng.ng_LeftEdge = 16 + g_leftb; ng.ng_TopEdge = 214 + g_topb; ng.ng_Width = 374; ng.ng_Height = 12;
     ng.ng_GadgetText = 0; ng.ng_GadgetID = GID_STATUS;
     g = CreateGadget(TEXT_KIND, g, &ng, GTTX_Text, (ULONG)"Status: no disk selected", TAG_END);
     g_gad[GID_STATUS] = g;
 
-    ng.ng_LeftEdge = 396 + g_leftb; ng.ng_TopEdge = 194 + g_topb; ng.ng_Width = 82; ng.ng_Height = 14;
+    ng.ng_LeftEdge = 396 + g_leftb; ng.ng_TopEdge = 212 + g_topb; ng.ng_Width = 82; ng.ng_Height = 14;
     ng.ng_GadgetText = (UBYTE *)"Re_fresh"; ng.ng_GadgetID = GID_REFRESH;
     g = CreateGadget(BUTTON_KIND, g, &ng, GA_Disabled, TRUE, GT_Underscore, (ULONG)'_', TAG_END);
     g_gad[GID_REFRESH] = g;
 
-    ng.ng_LeftEdge = 484 + g_leftb; ng.ng_TopEdge = 194 + g_topb; ng.ng_Width = 82; ng.ng_Height = 14;
+    ng.ng_LeftEdge = 484 + g_leftb; ng.ng_TopEdge = 212 + g_topb; ng.ng_Width = 82; ng.ng_Height = 14;
     ng.ng_GadgetText = (UBYTE *)"_Save"; ng.ng_GadgetID = GID_SAVE;
     g = CreateGadget(BUTTON_KIND, g, &ng, GA_Disabled, TRUE, GT_Underscore, (ULONG)'_', TAG_END);
     g_gad[GID_SAVE] = g;
@@ -1471,7 +1482,7 @@ int gui_run(void)
     g_win = OpenWindowTags(0,
         WA_Left, 40, WA_Top, 16,
         WA_Width,  g_leftb + 580 + g_scr->WBorRight,
-        WA_Height, g_topb + 214 + g_scr->WBorBottom,
+        WA_Height, g_topb + 232 + g_scr->WBorBottom,
         WA_Title, (ULONG)"HDPart 0.5",
         WA_Gadgets, (ULONG)g_glist,
         WA_IDCMP, IDCMP_CLOSEWINDOW | IDCMP_REFRESHWINDOW | IDCMP_MOUSEBUTTONS | IDCMP_MENUPICK | IDCMP_VANILLAKEY | CYCLEIDCMP | BUTTONIDCMP | LISTVIEWIDCMP,
@@ -1531,6 +1542,7 @@ int gui_run(void)
                         if (g_sel_part >= 0 && g_sel_part < g_model.num_parts)
                             gui_format(g_sel_part);
                     }
+                    else if (gad->GadgetID == GID_FS) gui_filesystems();
                     else if (gad->GadgetID == GID_DRIVER) gui_load_driver();
                     else if (gad->GadgetID == GID_PARTS) gui_set_selection((int)code);
                     else if (gad->GadgetID == GID_SAVE) gui_save();
@@ -1562,6 +1574,7 @@ int gui_run(void)
                             else if (it == ID_LOAD) gui_load_driver();
                             else if (it == ID_REFRESH) gui_refresh_current();
                             else if (it == ID_INIT) gui_init_disk();
+                            else if (it == ID_FS) gui_filesystems();
                         } else if (mn == MN_PART) {
                             if (it == IP_NEW) gui_new();
                             else if (it == IP_EDIT) {
@@ -1587,6 +1600,7 @@ int gui_run(void)
                 case IDCMP_VANILLAKEY: {
                     UBYTE ch = (UBYTE)code; if (ch >= 'A' && ch <= 'Z') ch += 32;
                     switch (ch) {
+                        case 'y': gui_filesystems(); break;
                         case 'l': gui_load_driver(); break;
                         case 'n': gui_new(); break;
                         case 'd': gui_delete(); break;
@@ -1825,6 +1839,333 @@ static void gui_about(void)
             "github.com/cnvogelg/amitools");
 }
 
+/* ----- Filesystems dialog ------------------------------------------------ */
+
+/* Static storage for the FS listview (mirrors g_partlist / g_partnodes pattern). */
+static struct List g_fslist;
+static struct Node g_fsnodes[RDB_MAX_FS];
+/* 64 bytes is enough for "XXXXXXXX  PFSFileSystem       file   512K" (worst case). */
+static char        g_fsrows[RDB_MAX_FS][64];
+
+/* DosType preset cycle for the Filesystems editor. */
+static const char *const kFsPresetLabels[] = {
+    "PFS\\3", "PDS\\3", "SFS\\0", "SFS\\2", "Custom", 0
+};
+static const uint32_t kFsPresetValues[] = {
+    0x50465303u, 0x50445303u, 0x53465300u, 0x53465302u
+};
+#define N_FS_PRESETS 4
+
+/* Map a dos_type to a kFsPresetValues[] index, or N_FS_PRESETS (Custom). */
+static int fs_preset_index(uint32_t v)
+{
+    int i; for (i = 0; i < N_FS_PRESETS; i++) if (kFsPresetValues[i] == v) return i;
+    return N_FS_PRESETS;
+}
+
+/* Build one FS list row.  Fields: "> DosType  Name            src   NNK"
+   col 0=mark, col 2=dostype(10), col 13=name(20), col 34=src(8), col 43=size. */
+static void fs_build_row(char *row, int idx, int sel)
+{
+    RdbFileSys *fs = &g_model.fs[idx];
+    int p = 0;
+    char dtbuf[12];
+    dostype_label(dtbuf, fs->dos_type);
+    row[p++] = (idx == sel) ? '>' : ' ';
+    row[p++] = ' ';
+    s_cat(row, &p, dtbuf); s_pad(row, &p, 13);
+    { int k; for (k = 0; fs->name[k] && k < 19; k++) row[p++] = fs->name[k]; }
+    s_pad(row, &p, 34);
+    switch (fs->source) {
+        case RDB_FS_FILE:     s_cat(row, &p, "file");     break;
+        case RDB_FS_COPIED:   s_cat(row, &p, "copied");   break;
+        default:              s_cat(row, &p, "embedded"); break;
+    }
+    s_pad(row, &p, 43);
+    { uint32_t kb = (fs->seg_len + 1023u) / 1024u; p += u2s(row + p, kb); s_cat(row, &p, "K"); }
+    row[p] = 0;
+}
+
+/* Rebuild g_fslist and g_fsnodes from g_model.fs[0..num_fs). */
+static void fs_rebuild_list(int sel, struct Window *dw, struct Gadget *glv)
+{
+    int i;
+    NewList(&g_fslist);
+    for (i = 0; i < g_model.num_fs && i < RDB_MAX_FS; i++) {
+        fs_build_row(g_fsrows[i], i, sel);
+        g_fsnodes[i].ln_Name = g_fsrows[i];
+        AddTail(&g_fslist, &g_fsnodes[i]);
+    }
+    if (dw && glv)
+        GT_SetGadgetAttrs(glv, dw, 0,
+                          GTLV_Labels,   (ULONG)&g_fslist,
+                          GTLV_Selected, (ULONG)(sel >= 0 ? (ULONG)sel : ~0UL),
+                          TAG_END);
+}
+
+static void gui_filesystems(void)
+{
+    struct Window *dw;
+    struct Gadget *dglist = 0, *g;
+    struct Gadget *gLV = 0, *gDT = 0, *gPreset = 0, *gRemove = 0;
+    struct NewGadget ng;
+    int dt = g_topb, dl = g_leftb;
+    static char dtBuf[12];   /* hex string for DosType field */
+    int sel = -1;            /* selected FS index, V37-safe */
+    int done = 0;
+    int presetIdx = N_FS_PRESETS; /* Custom */
+
+    if (!g_have_model) return;
+
+    /* Pre-select first entry if any. */
+    if (g_model.num_fs > 0) {
+        sel = 0;
+        u32_to_hex(dtBuf, g_model.fs[0].dos_type);
+        presetIdx = fs_preset_index(g_model.fs[0].dos_type);
+    } else {
+        u32_to_hex(dtBuf, 0x00000000u);
+        presetIdx = N_FS_PRESETS;
+    }
+
+    /* Build the initial list (no window yet; dw/glv = 0). */
+    fs_rebuild_list(sel, 0, 0);
+
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wincompatible-pointer-types"
+    g = CreateContext(&dglist);
+#pragma GCC diagnostic pop
+    if (!g) return;
+    ng.ng_TextAttr = &g_font; ng.ng_VisualInfo = g_vi; ng.ng_Flags = 0;
+
+    /* Listview — RDB_MAX_FS rows (height 8 rows = 8*10 = 80px) */
+    ng.ng_LeftEdge = dl + 10; ng.ng_TopEdge = dt + 6; ng.ng_Width = 420; ng.ng_Height = 80;
+    ng.ng_GadgetText = 0; ng.ng_GadgetID = 1;
+    g = CreateGadget(LISTVIEW_KIND, g, &ng, GTLV_Labels, (ULONG)&g_fslist,
+                     GTLV_Selected, (ULONG)(sel >= 0 ? (ULONG)sel : ~0UL),
+                     GTLV_ShowSelected, 0, TAG_END);
+    gLV = g;
+
+    /* DosType string gadget */
+    ng.ng_LeftEdge = dl + 110; ng.ng_TopEdge = dt + 94; ng.ng_Width = 100; ng.ng_Height = 14;
+    ng.ng_GadgetText = (UBYTE *)"DosType"; ng.ng_GadgetID = 2;
+    g = CreateGadget(STRING_KIND, g, &ng,
+                     GTST_String, (ULONG)dtBuf, GTST_MaxChars, 10,
+                     GA_Disabled, (ULONG)(sel < 0), TAG_END);
+    gDT = g;
+
+    /* Preset cycle */
+    ng.ng_LeftEdge = dl + 110; ng.ng_TopEdge = dt + 114; ng.ng_Width = 140; ng.ng_Height = 14;
+    ng.ng_GadgetText = (UBYTE *)"Preset"; ng.ng_GadgetID = 3;
+    g = CreateGadget(CYCLE_KIND, g, &ng,
+                     GTCY_Labels, (ULONG)kFsPresetLabels,
+                     GTCY_Active, (ULONG)presetIdx,
+                     GA_Disabled, (ULONG)(sel < 0), TAG_END);
+    gPreset = g;
+
+    /* Add from file button */
+    ng.ng_LeftEdge = dl + 10; ng.ng_TopEdge = dt + 138; ng.ng_Width = 110; ng.ng_Height = 14;
+    ng.ng_GadgetText = (UBYTE *)"Add from file..."; ng.ng_GadgetID = 4;
+    g = CreateGadget(BUTTON_KIND, g, &ng,
+                     GA_Disabled, (ULONG)(AslBase == 0), TAG_END);
+
+    /* Remove button */
+    ng.ng_LeftEdge = dl + 130; ng.ng_TopEdge = dt + 138; ng.ng_Width = 80; ng.ng_Height = 14;
+    ng.ng_GadgetText = (UBYTE *)"Remove"; ng.ng_GadgetID = 5;
+    g = CreateGadget(BUTTON_KIND, g, &ng,
+                     GA_Disabled, (ULONG)(sel < 0), TAG_END);
+    gRemove = g;
+
+    /* Done button */
+    ng.ng_LeftEdge = dl + 340; ng.ng_TopEdge = dt + 138; ng.ng_Width = 90; ng.ng_Height = 14;
+    ng.ng_GadgetText = (UBYTE *)"Done"; ng.ng_GadgetID = 6;
+    g = CreateGadget(BUTTON_KIND, g, &ng, TAG_END);
+    if (!g) { FreeGadgets(dglist); return; }
+
+    {   int dwW = dl + 440 + g_scr->WBorRight;
+        int dwH = dt + 160 + g_scr->WBorBottom;
+        int dwL = 0, dwT = 0;
+        dlg_center(dwW, dwH, &dwL, &dwT);
+        dw = dlg_open("Filesystems", dwL, dwT, dwW, dwH,
+                      BUTTONIDCMP | STRINGIDCMP | CYCLEIDCMP | LISTVIEWIDCMP, dglist);
+    }
+    if (!dw) { FreeGadgets(dglist); return; }
+    GT_RefreshWindow(dw, 0);
+
+    while (!done) {
+        struct IntuiMessage *im;
+        WaitPort(dw->UserPort);
+        while ((im = GT_GetIMsg(dw->UserPort)) != 0) {
+            ULONG cl = im->Class;
+            struct Gadget *ig = (struct Gadget *)im->IAddress;
+            UWORD code = im->Code;
+            GT_ReplyIMsg(im);
+
+            if (cl == IDCMP_CLOSEWINDOW) {
+                done = 1;
+            } else if (cl == IDCMP_REFRESHWINDOW) {
+                dlg_refresh(dw);
+            } else if (cl == IDCMP_GADGETUP) {
+                int gid = ig->GadgetID;
+
+                if (gid == 1) {
+                    /* Listview selection changed. */
+                    int newsel = (int)code;
+                    if (newsel >= 0 && newsel < g_model.num_fs) {
+                        sel = newsel;
+                        /* Rebuild labels to move the '>' marker (V37-safe). */
+                        fs_rebuild_list(sel, dw, gLV);
+                        /* Update DosType field + preset cycle. */
+                        u32_to_hex(dtBuf, g_model.fs[sel].dos_type);
+                        presetIdx = fs_preset_index(g_model.fs[sel].dos_type);
+                        GT_SetGadgetAttrs(gDT, dw, 0,
+                                          GTST_String, (ULONG)dtBuf,
+                                          GA_Disabled, FALSE, TAG_END);
+                        GT_SetGadgetAttrs(gPreset, dw, 0,
+                                          GTCY_Active, (ULONG)presetIdx,
+                                          GA_Disabled, FALSE, TAG_END);
+                        GT_SetGadgetAttrs(gRemove, dw, 0, GA_Disabled, FALSE, TAG_END);
+                    }
+
+                } else if (gid == 2) {
+                    /* DosType string field committed (user pressed Return). */
+                    if (sel >= 0 && sel < g_model.num_fs) {
+                        const char *s = (const char *)
+                            ((struct StringInfo *)gDT->SpecialInfo)->Buffer;
+                        uint32_t v;
+                        if (parse_hex32(s, &v)) {
+                            g_model.fs[sel].dos_type = v;
+                            g_dirty = 1;
+                            /* Re-sync preset cycle. */
+                            presetIdx = fs_preset_index(v);
+                            GT_SetGadgetAttrs(gPreset, dw, 0,
+                                              GTCY_Active, (ULONG)presetIdx, TAG_END);
+                            fs_rebuild_list(sel, dw, gLV);
+                        } else {
+                            gui_msg("Filesystems", "Enter a hex value (e.g. 0x50465303).");
+                        }
+                    }
+
+                } else if (gid == 3) {
+                    /* Preset cycle changed. */
+                    presetIdx = (int)code;
+                    if (sel >= 0 && sel < g_model.num_fs) {
+                        uint32_t v = (presetIdx < N_FS_PRESETS)
+                                     ? kFsPresetValues[presetIdx]
+                                     : g_model.fs[sel].dos_type;
+                        if (presetIdx < N_FS_PRESETS) {
+                            g_model.fs[sel].dos_type = v;
+                            g_dirty = 1;
+                            u32_to_hex(dtBuf, v);
+                            GT_SetGadgetAttrs(gDT, dw, 0,
+                                              GTST_String, (ULONG)dtBuf, TAG_END);
+                            fs_rebuild_list(sel, dw, gLV);
+                        }
+                    }
+
+                } else if (gid == 4) {
+                    /* Add from file: ASL requester (no pattern filter — WB 2.04 gotcha). */
+                    struct FileRequester *fr;
+                    static char fspath[256];
+                    int rc;
+
+                    if (!AslBase) break;
+                    if (g_model.num_fs >= RDB_MAX_FS) {
+                        gui_msg("Filesystems", fsl_err_text(FSL_EFULL));
+                        break;
+                    }
+                    fr = (struct FileRequester *)AllocAslRequestTags(ASL_FileRequest,
+                            ASLFR_TitleText,     (ULONG)"Select a filesystem handler",
+                            ASLFR_InitialDrawer, (ULONG)"L:",
+                            ASLFR_Screen,        (ULONG)g_scr,
+                            TAG_END);
+                    if (!fr) { gui_msg("Filesystems", "Could not open the file requester."); break; }
+                    if (!AslRequest(fr, 0)) { FreeAslRequest(fr); break; } /* cancelled */
+
+                    { int j = 0; const char *d = (const char *)fr->fr_Drawer;
+                      while (d && d[j] && j < (int)sizeof(fspath) - 1) { fspath[j] = d[j]; j++; }
+                      fspath[j] = 0; }
+                    AddPart((STRPTR)fspath, (CONST_STRPTR)fr->fr_File, sizeof(fspath));
+                    FreeAslRequest(fr);
+
+                    rc = fsload_from_file(fspath, &g_model.fs[g_model.num_fs]);
+                    if (rc != FSL_OK) {
+                        gui_msg("Filesystems", fsl_err_text(rc));
+                    } else {
+                        sel = g_model.num_fs;
+                        g_model.num_fs++;
+                        g_dirty = 1;
+                        u32_to_hex(dtBuf, g_model.fs[sel].dos_type);
+                        presetIdx = fs_preset_index(g_model.fs[sel].dos_type);
+                        fs_rebuild_list(sel, dw, gLV);
+                        GT_SetGadgetAttrs(gDT, dw, 0,
+                                          GTST_String, (ULONG)dtBuf,
+                                          GA_Disabled, FALSE, TAG_END);
+                        GT_SetGadgetAttrs(gPreset, dw, 0,
+                                          GTCY_Active, (ULONG)presetIdx,
+                                          GA_Disabled, FALSE, TAG_END);
+                        GT_SetGadgetAttrs(gRemove, dw, 0, GA_Disabled, FALSE, TAG_END);
+                    }
+
+                } else if (gid == 5) {
+                    /* Remove: free seg_data, shift array, decrement num_fs. */
+                    int i;
+                    if (sel < 0 || sel >= g_model.num_fs) break;
+
+                    /* If any partition uses this dos_type, confirm first. */
+                    { int uses = 0, kk;
+                      uint32_t fdt = g_model.fs[sel].dos_type;
+                      for (kk = 0; kk < g_model.num_parts; kk++)
+                          if (g_model.parts[kk].dos_type == fdt) { uses = 1; break; }
+                      if (uses) {
+                          if (!gui_confirm("Filesystems",
+                                  "A partition uses this filesystem type.\n"
+                                  "Remove it anyway?"))
+                              break;
+                      }
+                    }
+
+                    rdb_seg_free(g_model.fs[sel].seg_data);
+                    g_model.fs[sel].seg_data = 0;
+                    for (i = sel; i < g_model.num_fs - 1; i++)
+                        g_model.fs[i] = g_model.fs[i + 1];
+                    /* zero out the vacated slot */
+                    { RdbFileSys *z = &g_model.fs[g_model.num_fs - 1];
+                      int zz; for (zz = 0; zz < (int)sizeof(RdbFileSys); zz++)
+                          ((uint8_t *)z)[zz] = 0; }
+                    g_model.num_fs--;
+                    g_dirty = 1;
+
+                    /* Adjust selection. */
+                    if (g_model.num_fs == 0) {
+                        sel = -1;
+                        GT_SetGadgetAttrs(gDT,     dw, 0, GA_Disabled, TRUE, TAG_END);
+                        GT_SetGadgetAttrs(gPreset, dw, 0, GA_Disabled, TRUE, TAG_END);
+                        GT_SetGadgetAttrs(gRemove, dw, 0, GA_Disabled, TRUE, TAG_END);
+                    } else {
+                        if (sel >= g_model.num_fs) sel = g_model.num_fs - 1;
+                        u32_to_hex(dtBuf, g_model.fs[sel].dos_type);
+                        presetIdx = fs_preset_index(g_model.fs[sel].dos_type);
+                        GT_SetGadgetAttrs(gDT, dw, 0,
+                                          GTST_String, (ULONG)dtBuf, TAG_END);
+                        GT_SetGadgetAttrs(gPreset, dw, 0,
+                                          GTCY_Active, (ULONG)presetIdx, TAG_END);
+                    }
+                    fs_rebuild_list(sel, dw, gLV);
+
+                } else if (gid == 6) {
+                    /* Done. */
+                    done = 1;
+                }
+            }
+        }
+    }
+    dlg_close(dw, dglist);
+
+    /* Refresh the partition list in case FS assignments changed. */
+    gui_refresh_parts();
+    gui_update_buttons();
+}
+
 /* Ask for a .device file, load it, add it to the Driver cycle, and select it.
    No probe — the user presses Scan to query it. */
 static void gui_load_driver(void)
@@ -1873,7 +2214,7 @@ static void gui_load_driver(void)
 /* The disk-map bar rectangle (window-relative). Shared by draw + hit-test. */
 static void gui_bar_rect(int *bx, int *by, int *bw, int *bh)
 {
-    *bx = 16 + g_leftb; *by = 74 + g_topb; *bw = 550; *bh = 16;
+    *bx = 16 + g_leftb; *by = 92 + g_topb; *bw = 550; *bh = 16;
 }
 
 /* Return the partition index whose bar segment contains (mx,my), or -1. */
@@ -1914,12 +2255,12 @@ static void gui_draw_chrome(void)
     if (!g_win) return;
     rp = g_win->RPort;
     /* Disk panel */
-    DrawBevelBox(rp, 6 + g_leftb, 4 + g_topb, 568, 50, GT_VisualInfo, (ULONG)g_vi, TAG_END);
+    DrawBevelBox(rp, 6 + g_leftb, 4 + g_topb, 568, 68, GT_VisualInfo, (ULONG)g_vi, TAG_END);
     SetAPen(rp, 1); SetBPen(rp, 0);
     Move(rp, 16 + g_leftb, 4 + g_topb + 8); Text(rp, (CONST_STRPTR)" Disk ", 6);
-    /* Partitions panel */
-    DrawBevelBox(rp, 6 + g_leftb, 58 + g_topb, 568, 132, GT_VisualInfo, (ULONG)g_vi, TAG_END);
-    Move(rp, 16 + g_leftb, 58 + g_topb + 8); Text(rp, (CONST_STRPTR)" Partitions ", 12);
+    /* Partitions panel (shifted +18 from row-3 addition) */
+    DrawBevelBox(rp, 6 + g_leftb, 76 + g_topb, 568, 132, GT_VisualInfo, (ULONG)g_vi, TAG_END);
+    Move(rp, 16 + g_leftb, 76 + g_topb + 8); Text(rp, (CONST_STRPTR)" Partitions ", 12);
 }
 
 void gui_draw_bar(void)
@@ -1986,7 +2327,7 @@ static void gui_draw_partheader(void)
     s_cat(hdr, &p, "End");   s_pad(hdr, &p, 46);
     s_cat(hdr, &p, "Size");  hdr[p] = 0;
     lx = 16 + g_leftb + 4;               /* match the listview's text inset */
-    ly = 102 + g_topb - 2;               /* baseline just above the listview */
+    ly = 120 + g_topb - 2;               /* baseline just above the listview */
     SetAPen(rp, 1);
     Move(rp, lx, ly);
     Text(rp, (CONST_STRPTR)hdr, (LONG)p);
@@ -1997,7 +2338,7 @@ static void gui_draw_partheader(void)
 static void gui_draw_easter(void)
 {
     struct RastPort *rp;
-    int px = 571 + g_leftb, py = 209 + g_topb;   /* bottom-right corner, right of the Save button */
+    int px = 571 + g_leftb, py = 227 + g_topb;   /* bottom-right corner, right of the Save button */
     if (!g_win) return;
     rp = g_win->RPort;
     SetAPen(rp, 1);
@@ -2011,5 +2352,5 @@ static void gui_draw_easter(void)
    rect won't conflict with the Save button to its left. */
 static int gui_hit_easter(int mx, int my)
 {
-    return mx >= 568 + g_leftb && my >= 205 + g_topb;   /* clear of the Save button (ends x=566) */
+    return mx >= 568 + g_leftb && my >= 223 + g_topb;   /* clear of the Save button (ends x=566) */
 }
