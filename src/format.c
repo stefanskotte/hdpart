@@ -271,6 +271,21 @@ FmtResult format_partition(const char *driver, uint32_t unit,
         vb = cstr_to_bstr(volname && volname[0] ? volname : p->name, volbstr);
         ok = DoPkt(port, ACTION_FORMAT, (LONG)vb, (LONG)p->dos_type, 0L, 0L, 0L);
         Inhibit((STRPTR)devcolon, DOSFALSE);
+
+        /* D1 fix: remove the ephemeral node from the DosList so "HDP0:" does not
+           persist as a duplicate live mount for the rest of the session.
+           NOTE — UNVERIFIED FRESH PATH: this code has not been exercised on real
+           hardware.  RemDosEntry only removes the list entry (stops new opens of
+           "HDPn:"); it does NOT terminate the handler process that was started by
+           ADNF_STARTPROC.  A full teardown would additionally require sending
+           ACTION_DIE to the handler's port, but not all handlers implement it and
+           the risk of a hang outweighs the benefit for this one-shot tool.  The
+           handler process will exit naturally when it receives no further packets
+           and its port is forgotten (or at the next reboot). */
+        LockDosList(LDF_DEVICES | LDF_WRITE);
+        RemDosEntry((struct DosList *)dn);
+        UnLockDosList(LDF_DEVICES | LDF_WRITE);
+
         if (!ok) return FMT_ERR_FORMAT;
     }
     return FMT_OK;
