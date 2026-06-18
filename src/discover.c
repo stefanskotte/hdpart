@@ -170,6 +170,12 @@ static void probe_one(DiscDisk *d)
     DeviceInfo info;
     if (!h) { if (d->status == DST_UNKNOWN) d->status = DST_NOMEDIA; return; }
 
+    if (!dev_unit_ready(h)) {
+        if (d->status == DST_UNKNOWN) d->status = DST_NOMEDIA;
+        dev_close(h);
+        return;
+    }
+
     if (dev_geometry(h, &info) == 0 && info.has_media && info.total_blocks > 0) {
         static RdbModel m;   /* ~1.8KB: keep off the 4KB Shell stack */
         d->size_mb = disc_blocks_to_mb(info.total_blocks, info.block_bytes);

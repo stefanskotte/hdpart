@@ -34,6 +34,12 @@ int dev_write_block(DeviceHandle *h, ULONG block, UBYTE *buf512);
    nonzero if the device does not support HD_SCSICMD (model set to ""). */
 int dev_inquiry_model(DeviceHandle *h, char model[40]);
 
+/* Media-presence pre-check via TD_CHANGESTATE.
+   Returns 1 if media is present OR the device doesn't support change-state
+   (fail-safe: assume present so fixed disks are never skipped).
+   Returns 0 ONLY when change-state succeeds AND reports no disk (io_Actual != 0). */
+int dev_unit_ready(DeviceHandle *h);
+
 /* BlockIO adapter for the RDB engine (src/rdb.h). ctx must be a DeviceHandle*.
    Matches the BlockIO typedef: returns 0 on success, nonzero on I/O error. */
 int dev_block_io(void *ctx, uint32_t block, uint8_t *buf, int write);

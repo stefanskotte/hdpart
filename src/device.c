@@ -116,6 +116,17 @@ int dev_block_io(void *ctx, uint32_t block, uint8_t *buf, int write)
                  : dev_read_block (h, block, (UBYTE *)buf);
 }
 
+int dev_unit_ready(DeviceHandle *h)
+{
+    LONG err;
+    if (!h || !h->req) return 1;                 /* fail-safe: assume present */
+    h->req->iotd_Req.io_Command = TD_CHANGESTATE;
+    h->req->iotd_Req.io_Actual  = 0;
+    err = DoIO((struct IORequest *)h->req);
+    if (err != 0) return 1;                      /* unsupported/error -> assume present */
+    return h->req->iotd_Req.io_Actual ? 0 : 1;  /* io_Actual != 0 => no disk */
+}
+
 /* Standard SCSI INQUIRY (6-byte CDB), 36-byte response.
    Response: bytes 8..15 = vendor id, 16..31 = product id (space padded). */
 int dev_inquiry_model(DeviceHandle *h, char model[40])
