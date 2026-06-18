@@ -90,10 +90,22 @@ void rdb_init_model(RdbModel *m, uint32_t cyl, uint32_t heads, uint32_t sectors)
     m->sectors     = sectors;
     m->block_bytes = RDB_BLOCK_BYTES;
     m->cyl_blocks  = heads * sectors;
-    m->lo_cyl      = RDB_RESERVED_CYLS;
     m->hi_cyl      = (cyl > 0) ? cyl - 1 : 0;
     m->rdb_blocks_lo = 0;
-    m->rdb_blocks_hi = RDB_RESERVED_CYLS * m->cyl_blocks - 1;
+    {
+        uint32_t rc = RDB_RESERVED_CYLS;              /* classic: cyl 0..1 */
+        if (m->cyl_blocks != 0) {
+            /* grow reserve so it holds >= RDB_RESERVED_MIN_BLOCKS metadata blocks */
+            uint32_t need = (RDB_RESERVED_MIN_BLOCKS + m->cyl_blocks - 1u) / m->cyl_blocks; /* ceil cyls */
+            if (need > rc) rc = need;
+            /* never reserve so much that the disk has no partitionable room:
+               cap at a quarter of the disk (but never below RDB_RESERVED_CYLS). */
+            if (cyl > 8u) { uint32_t cap = cyl / 4u; if (rc > cap) rc = cap; }
+            if (rc < RDB_RESERVED_CYLS) rc = RDB_RESERVED_CYLS;
+        }
+        m->lo_cyl       = rc;
+        m->rdb_blocks_hi = rc * m->cyl_blocks - 1u;
+    }
     m->num_parts   = 0;
 }
 

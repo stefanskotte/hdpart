@@ -66,7 +66,8 @@ typedef struct {
     int          num_fs;
 } RdbModel;
 
-#define RDB_RESERVED_CYLS 2u     /* cylinders reserved for RDB metadata */
+#define RDB_RESERVED_CYLS 2u          /* cylinders reserved for RDB metadata */
+#define RDB_RESERVED_MIN_BLOCKS 1024u /* reserve >= this many metadata blocks (table + ~512KB embedded FS) */
 #define RDB_DOSTYPE_FFS_INTL 0x444F5303u
 #define RDB_DEFAULT_MAXTRANSFER 0x7FFFFFFFu  /* DOSEnvVec de_MaxTransfer default */
 #define RDB_DEFAULT_MASK        0x7FFFFFFEu  /* DOSEnvVec de_Mask default */

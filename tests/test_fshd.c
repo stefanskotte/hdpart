@@ -248,6 +248,56 @@ static void test_is_hunk_file(void)
     CHECK(fsl_err_text(FSL_ENOTLOADFILE) != 0);
 }
 
+/* ---- Adaptive RDB reserve tests ---- */
+
+/* Real geometry (16h x 63s = 1008 blocks/cyl): 2 cyls = 2016 blocks >= 1024,
+   so the floor is not engaged and lo_cyl stays at RDB_RESERVED_CYLS (2). */
+static void test_reserve_real_geometry(void)
+{
+    RdbModel m;
+    rdb_init_model(&m, 1000, 16, 63);
+    CHECK(m.cyl_blocks == 1008u);
+    CHECK(m.lo_cyl == RDB_RESERVED_CYLS);                /* 2: unchanged */
+    CHECK(m.rdb_blocks_hi == 2u * 1008u - 1u);           /* 2015 */
+}
+
+/* Small geometry (1h x 32s = 32 blocks/cyl): floor kicks in.
+   ceil(1024/32)=32 reserved cylinders.  A 58000-byte FS should now fit. */
+static void test_reserve_small_geometry(void)
+{
+    RamDisk *d = (RamDisk *)calloc(1, sizeof *d);
+    RdbModel m;
+    rdb_init_model(&m, 9600, 1, 32);
+    CHECK(m.cyl_blocks == 32u);
+    /* Reserved area must hold >= RDB_RESERVED_MIN_BLOCKS metadata blocks. */
+    CHECK((m.rdb_blocks_hi + 1u) >= RDB_RESERVED_MIN_BLOCKS);
+    /* lo_cyl must be ceil(1024/32) = 32. */
+    CHECK(m.lo_cyl == 32u);
+
+    /* A ~58000-byte FS that previously caused RDB_ERR_NO_RDB_SPACE must now fit. */
+    CHECK(rdb_add_partition(&m, "DH0", 1, RDB_DOSTYPE_FFS_INTL) >= 0);
+    m.num_fs = 1;
+    m.fs[0].dos_type = 0x50465303u;  /* PFS\3 */
+    m.fs[0].seg_len  = 58000;
+    m.fs[0].seg_data = fake_seg(58000);
+    CHECK(rdb_serialize(&m, ram_io, d) == RDB_OK);   /* was RDB_ERR_NO_RDB_SPACE before fix */
+    free(m.fs[0].seg_data);
+    free(d);
+}
+
+/* Tiny disk (50 cyl, 4h x 4s = 16 blocks/cyl): clamp must prevent reserving
+   more than cyl/4 cylinders so the disk retains partitionable room. */
+static void test_reserve_tiny_disk_clamp(void)
+{
+    RdbModel m;
+    rdb_init_model(&m, 50, 4, 4);
+    CHECK(m.cyl_blocks == 16u);
+    /* Clamp: lo_cyl must not exceed 50/4 = 12. */
+    CHECK(m.lo_cyl <= 50u / 4u);
+    /* Disk must have at least one partitionable cylinder above the reserve. */
+    CHECK(m.lo_cyl < m.hi_cyl);
+}
+
 int main(void)
 {
     test_lseg_block_count();
@@ -259,6 +309,9 @@ int main(void)
     test_lseg_bad_checksum_rejected();
     test_pbff_nomount_roundtrip();
     test_is_hunk_file();
+    test_reserve_real_geometry();
+    test_reserve_small_geometry();
+    test_reserve_tiny_disk_clamp();
     printf("test_fshd: %d run, %d failed\n", tests_run, tests_failed);
     return tests_failed ? 1 : 0;
 }
