@@ -5,6 +5,7 @@
 #include <proto/dos.h>
 #include <exec/memory.h>
 #include <dos/dos.h>
+#include "device.h"
 
 /* PatchFlags bit positions — from mounter.c ProcessPatchFlags() and
    devices/hardblocks.h comment (e.g. 0x180 = SegList|GlobalVec).
@@ -66,6 +67,33 @@ int fsload_from_file(const char *path, RdbFileSys *out)
       for (; fp[i] && i < RDB_NAME_LEN - 1; i++) out->name[i] = fp[i];
       out->name[i] = 0; }
 
+    return FSL_OK;
+}
+
+int fsload_from_disk(const char *driver, uint32_t unit, int which, RdbFileSys *out)
+{
+    RdbModel scratch;
+    int rc;
+    RdbFileSys *src;
+    DeviceHandle *h;
+
+    memset(&scratch, 0, sizeof scratch);
+    h = dev_open(driver, (ULONG)unit);
+    if (!h) return FSL_EOPEN;
+    rc = rdb_parse(&scratch, dev_block_io, h);
+    dev_close(h);
+    if (rc != RDB_OK) { rdb_model_free(&scratch); return FSL_ENOFS; }
+    if (scratch.num_fs <= 0 || which < 0 || which >= scratch.num_fs) {
+        rdb_model_free(&scratch); return FSL_ENOFS;
+    }
+    src = &scratch.fs[which];
+    memset(out, 0, sizeof *out);
+    *out = *src;                        /* shallow copy: scalars + name */
+    out->seg_data = (uint8_t *)rdb_seg_alloc(src->seg_len ? src->seg_len : 1);
+    if (!out->seg_data) { rdb_model_free(&scratch); return FSL_ENOMEM; }
+    memcpy(out->seg_data, src->seg_data, src->seg_len);
+    out->source = RDB_FS_COPIED;
+    rdb_model_free(&scratch);           /* frees scratch's own seg_data; out->seg_data is safe */
     return FSL_OK;
 }
 #endif /* HDPART_AMIGA */
