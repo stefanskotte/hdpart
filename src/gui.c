@@ -548,6 +548,7 @@ static void gui_init_disk(void)
         "Replace the in-memory partition table with a\nfresh empty one for this disk?\n"
         "(Nothing is written until you press Save.)"))
         return;
+    rdb_model_free(&g_model);
     rdb_init_model(&g_model, g_geo.cylinders, g_geo.heads, g_geo.sectors);
     g_have_model = 1;
     g_dirty = 1;
@@ -662,10 +663,11 @@ static int gui_edit_dialog(int index)
     static char nameBuf[32];
     static char sizeMaxLabel[24];
     static char maxtBuf[12], maskBuf[12];
-    static const char *fsLabels[4];
+    static const char *fsLabels[4 + RDB_MAX_FS];   /* FFS,OFS,[pool*8],[keep],NULL */
+    static int fsPoolIdx[4 + RDB_MAX_FS];
     static char fsKeep[12];
     int maxtIdx, maskIdx;
-    int fsRom, fsActive, fsIdx, fsKeepIdx, v39;
+    int fsRom, fsActive, fsIdx, fsKeepIdx, fsPoolBase, v39;
     uint32_t startCyl = pt->low_cyl;
     uint32_t maxEndExclusive;   /* first cylinder not available to this part */
     uint32_t maxCyls, maxMB, curMB;
@@ -700,14 +702,39 @@ static int gui_edit_dialog(int index)
        DirCache is KS3.0+ (exec V39). */
     v39   = (SysBase->LibNode.lib_Version >= 39);
     fsRom = ((pt->dos_type & 0xFFFFFF00u) == 0x444F5300u) && ((pt->dos_type & 0xFFu) <= 7);
-    { int n = 0;
+    { int n = 0, kk;
       fsLabels[n++] = "FFS";
       fsLabels[n++] = "OFS";
-      if (!fsRom) { dostype_label(fsKeep, pt->dos_type); fsKeepIdx = n; fsLabels[n++] = fsKeep; }
-      else fsKeepIdx = -1;
+      /* Pool entries from the embedded-FS model (PFS3, SFS, etc.) */
+      fsPoolBase = n;
+      for (kk = 0; kk < g_model.num_fs && n < (int)(sizeof fsLabels / sizeof fsLabels[0]) - 2; kk++) {
+          fsLabels[n] = g_model.fs[kk].name;
+          fsPoolIdx[n] = kk;
+          n++;
+      }
+      /* keep entry: only if not a ROM DOS\x AND not already in pool */
+      if (!fsRom) {
+          int inPool = 0, kn;
+          for (kn = fsPoolBase; kn < n; kn++) {
+              if (g_model.fs[fsPoolIdx[kn]].dos_type == pt->dos_type) { inPool = 1; break; }
+          }
+          if (!inPool) { dostype_label(fsKeep, pt->dos_type); fsKeepIdx = n; fsLabels[n++] = fsKeep; }
+          else fsKeepIdx = -1;
+      } else { fsKeepIdx = -1; }
       fsLabels[n] = 0; }
-    fsActive = !fsRom ? fsKeepIdx : ((pt->dos_type & 1u) ? 0 : 1);   /* FFS=0, OFS=1 */
-    fsIdx    = fsActive;
+    /* Initial selection: prefer pool match, then ROM FFS/OFS, then keep */
+    { int kn, matched = 0;
+      for (kn = fsPoolBase; kn < fsPoolBase + g_model.num_fs; kn++) {
+          if (g_model.fs[fsPoolIdx[kn]].dos_type == pt->dos_type) {
+              fsActive = kn; matched = 1; break;
+          }
+      }
+      if (!matched) {
+          if (fsRom) fsActive = (pt->dos_type & 1u) ? 0 : 1;  /* FFS=0, OFS=1 */
+          else       fsActive = fsKeepIdx;                     /* keep entry */
+      }
+    }
+    fsIdx = fsActive;
 
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wincompatible-pointer-types"
@@ -742,16 +769,18 @@ static int gui_edit_dialog(int index)
 
     ng.ng_LeftEdge = dl + 236; ng.ng_TopEdge = dt + 48; ng.ng_Width = 26; ng.ng_Height = 11;
     ng.ng_GadgetText = (UBYTE *)"Intl"; ng.ng_GadgetID = 14;
-    g = CreateGadget(CHECKBOX_KIND, g, &ng,
-                     GTCB_Checked, (ULONG)((fsRom && (pt->dos_type & 2u)) ? TRUE : FALSE),
-                     GA_Disabled,  (ULONG)(!fsRom), TAG_END);
+    { int ckDis = !fsRom || (fsActive >= fsPoolBase);
+      g = CreateGadget(CHECKBOX_KIND, g, &ng,
+                       GTCB_Checked, (ULONG)((fsRom && (pt->dos_type & 2u)) ? TRUE : FALSE),
+                       GA_Disabled,  (ULONG)ckDis, TAG_END); }
     gIntl = g;
 
     ng.ng_LeftEdge = dl + 320; ng.ng_TopEdge = dt + 48; ng.ng_Width = 26; ng.ng_Height = 11;
     ng.ng_GadgetText = (UBYTE *)"Cache"; ng.ng_GadgetID = 15;
-    g = CreateGadget(CHECKBOX_KIND, g, &ng,
-                     GTCB_Checked, (ULONG)((fsRom && v39 && (pt->dos_type & 4u)) ? TRUE : FALSE),
-                     GA_Disabled,  (ULONG)(!fsRom || !v39), TAG_END);
+    { int ckDis = !fsRom || !v39 || (fsActive >= fsPoolBase);
+      g = CreateGadget(CHECKBOX_KIND, g, &ng,
+                       GTCB_Checked, (ULONG)((fsRom && v39 && (pt->dos_type & 4u)) ? TRUE : FALSE),
+                       GA_Disabled,  (ULONG)ckDis, TAG_END); }
     gCache = g;
 
     /* Bootable (checkbox) + Boot Pri (integer) share a row. */
@@ -825,9 +854,10 @@ static int gui_edit_dialog(int index)
                     preset_apply(dw, gMask, gMaskHelp, (int)code, kMaskValues, N_MASK, kMaskHelp);
                 } else if (ig == gFsCyc) {
                     int keep = (fsKeepIdx >= 0 && (int)code == fsKeepIdx);
+                    int pool = (!keep && (int)code >= fsPoolBase);
                     fsIdx = (int)code;
-                    GT_SetGadgetAttrs(gIntl,  dw, 0, GA_Disabled, (ULONG)keep, TAG_END);
-                    GT_SetGadgetAttrs(gCache, dw, 0, GA_Disabled, (ULONG)(keep || !v39), TAG_END);
+                    GT_SetGadgetAttrs(gIntl,  dw, 0, GA_Disabled, (ULONG)(keep || pool), TAG_END);
+                    GT_SetGadgetAttrs(gCache, dw, 0, GA_Disabled, (ULONG)(keep || pool || !v39), TAG_END);
                 } else if (ig == gSize) {
                     /* clamp the typed size to [1, maxMB] */
                     LONG v = ((struct StringInfo *)gSize->SpecialInfo)->LongInt;
@@ -849,6 +879,8 @@ static int gui_edit_dialog(int index)
                         uint32_t fdt;
                         if (fsKeepIdx >= 0 && fsIdx == fsKeepIdx) {
                             fdt = pt->dos_type;
+                        } else if (fsIdx >= fsPoolBase && (fsKeepIdx < 0 || fsIdx < fsKeepIdx)) {
+                            fdt = g_model.fs[fsPoolIdx[fsIdx]].dos_type;  /* embedded FS */
                         } else {
                             fdt = 0x444F5300u;
                             if (fsIdx == 0)                            fdt |= 1u;  /* FFS */
@@ -1313,6 +1345,7 @@ static void gui_split(void)
     /* Additive: split the free gap, keeping existing partitions. On a blank disk,
        create the empty table first (the gap is the whole partitionable range). */
     if (!g_have_model) {
+        rdb_model_free(&g_model);
         rdb_init_model(&g_model, g_geo.cylinders, g_geo.heads, g_geo.sectors);
         g_have_model = 1;
     }
@@ -1597,6 +1630,7 @@ cleanup_scr:
 cleanup_libs:
     if (g_sfont) { CloseFont(g_sfont); g_sfont = 0; }   /* before GfxBase */
     if (AslBase) { CloseLibrary(AslBase); AslBase = 0; }
+    rdb_model_free(&g_model);
     CloseLibrary((struct Library *)GfxBase);
     CloseLibrary(GadToolsBase);
     return 0;
@@ -1707,6 +1741,7 @@ static void gui_select_unit(int uidx)
     h = dev_open(d->driver, d->unit);
     if (h) {
         dev_geometry(h, &g_geo);
+        rdb_model_free(&g_model);
         if (rdb_parse(&g_model, dev_block_io, h) == RDB_OK) g_have_model = 1;
         dev_close(h);
     }
