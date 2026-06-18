@@ -145,6 +145,32 @@ static void test_preserve_on_resave(void)
     free(m.fs[0].seg_data); free(d); free(d2);
 }
 
+static void test_lseg_bad_checksum_rejected(void)
+{
+    RamDisk *d = (RamDisk *)calloc(1, sizeof *d);
+    RdbModel m; memset(&m, 0, sizeof m);
+    rdb_init_model(&m, 100, 16, 63);
+    CHECK(rdb_add_partition(&m, "DH0", 20, RDB_DOSTYPE_FFS_INTL) == RDB_OK);
+    m.num_fs = 1; m.fs[0].dos_type = 0x50465303u; m.fs[0].seg_len = 600;
+    m.fs[0].seg_data = fake_seg(600);
+    CHECK(rdb_serialize(&m, ram_io, d) == RDB_OK);
+    /* find first LSEG block and corrupt a payload byte without fixing checksum */
+    { uint8_t blk[512]; uint32_t fshd, lseg;
+      ram_io(d, 0, blk, 0);
+      fshd = (blk[32]<<24)|(blk[33]<<16)|(blk[34]<<8)|blk[35];
+      ram_io(d, fshd, blk, 0);
+      lseg = (blk[72]<<24)|(blk[73]<<16)|(blk[74]<<8)|blk[75]; /* FSHD_o_SegList=72 */
+      ram_io(d, lseg, blk, 0);
+      blk[20] ^= 0xFF;            /* LSEG_o_LoadData=20: flip a byte, leave chksum stale */
+      ram_io(d, lseg, blk, 1);
+    }
+    RdbModel r; memset(&r, 0, sizeof r);
+    rdb_parse(&r, ram_io, d);
+    CHECK(r.num_fs == 0);          /* corrupt LSEG -> FS rejected, not silently copied */
+    rdb_model_free(&r);
+    free(m.fs[0].seg_data); free(d);
+}
+
 int main(void)
 {
     test_lseg_block_count();
@@ -153,6 +179,7 @@ int main(void)
     test_capacity_guard();
     test_roundtrip();
     test_preserve_on_resave();
+    test_lseg_bad_checksum_rejected();
     printf("test_fshd: %d run, %d failed\n", tests_run, tests_failed);
     return tests_failed ? 1 : 0;
 }

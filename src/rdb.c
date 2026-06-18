@@ -704,29 +704,35 @@ static int read_fshd_chain(RdbModel *m, BlockIO io, void *ctx, uint32_t fshd_blk
         fs->source       = RDB_FS_EMBEDDED;
         dostype_name(fs->name, fs->dos_type);   /* readable default name */
 
-        /* First pass: count LSEG payload bytes. */
+        /* First pass: count LSEG payload bytes; reject on bad ID or checksum. */
         seg_blk = be_get32(blk + FSHD_o_SegList);
-        { uint32_t b = seg_blk; int g = 0;
+        { uint32_t b = seg_blk; int g = 0; int lseg_ok = 1;
           while (b != NULLPTR && b != 0 && ++g < 4096) {
             uint8_t lb[512];
             if (io(ctx, b, lb, 0)) return RDB_ERR_IO;
-            if (be_get32(lb + 0) != ID_LSEG) break;
+            if (be_get32(lb + 0) != ID_LSEG ||
+                !rdb_checksum_ok(lb, be_get32(lb + 4))) { lseg_ok = 0; break; }
             seg_len += LSEG_PAYLOAD;
             b = be_get32(lb + LSEG_o_Next);
-          } }
+          }
+          if (!lseg_ok) { fshd_blk = be_get32(blk + FSHD_o_Next); continue; } }
         cap = seg_len;
         fs->seg_data = (uint8_t *)rdb_alloc_sized(cap ? cap : 1);
         if (!fs->seg_data) return RDB_ERR_IO;
-        /* Second pass: copy payloads. */
-        { uint32_t b = seg_blk;
+        /* Second pass: copy payloads; reject on bad ID or checksum (free + skip). */
+        { uint32_t b = seg_blk; int lseg_ok = 1;
           while (b != NULLPTR && b != 0 && ++sguard < 4096 && off < cap) {
             uint8_t lb[512];
-            if (io(ctx, b, lb, 0)) return RDB_ERR_IO;
-            if (be_get32(lb + 0) != ID_LSEG) break;
+            if (io(ctx, b, lb, 0)) { rdb_free_sized(fs->seg_data); fs->seg_data = 0;
+                                     return RDB_ERR_IO; }
+            if (be_get32(lb + 0) != ID_LSEG ||
+                !rdb_checksum_ok(lb, be_get32(lb + 4))) { lseg_ok = 0; break; }
             memcpy(fs->seg_data + off, lb + LSEG_o_LoadData, LSEG_PAYLOAD);
             off += LSEG_PAYLOAD;
             b = be_get32(lb + LSEG_o_Next);
-          } }
+          }
+          if (!lseg_ok) { rdb_free_sized(fs->seg_data); fs->seg_data = 0;
+                          fshd_blk = be_get32(blk + FSHD_o_Next); continue; } }
         fs->seg_len = off;
         m->num_fs++;
         fshd_blk = be_get32(blk + FSHD_o_Next);
