@@ -1903,6 +1903,111 @@ static void fs_rebuild_list(int sel, struct Window *dw, struct Gadget *glv)
                           TAG_END);
 }
 
+/* Sub-picker for "Copy from disk": Driver cycle + Unit cycle (0..7) + OK/Cancel.
+   Collects driver name (into drvOut[40]) and unit number (into *unitOut).
+   Returns 1 if the user pressed OK, 0 if cancelled/closed.
+   Multi-FS source (which > 0) is out of scope; caller always uses which=0. */
+static int gui_copy_from_disk_picker(char drvOut[40], uint32_t *unitOut)
+{
+    /* Local driver labels built from disc_candidate_drivers (same as gui_build_drivers
+       but in local arrays so this picker is self-contained). */
+    static const char *plabels[DISC_MAX + 2];
+    static const char *ulabels[9];  /* "0".."7" + NULL */
+    static char       unumbufs[8][4];
+    const char *cands[DISC_MAX];
+    int nc, i;
+    struct Window *pw;
+    struct Gadget *pglist = 0, *pg;
+    struct Gadget *gDrv = 0, *gUnit = 0;
+    struct NewGadget ng;
+    int dt = g_topb, dl = g_leftb;
+    int pdone = 0, presult = 0;
+    int drvIdx = 0, unitIdx = 0;
+
+    /* Build driver list. */
+    nc = disc_candidate_drivers(cands, DISC_MAX);
+    if (nc <= 0) {
+        gui_msg("Filesystems", "No disk drivers found.\nLoad a driver first.");
+        return 0;
+    }
+    for (i = 0; i < nc && i < DISC_MAX; i++) plabels[i] = cands[i];
+    plabels[nc] = 0;
+
+    /* Build unit labels 0..7. */
+    for (i = 0; i < 8; i++) {
+        unumbufs[i][0] = (char)('0' + i);
+        unumbufs[i][1] = 0;
+        ulabels[i] = unumbufs[i];
+    }
+    ulabels[8] = 0;
+
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wincompatible-pointer-types"
+    pg = CreateContext(&pglist);
+#pragma GCC diagnostic pop
+    if (!pg) return 0;
+    ng.ng_TextAttr = &g_font; ng.ng_VisualInfo = g_vi; ng.ng_Flags = 0;
+
+    /* Driver cycle */
+    ng.ng_LeftEdge = dl + 80; ng.ng_TopEdge = dt + 6; ng.ng_Width = 220; ng.ng_Height = 14;
+    ng.ng_GadgetText = (UBYTE *)"Driver"; ng.ng_GadgetID = 1;
+    pg = CreateGadget(CYCLE_KIND, pg, &ng, GTCY_Labels, (ULONG)plabels, GTCY_Active, 0, TAG_END);
+    gDrv = pg;
+
+    /* Unit cycle (0..7) */
+    ng.ng_LeftEdge = dl + 80; ng.ng_TopEdge = dt + 26; ng.ng_Width = 80; ng.ng_Height = 14;
+    ng.ng_GadgetText = (UBYTE *)"Unit"; ng.ng_GadgetID = 2;
+    pg = CreateGadget(CYCLE_KIND, pg, &ng, GTCY_Labels, (ULONG)ulabels, GTCY_Active, 0, TAG_END);
+    gUnit = pg;
+
+    /* OK / Cancel */
+    ng.ng_LeftEdge = dl + 10; ng.ng_TopEdge = dt + 48; ng.ng_Width = 70; ng.ng_Height = 14;
+    ng.ng_GadgetText = (UBYTE *)"OK"; ng.ng_GadgetID = 10;
+    pg = CreateGadget(BUTTON_KIND, pg, &ng, TAG_END);
+    ng.ng_LeftEdge = dl + 230; ng.ng_GadgetText = (UBYTE *)"Cancel"; ng.ng_GadgetID = 11;
+    pg = CreateGadget(BUTTON_KIND, pg, &ng, TAG_END);
+    if (!pg) { FreeGadgets(pglist); return 0; }
+
+    {   int pwW = dl + 320 + g_scr->WBorRight;
+        int pwH = dt + 70 + g_scr->WBorBottom;
+        int pwL = 0, pwT = 0;
+        dlg_center(pwW, pwH, &pwL, &pwT);
+        pw = dlg_open("Copy FS from disk", pwL, pwT, pwW, pwH,
+                      BUTTONIDCMP | CYCLEIDCMP, pglist);
+    }
+    if (!pw) { FreeGadgets(pglist); return 0; }
+    GT_RefreshWindow(pw, 0);
+
+    while (!pdone) {
+        struct IntuiMessage *im;
+        WaitPort(pw->UserPort);
+        while ((im = GT_GetIMsg(pw->UserPort)) != 0) {
+            ULONG cl = im->Class;
+            struct Gadget *ig = (struct Gadget *)im->IAddress;
+            UWORD code = im->Code;
+            GT_ReplyIMsg(im);
+            if (cl == IDCMP_CLOSEWINDOW) { pdone = 1; }
+            else if (cl == IDCMP_REFRESHWINDOW) { dlg_refresh(pw); }
+            else if (cl == IDCMP_GADGETUP) {
+                if (ig == gDrv)       drvIdx  = (int)code;
+                else if (ig == gUnit) unitIdx = (int)code;
+                else if (ig->GadgetID == 10) { presult = 1; pdone = 1; } /* OK */
+                else if (ig->GadgetID == 11) { pdone = 1; }              /* Cancel */
+            }
+        }
+    }
+    dlg_close(pw, pglist);
+
+    if (presult) {
+        /* Copy the selected driver name into stable caller buffer. */
+        const char *src = plabels[drvIdx];
+        int k; for (k = 0; k < 39 && src[k]; k++) drvOut[k] = src[k];
+        drvOut[k] = 0;
+        *unitOut = (uint32_t)unitIdx;
+    }
+    return presult;
+}
+
 static void gui_filesystems(void)
 {
     struct Window *dw;
@@ -1968,20 +2073,26 @@ static void gui_filesystems(void)
     g = CreateGadget(BUTTON_KIND, g, &ng,
                      GA_Disabled, (ULONG)(AslBase == 0), TAG_END);
 
+    /* Copy from disk button — copies the first embedded FS (which=0) from another
+       disk's RDB into this model.  Multi-FS source (which>0) is out of scope. */
+    ng.ng_LeftEdge = dl + 130; ng.ng_TopEdge = dt + 138; ng.ng_Width = 120; ng.ng_Height = 14;
+    ng.ng_GadgetText = (UBYTE *)"Copy from disk..."; ng.ng_GadgetID = 7;
+    g = CreateGadget(BUTTON_KIND, g, &ng, TAG_END);
+
     /* Remove button */
-    ng.ng_LeftEdge = dl + 130; ng.ng_TopEdge = dt + 138; ng.ng_Width = 80; ng.ng_Height = 14;
+    ng.ng_LeftEdge = dl + 260; ng.ng_TopEdge = dt + 138; ng.ng_Width = 80; ng.ng_Height = 14;
     ng.ng_GadgetText = (UBYTE *)"Remove"; ng.ng_GadgetID = 5;
     g = CreateGadget(BUTTON_KIND, g, &ng,
                      GA_Disabled, (ULONG)(sel < 0), TAG_END);
     gRemove = g;
 
     /* Done button */
-    ng.ng_LeftEdge = dl + 340; ng.ng_TopEdge = dt + 138; ng.ng_Width = 90; ng.ng_Height = 14;
+    ng.ng_LeftEdge = dl + 350; ng.ng_TopEdge = dt + 138; ng.ng_Width = 90; ng.ng_Height = 14;
     ng.ng_GadgetText = (UBYTE *)"Done"; ng.ng_GadgetID = 6;
     g = CreateGadget(BUTTON_KIND, g, &ng, TAG_END);
     if (!g) { FreeGadgets(dglist); return; }
 
-    {   int dwW = dl + 440 + g_scr->WBorRight;
+    {   int dwW = dl + 450 + g_scr->WBorRight;
         int dwH = dt + 160 + g_scr->WBorBottom;
         int dwL = 0, dwT = 0;
         dlg_center(dwW, dwH, &dwL, &dwT);
@@ -2088,6 +2199,37 @@ static void gui_filesystems(void)
                     FreeAslRequest(fr);
 
                     rc = fsload_from_file(fspath, &g_model.fs[g_model.num_fs]);
+                    if (rc != FSL_OK) {
+                        gui_msg("Filesystems", fsl_err_text(rc));
+                    } else {
+                        sel = g_model.num_fs;
+                        g_model.num_fs++;
+                        g_dirty = 1;
+                        u32_to_hex(dtBuf, g_model.fs[sel].dos_type);
+                        presetIdx = fs_preset_index(g_model.fs[sel].dos_type);
+                        fs_rebuild_list(sel, dw, gLV);
+                        GT_SetGadgetAttrs(gDT, dw, 0,
+                                          GTST_String, (ULONG)dtBuf,
+                                          GA_Disabled, FALSE, TAG_END);
+                        GT_SetGadgetAttrs(gPreset, dw, 0,
+                                          GTCY_Active, (ULONG)presetIdx,
+                                          GA_Disabled, FALSE, TAG_END);
+                        GT_SetGadgetAttrs(gRemove, dw, 0, GA_Disabled, FALSE, TAG_END);
+                    }
+
+                } else if (gid == 7) {
+                    /* Copy from disk: open sub-picker, call fsload_from_disk. */
+                    char srcDrv[40];
+                    uint32_t srcUnit;
+                    int rc;
+
+                    if (g_model.num_fs >= RDB_MAX_FS) {
+                        gui_msg("Filesystems", fsl_err_text(FSL_EFULL));
+                        break;
+                    }
+                    if (!gui_copy_from_disk_picker(srcDrv, &srcUnit)) break; /* cancelled */
+
+                    rc = fsload_from_disk(srcDrv, srcUnit, 0, &g_model.fs[g_model.num_fs]);
                     if (rc != FSL_OK) {
                         gui_msg("Filesystems", fsl_err_text(rc));
                     } else {
