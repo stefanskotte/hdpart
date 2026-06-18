@@ -4,7 +4,7 @@ set -e
 cd "$(dirname "$0")/.."
 cc -std=c99 -Wall -Wextra -g -o /tmp/hdpart_tests tests/test_rdb.c src/rdb.c
 /tmp/hdpart_tests
-cc -std=c99 -Wall -Wextra -g -o /tmp/hdpart_fshd tests/test_fshd.c src/rdb.c
+cc -std=c99 -Wall -Wextra -g -o /tmp/hdpart_fshd tests/test_fshd.c src/rdb.c src/fsload.c
 /tmp/hdpart_fshd
 cc -std=c99 -Wall -Wextra -g -o /tmp/hdpart_disc tests/test_discover.c src/discover.c
 /tmp/hdpart_disc

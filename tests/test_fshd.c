@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "../src/rdb.h"
+#include "../src/fsload.h"
 
 static int tests_run, tests_failed;
 #define CHECK(c) do { tests_run++; if(!(c)){ tests_failed++; \
@@ -237,6 +238,16 @@ static void test_pbff_nomount_roundtrip(void)
     free(d); free(d2); free(d3);
 }
 
+static void test_is_hunk_file(void)
+{
+    uint8_t good[8] = {0x00,0x00,0x03,0xF3, 0,0,0,0};
+    uint8_t bad[8]  = {0xDE,0xAD,0xBE,0xEF, 0,0,0,0};
+    CHECK(fsload_is_hunk_file(good, 8) == 1);
+    CHECK(fsload_is_hunk_file(bad, 8) == 0);
+    CHECK(fsload_is_hunk_file(good, 3) == 0);   /* too short */
+    CHECK(fsl_err_text(FSL_ENOTLOADFILE) != 0);
+}
+
 int main(void)
 {
     test_lseg_block_count();
@@ -247,6 +258,7 @@ int main(void)
     test_preserve_on_resave();
     test_lseg_bad_checksum_rejected();
     test_pbff_nomount_roundtrip();
+    test_is_hunk_file();
     printf("test_fshd: %d run, %d failed\n", tests_run, tests_failed);
     return tests_failed ? 1 : 0;
 }
