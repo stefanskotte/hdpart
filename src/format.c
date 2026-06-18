@@ -143,6 +143,8 @@ static int bind_handler(struct DeviceNode *dn, ULONG dos_type)
             dn->dn_GlobalVec = (BPTR)gv;
             if (stack > 0) dn->dn_StackSize = stack;
             if (pri   > 0) dn->dn_Priority  = pri;
+            if (dn->dn_StackSize == 0) dn->dn_StackSize = 4096;
+            if (dn->dn_Priority  == 0) dn->dn_Priority  = 10;
             return 1;
         }
     }
