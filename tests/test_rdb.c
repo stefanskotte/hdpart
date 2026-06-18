@@ -351,6 +351,72 @@ static void test_split_range(void)
       CHECK(rdb_split_range(&s, 2, 4, 4, RDB_DOSTYPE_FFS_INTL) != RDB_OK); } /* 4 > span 3 */
 }
 
+/* B2: honor de_TableSize when reading DosEnvec (mounter finding B2).
+ * Serialize a normal disk, then overwrite the PART block in RAM:
+ *   - de_TableSize (env index 0, byte offset 128) set to 11
+ *     => DE_NumBuffers(11) is the last valid index; DE_MaxTransfer(13),
+ *        DE_Mask(14), DE_BootPri(15), DE_DosType(16) are all BEYOND the table.
+ *   - Write 0xDEADBEEF into those four beyond-table slots.
+ * Then fix the PART block checksum and re-parse.
+ * Expected: rdb_parse uses safe defaults for all beyond-table fields:
+ *   dos_type=RDB_DOSTYPE_FFS_INTL, maxtransfer=RDB_DEFAULT_MAXTRANSFER,
+ *   mask=RDB_DEFAULT_MASK, boot_pri=0.
+ * Normal parse path (de_TableSize=16) must still read the real values. */
+static void test_short_table_size(void)
+{
+    /* PART block structure constants (must match rdb.c internals): */
+#define TEST_PART_o_Environment 128
+#define TEST_PART_o_ChkSum       8
+#define TEST_PART_SUMMEDLONGS   64u
+    /* DosEnvec byte offsets within block = PART_o_Environment + index*4 */
+#define TEST_env_off(idx) (TEST_PART_o_Environment + (idx) * 4)
+
+    RdbModel m, back;
+    uint8_t *part_blk;   /* g_ram[1] is the first PART block */
+    int j;
+
+    memset(g_ram, 0, sizeof(g_ram));
+    rdb_init_model(&m, 996, 16, 63);
+    CHECK(rdb_add_partition(&m, "DH0", 200, RDB_DOSTYPE_FFS_INTL) == RDB_OK);
+    CHECK(rdb_serialize(&m, ram_io, 0) == RDB_OK);
+
+    /* Sanity: normal parse works with de_TableSize=16 */
+    CHECK(rdb_parse(&back, ram_io, 0) == RDB_OK);
+    CHECK(back.parts[0].dos_type == RDB_DOSTYPE_FFS_INTL);
+    CHECK(back.parts[0].maxtransfer == RDB_DEFAULT_MAXTRANSFER);
+    CHECK(back.parts[0].mask        == RDB_DEFAULT_MASK);
+    CHECK(back.parts[0].boot_pri    == 0);
+
+    /* Mutate: shorten de_TableSize to 11 in the raw PART block (g_ram[1]),
+     * then smear 0xDEADBEEF over the now-out-of-range env slots. */
+    part_blk = g_ram[1];
+    be_put32(part_blk + TEST_env_off(0),  11u);          /* DE_TableSize = 11 */
+    be_put32(part_blk + TEST_env_off(13), 0xDEADBEEFu);  /* DE_MaxTransfer */
+    be_put32(part_blk + TEST_env_off(14), 0xDEADBEEFu);  /* DE_Mask        */
+    be_put32(part_blk + TEST_env_off(15), 0xDEADBEEFu);  /* DE_BootPri     */
+    be_put32(part_blk + TEST_env_off(16), 0xDEADBEEFu);  /* DE_DosType     */
+
+    /* Recompute PART block checksum (64 longwords summing to 0). */
+    be_put32(part_blk + TEST_PART_o_ChkSum, 0u);
+    { uint32_t sum = 0;
+      for (j = 0; j < (int)TEST_PART_SUMMEDLONGS; j++)
+          sum += be_get32(part_blk + j * 4);
+      be_put32(part_blk + TEST_PART_o_ChkSum, (uint32_t)(0u - sum)); }
+
+    /* Parse: beyond-table fields must use safe defaults, not 0xDEADBEEF. */
+    CHECK(rdb_parse(&back, ram_io, 0) == RDB_OK);
+    CHECK(back.num_parts == 1);
+    CHECK(back.parts[0].dos_type    == RDB_DOSTYPE_FFS_INTL);    /* not 0xDEADBEEF */
+    CHECK(back.parts[0].maxtransfer == RDB_DEFAULT_MAXTRANSFER); /* not 0xDEADBEEF */
+    CHECK(back.parts[0].mask        == RDB_DEFAULT_MASK);        /* not 0xDEADBEEF */
+    CHECK(back.parts[0].boot_pri    == 0);                       /* not garbage    */
+
+#undef TEST_PART_o_Environment
+#undef TEST_PART_o_ChkSum
+#undef TEST_PART_SUMMEDLONGS
+#undef TEST_env_off
+}
+
 static void test_resize_cyl(void)
 {
     RdbModel m;
@@ -486,6 +552,7 @@ int main(int argc, char **argv)
     test_part_flags();
     test_split_equal();
     test_split_range();
+    test_short_table_size();
     if (g_fail) { printf("%d CHECK(s) FAILED\n", g_fail); return 1; }
     printf("ALL TESTS PASSED\n");
     return 0;

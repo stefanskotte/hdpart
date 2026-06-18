@@ -486,6 +486,15 @@ static uint32_t env_get(const uint8_t *blk, int idx)
 {
     return be_get32(blk + PART_o_Environment + idx * 4);
 }
+/* Return env_get(blk, idx) when idx <= table_size, else dflt.
+ * Implements the mounter's "copy only (de_TableSize+1) longs" rule: a
+ * field beyond the declared table length was not written by the formatter
+ * and must not be read (the memory holds whatever was in the reserved area). */
+static uint32_t env_get_bounded(const uint8_t *blk, int idx,
+                                uint32_t table_size, uint32_t dflt)
+{
+    return ((uint32_t)idx <= table_size) ? env_get(blk, idx) : dflt;
+}
 
 static void write_partition_block(uint8_t *blk, const RdbModel *m,
                                   const RdbPartition *p, uint32_t next)
@@ -785,13 +794,18 @@ int rdb_parse(RdbModel *m, BlockIO io, void *ctx)
         for (i = 0; i < len; i++) p->name[i] = (char)blk[PART_o_DriveName + 1 + i];
         p->name[len] = 0;
 
-        p->low_cyl     = env_get(blk, DE_LowCyl);
-        p->high_cyl    = env_get(blk, DE_HighCyl);
-        p->num_buffers = env_get(blk, DE_NumBuffers);
-        p->boot_pri    = (int32_t)env_get(blk, DE_BootPri);
-        p->maxtransfer = env_get(blk, DE_MaxTransfer);
-        p->mask        = env_get(blk, DE_Mask);
-        p->dos_type    = env_get(blk, DE_DosType);
+        { uint32_t ts = env_get(blk, DE_TableSize);
+          p->low_cyl     = env_get_bounded(blk, DE_LowCyl,      ts, 0u);
+          p->high_cyl    = env_get_bounded(blk, DE_HighCyl,     ts, 0u);
+          p->num_buffers = env_get_bounded(blk, DE_NumBuffers,  ts, 0u);
+          p->boot_pri    = (int32_t)env_get_bounded(blk, DE_BootPri,
+                                                    ts, 0u);
+          p->maxtransfer = env_get_bounded(blk, DE_MaxTransfer, ts,
+                                           RDB_DEFAULT_MAXTRANSFER);
+          p->mask        = env_get_bounded(blk, DE_Mask,        ts,
+                                           RDB_DEFAULT_MASK);
+          p->dos_type    = env_get_bounded(blk, DE_DosType,     ts,
+                                           RDB_DOSTYPE_FFS_INTL); }
         p->bootable    = (be_get32(blk + PART_o_Flags) & 1u) ? 1 : 0;
 
         part_ptr = be_get32(blk + PART_o_Next);
