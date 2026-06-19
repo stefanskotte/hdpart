@@ -1758,22 +1758,35 @@ static void gui_clear_units(const char *text)
    driver. Returns the number of real units; sets a placeholder when none. */
 static int gui_build_units(const char *emptyText)
 {
-    int i, n = 0;
+    int i, n = 0, j, k;
+    int sel[DISC_MAX];
+    /* Collect the disks belonging to the current driver. */
     for (i = 0; i < g_ndisks && n < DISC_MAX; i++) {
         DiscDisk *d = &g_disks[i];
-        char *t = g_unittext[n];
-        int p = 0;
         if (!d->partitionable || !streq(d->driver, g_target_driver)) continue;
-        /* "Unit <n> (<size> MB)" */
+        sel[n++] = i;
+    }
+    /* Sort by unit number ascending (selection sort; n <= 32) so the Unit cycle
+       reads 0,1,2,... rather than discovery order. */
+    for (j = 0; j < n - 1; j++) {
+        k = j;
+        for (i = j + 1; i < n; i++)
+            if (g_disks[sel[i]].unit < g_disks[sel[k]].unit) k = i;
+        if (k != j) { int tmp = sel[j]; sel[j] = sel[k]; sel[k] = tmp; }
+    }
+    /* Build labels in sorted order. */
+    for (j = 0; j < n; j++) {
+        DiscDisk *d = &g_disks[sel[j]];
+        char *t = g_unittext[j];
+        int p = 0;
         s_cat(t, &p, "Unit ");
         p += u2s(t + p, (ULONG)d->unit);
         s_cat(t, &p, " (");
         p += u2s(t + p, (ULONG)d->size_mb);
         s_cat(t, &p, " MB)");
         t[p] = 0;
-        g_unitmap[n] = i;
-        g_unitlabels[n] = t;
-        n++;
+        g_unitmap[j] = sel[j];
+        g_unitlabels[j] = t;
     }
     g_nunits = n;
     if (n == 0) { g_unitlabels[0] = emptyText; g_unitmap[0] = -1; g_unitlabels[1] = 0; }

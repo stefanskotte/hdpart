@@ -342,30 +342,61 @@ FmtResult format_partition(const char *driver, uint32_t unit,
         if (safety_partition_mounted(driver, unit, p->low_cyl, p->high_cyl, livename)) {
             struct MsgPort *port;
             BPTR vb; LONG ok; int kk;
+            ULONG livefam = 0; int havefam = 0;
             for (kk = 0; kk < 7 && livename[kk]; kk++) livecolon[kk] = livename[kk];
             livecolon[kk++] = ':'; livecolon[kk] = 0;
-            /* Reformat the EXISTING mount only if it has a live handler to talk
-               to. DeviceProc returns the handler's port, or NULL when the DOS
-               node exists with NO live handler bound (dn_SegList == 0) — e.g. an
-               UNFORMATTED embedded-FS partition: the controller created the node
-               (it shows as NDOS) but no handler process is serving it yet, so
-               there is nothing to ACTION_FORMAT. Observed on-target as
-               'seg=1 port=0'. In that case fall through to the fresh path, which
-               binds OUR handler via Strategy-3 (InternalLoadSeg the embedded
-               FSHD/LSEG) and formats via an ephemeral mount — exactly what the
-               embedded-FS support is for. The handler-less node has no process
-               touching the blocks, so an ephemeral handler over them is safe.
-               Verified on-target: PFS3 embedded -> Format writes a valid PFS\1
-               volume and the partition then auto-mounts normally. */
+            /* Find the live mount's filesystem family (the DosType its handler was
+               bound for). HDPart edits the RDB table, but the OS's live mounts
+               reflect the RDB as of the LAST BOOT — so after changing a partition's
+               FS type and Saving, the live mount can be a STALE, different FS. */
+            { struct DosList *e = LockDosList(LDF_DEVICES | LDF_READ); int g = 0;
+              while ((e = NextDosEntry(e, LDF_DEVICES | LDF_READ)) != 0 && ++g < 256) {
+                  struct DeviceNode *en = (struct DeviceNode *)e;
+                  UBYTE *bn; int j, match = 1;
+                  if (!en->dn_Name) continue;
+                  bn = (UBYTE *)BADDR(en->dn_Name);
+                  for (j = 0; j < 7 && livename[j]; j++)
+                      if (j >= bn[0] || bn[1+j] != (UBYTE)livename[j]) { match = 0; break; }
+                  if (match && (int)bn[0] == j) {
+                      if (en->dn_Startup && TypeOfMem((void*)BADDR(en->dn_Startup))) {
+                          struct FileSysStartupMsg *fssm =
+                              (struct FileSysStartupMsg *)BADDR(en->dn_Startup);
+                          if (fssm->fssm_Environ && TypeOfMem((void*)BADDR(fssm->fssm_Environ))) {
+                              struct DosEnvec *ev =
+                                  (struct DosEnvec *)BADDR(fssm->fssm_Environ);
+                              if (ev->de_TableSize >= DE_DOSTYPE) {
+                                  livefam = ev->de_DosType & 0xFFFFFF00u; havefam = 1;
+                              }
+                          }
+                      }
+                      break;
+                  }
+              }
+              UnLockDosList(LDF_DEVICES | LDF_READ);
+            }
             port = DeviceProc((STRPTR)livecolon);
-            if (port) {
+            /* Reformat the EXISTING mount only if it has a live handler whose FS
+               family MATCHES the partition's target type. Otherwise the live mount
+               is either absent (no handler -> unformatted embedded-FS NDOS node) or
+               STALE (a different FS, because the type was changed since boot) —
+               either way reformatting via it is wrong. Quiesce a stale handler with
+               Inhibit so it stops touching the blocks, then fall through to the
+               fresh path, which binds OUR handler via Strategy-3 (InternalLoadSeg
+               the embedded FSHD/LSEG) and formats via an ephemeral mount. */
+            if (port && havefam && livefam == ((ULONG)p->dos_type & 0xFFFFFF00u)) {
                 Inhibit((STRPTR)livecolon, DOSTRUE);
                 vb = cstr_to_bstr(volname && volname[0] ? volname : p->name, volbstr);
                 ok = DoPkt(port, ACTION_FORMAT, (LONG)vb, (LONG)p->dos_type, 0L, 0L, 0L);
                 Inhibit((STRPTR)livecolon, DOSFALSE);
                 return ok ? FMT_OK : FMT_ERR_FORMAT;
             }
-            /* else: no live handler -> fall through to the fresh/Strategy-3 path */
+            if (port) {
+                /* Stale, wrong-family live mount: stop it touching the blocks. It
+                   stays inhibited (it is the wrong FS now; a reboot re-mounts the
+                   partition with its real type). */
+                Inhibit((STRPTR)livecolon, DOSTRUE);
+            }
+            /* fall through to the fresh/Strategy-3 path */
         }
     }
 
