@@ -346,17 +346,17 @@ FmtResult format_partition(const char *driver, uint32_t unit,
             livecolon[kk++] = ':'; livecolon[kk] = 0;
             /* Reformat the EXISTING mount only if it has a live handler to talk
                to. DeviceProc returns the handler's port, or NULL when the DOS
-               node exists with NO handler bound (dn_SegList == 0) — which is what
-               happens when the controller mounts an RDB partition but does NOT
-               load the embedded filesystem from its FSHD (confirmed with
-               FS-UAE's uaehf.device: the node mounts as NDOS, DeviceProc == NULL).
-               In that case there is nothing to ACTION_FORMAT, so fall through to
-               the fresh path: it binds OUR handler via Strategy-3 (InternalLoadSeg
-               the embedded FSHD/LSEG) and formats via an ephemeral mount — exactly
-               what the embedded-FS support is for. The handler-less node has no
-               process touching the blocks, so an ephemeral handler over them is
-               safe. (Verified on-target: PFS3 embedded -> Format writes a valid
-               PFS\1 volume via this path.) */
+               node exists with NO live handler bound (dn_SegList == 0) — e.g. an
+               UNFORMATTED embedded-FS partition: the controller created the node
+               (it shows as NDOS) but no handler process is serving it yet, so
+               there is nothing to ACTION_FORMAT. Observed on-target as
+               'seg=1 port=0'. In that case fall through to the fresh path, which
+               binds OUR handler via Strategy-3 (InternalLoadSeg the embedded
+               FSHD/LSEG) and formats via an ephemeral mount — exactly what the
+               embedded-FS support is for. The handler-less node has no process
+               touching the blocks, so an ephemeral handler over them is safe.
+               Verified on-target: PFS3 embedded -> Format writes a valid PFS\1
+               volume and the partition then auto-mounts normally. */
             port = DeviceProc((STRPTR)livecolon);
             if (port) {
                 Inhibit((STRPTR)livecolon, DOSTRUE);

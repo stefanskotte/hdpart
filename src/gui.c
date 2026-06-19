@@ -1277,22 +1277,26 @@ static void gui_format(int index)
                 "another disk) to format this one.");
         return;
     }
-    if (lv == DEV_MOUNTED) {
-        /* Build a warning listing mounted volumes, require explicit confirm. */
+    /* Confirm is specific to the ONE partition being formatted (not the whole
+       device): name it, and if it is currently mounted, name its live volume.
+       Only this partition's blocks are touched. */
+    {
+        char livename[8];
+        int live = safety_partition_mounted(g_cur_driver, g_cur_unit,
+                                            pt->low_cyl, pt->high_cyl, livename);
         p = 0;
-        s_cat(msg, &p, "This disk has mounted volumes (");
-        for (i = 0; i < nn && p < 180; i++) {
-            if (i) { msg[p++] = ','; msg[p++] = ' '; }
-            s_cat(msg, &p, names[i]);
+        s_cat(msg, &p, "Format ");
+        s_cat(msg, &p, pt->name);
+        s_cat(msg, &p, " into an empty volume?");
+        if (live) {
+            int k;
+            s_cat(msg, &p, "\nIt is mounted as ");
+            for (k = 0; k < 7 && livename[k]; k++) msg[p++] = livename[k];
+            s_cat(msg, &p, ": and will be reformatted.");
         }
-        s_cat(msg, &p, ").\nFormatting may destroy data. Proceed?");
+        s_cat(msg, &p, "\nAll data on it is lost. Proceed?");
         msg[p] = 0;
         if (!gui_confirm("Format", msg)) return;
-    } else {
-        /* DEV_CLEAR: still destructive. */
-        if (!gui_confirm("Format",
-                "Format this partition into an empty\n"
-                "volume? All data on it is lost.")) return;
     }
 
     /* Default volume label = partition name. */
