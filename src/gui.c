@@ -1934,6 +1934,11 @@ static void gui_about(void)
             "RDB hard-disk partition tool\n"
             "for AmigaOS 2.04+ (KS V37+).\n"
             "\n"
+            "Orchestrated by Stefan Skotte,\n"
+            "who directed every byte while\n"
+            "an AI did the typing. Any bugs\n"
+            "are, naturally, the AI's fault.\n"
+            "\n"
             "Based on rdbtool (amitools) by\n"
             "Christian Vogelgsang, \xA9 2020-23.\n"
             "github.com/cnvogelg/amitools");
