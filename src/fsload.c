@@ -49,7 +49,10 @@ int fsload_from_file(const char *path, RdbFileSys *out)
 
     out->seg_data    = buf;
     out->seg_len     = (uint32_t)flen;
-    out->dos_type    = 0x50465303u;   /* placeholder PFS\3; caller sets the real type */
+    /* Detect the DosType from the handler binary (PFS\3 / SFS\2 / PDS\3); fall
+       back to a PFS\3 placeholder if no known family is found (user can edit). */
+    { uint32_t dt = fsload_detect_dostype(buf, (uint32_t)flen);
+      out->dos_type = dt ? dt : 0x50465303u; }
     out->version     = fsload_parse_version(buf, (uint32_t)flen);
     /* PatchFlags: StackSize | Priority | GlobalVec — the three handler params
        we provide.  Bit positions from mounter.c ProcessPatchFlags():
@@ -108,63 +111,90 @@ int fsload_is_hunk_file(const uint8_t *buf, uint32_t len)
     return be32(buf) == HUNK_HEADER ? 1 : 0;
 }
 
+/* Parse "<digits>.<digits>" starting at buf[pos]. On success returns 1 and
+   writes (major<<16|minor) to *ver; else returns 0. *endp gets the index just
+   past the digits scanned (so the caller can advance). */
+static int parse_nm(const uint8_t *buf, uint32_t pos, uint32_t end,
+                    uint32_t *ver, uint32_t *endp)
+{
+    uint32_t major = 0, minor = 0, p = pos, p2;
+    if (!(p < end && buf[p] >= '0' && buf[p] <= '9')) { *endp = pos + 1; return 0; }
+    while (p < end && buf[p] >= '0' && buf[p] <= '9') {
+        major = (major <= 6553u) ? major * 10u + (uint32_t)(buf[p] - '0') : 65535u;
+        p++;
+    }
+    if (!(p < end && buf[p] == '.')) { *endp = p; return 0; }
+    p2 = p + 1;
+    if (!(p2 < end && buf[p2] >= '0' && buf[p2] <= '9')) { *endp = p2; return 0; }
+    while (p2 < end && buf[p2] >= '0' && buf[p2] <= '9') {
+        minor = (minor <= 6553u) ? minor * 10u + (uint32_t)(buf[p2] - '0') : 65535u;
+        p2++;
+    }
+    if (major > 65535u) major = 65535u;
+    if (minor > 65535u) minor = 65535u;
+    *ver = (major << 16) | minor;
+    *endp = p2;
+    return 1;
+}
+
 uint32_t fsload_parse_version(const uint8_t *buf, uint32_t len)
 {
-    /* Search for the 5-byte literal "$VER:" */
-    static const uint8_t cookie[5] = {0x24,0x56,0x45,0x52,0x3A};
-    uint32_t i, end;
+    static const uint8_t cookie[5] = {0x24,0x56,0x45,0x52,0x3A};  /* "$VER:" */
+    uint32_t i, end, ver, nx;
 
     if (!buf || len < 5) return 0;
 
+    /* Pass 1: the "$VER:" cookie — first N.M within 200 bytes after it. */
     for (i = 0; i <= len - 5; i++) {
-        if (buf[i]   == cookie[0] && buf[i+1] == cookie[1] &&
-            buf[i+2] == cookie[2] && buf[i+3] == cookie[3] &&
-            buf[i+4] == cookie[4]) {
-            /* Found the cookie. Advance past it. */
+        if (buf[i]==cookie[0] && buf[i+1]==cookie[1] && buf[i+2]==cookie[2] &&
+            buf[i+3]==cookie[3] && buf[i+4]==cookie[4]) {
             uint32_t pos = i + 5;
-            /* Limit the scan window to 200 bytes after cookie or end of buffer. */
-            end = pos + 200u;
-            if (end > len) end = len;
-
-            /* Scan forward to find first "<digits>.<digits>" pattern.
-               Skip any leading space(s) and the name token. */
+            end = pos + 200u; if (end > len) end = len;
             while (pos < end) {
-                uint8_t c = buf[pos];
-                if (c >= '0' && c <= '9') {
-                    /* Potential start of major version. Consume digit run. */
-                    uint32_t major = 0, minor = 0, p2;
-                    uint32_t p = pos;
-                    while (p < end && buf[p] >= '0' && buf[p] <= '9') {
-                        uint32_t d = (uint32_t)(buf[p] - '0');
-                        if (major <= 6553u) major = major * 10u + d;
-                        else major = 65535u;
-                        p++;
-                    }
-                    /* Must be followed by '.' then at least one digit. */
-                    if (p < end && buf[p] == '.') {
-                        p2 = p + 1;
-                        if (p2 < end && buf[p2] >= '0' && buf[p2] <= '9') {
-                            while (p2 < end && buf[p2] >= '0' && buf[p2] <= '9') {
-                                uint32_t d = (uint32_t)(buf[p2] - '0');
-                                if (minor <= 6553u) minor = minor * 10u + d;
-                                else minor = 65535u;
-                                p2++;
-                            }
-                            if (major > 65535u) major = 65535u;
-                            if (minor > 65535u) minor = 65535u;
-                            return (major << 16) | minor;
-                        }
-                    }
-                    /* Digit run not followed by '.' + digit — skip past it and continue. */
-                    pos = p;
-                } else {
-                    pos++;
-                }
+                if (buf[pos] >= '0' && buf[pos] <= '9') {
+                    if (parse_nm(buf, pos, end, &ver, &nx)) return ver;
+                    pos = nx;
+                } else pos++;
             }
-            return 0;   /* cookie found but no valid N.M in window */
+            break;   /* cookie found but no N.M — try pass 2 */
         }
     }
-    return 0;   /* cookie not found */
+
+    /* Pass 2 (no "$VER:" cookie, e.g. SmartFilesystem): the romtag idString
+       form "<name> <major>.<minor> (<date>)" — a space, then N.M, then " (".
+       The trailing " (" (a date) makes the match specific and avoids picking up
+       unrelated "N.M" numbers. */
+    if (len >= 4) {
+        for (i = 0; i + 1 < len; i++) {
+            if (buf[i] != ' ') continue;
+            if (parse_nm(buf, i + 1, len, &ver, &nx)) {
+                if (nx + 1 < len && buf[nx] == ' ' && buf[nx+1] == '(')
+                    return ver;
+            }
+        }
+    }
+    return 0;
+}
+
+uint32_t fsload_detect_dostype(const uint8_t *buf, uint32_t len)
+{
+    uint32_t cPFS = 0, cSFS = 0, cPDS = 0, i;
+    if (!buf || len < 4) return 0;
+    /* Count DosType-family signatures: a 3-letter family tag followed by a low
+       version byte (a handler embeds the DosType longwords it recognises). */
+    for (i = 0; i + 4 <= len; i++) {
+        uint8_t a = buf[i], b = buf[i+1], c = buf[i+2], v = buf[i+3];
+        if (v > 15) continue;
+        if      (a=='P' && b=='F' && c=='S') cPFS++;
+        else if (a=='S' && b=='F' && c=='S') cSFS++;
+        else if (a=='P' && b=='D' && c=='S') cPDS++;
+    }
+    /* Dominant family -> its canonical DosType. Require >= 2 hits so a single
+       stray longword in unrelated data does not misclassify. */
+    if (cSFS >= 2 && cSFS >= cPFS && cSFS >= cPDS) return 0x53465302u; /* SFS\2 */
+    if (cPFS >= 2 && cPFS >= cPDS)                 return 0x50465303u; /* PFS\3 */
+    if (cPDS >= 2)                                 return 0x50445303u; /* PDS\3 */
+    return 0;
 }
 
 const char *fsl_err_text(int rc)

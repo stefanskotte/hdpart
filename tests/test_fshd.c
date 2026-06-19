@@ -251,7 +251,38 @@ static void test_parse_version(void)
     { uint8_t b3[16]; int k; for(k=0;k<16;k++) b3[k]=0;
       memcpy(b3, "no version here", 15);
       CHECK(fsload_parse_version(b3, 15) == 0u); }
+    /* No "$VER:" cookie: the romtag idString form "Name N.M (date)" — e.g.
+       SmartFilesystem m68k = "SmartFilesystem 1.279 (23.12.2007)". */
+    { uint8_t b4[48]; int k; for(k=0;k<48;k++) b4[k]=0;
+      memcpy(b4, "xx SmartFilesystem 1.279 (23.12.2007)", 37);
+      CHECK(fsload_parse_version(b4, 37) == ((1u<<16)|279u)); }
+    /* "N.M" without the trailing " (" must NOT be picked up by pass 2. */
+    { uint8_t b5[24]; int k; for(k=0;k<24;k++) b5[k]=0;
+      memcpy(b5, "ratio 4.3 aspect", 16);
+      CHECK(fsload_parse_version(b5, 16) == 0u); }
     (void)a;
+}
+
+static void test_detect_dostype(void)
+{
+    /* SmartFilesystem: many SFS\2 longwords -> canonical SFS\2 (0x53465302). */
+    { uint8_t b[64]; int k; for(k=0;k<64;k++) b[k]=0;
+      memcpy(b+0,  "SFS\x02", 4); memcpy(b+8,  "SFS\x02", 4);
+      memcpy(b+16, "SFS\x00", 4); memcpy(b+24, "SFS\x02", 4);
+      CHECK(fsload_detect_dostype(b, 64) == 0x53465302u); }
+    /* PFS handler: PFS\1/PFS\2 appear most, but the canonical PFS DosType for a
+       partition is PFS\3 (0x50465303) regardless of the exact byte in the code. */
+    { uint8_t b[64]; int k; for(k=0;k<64;k++) b[k]=0;
+      memcpy(b+0,  "PFS\x01", 4); memcpy(b+8,  "PFS\x02", 4);
+      memcpy(b+16, "PFS\x01", 4); memcpy(b+24, "PDS\x03", 4);
+      CHECK(fsload_detect_dostype(b, 64) == 0x50465303u); }
+    /* No FS-family signatures (or a single stray) -> 0 (caller uses fallback). */
+    { uint8_t b[32]; int k; for(k=0;k<32;k++) b[k]=0;
+      memcpy(b, "plain text only", 15);
+      CHECK(fsload_detect_dostype(b, 32) == 0u); }
+    { uint8_t b[16]; int k; for(k=0;k<16;k++) b[k]=0;
+      memcpy(b, "SFS\x02", 4);   /* a single stray hit must not classify */
+      CHECK(fsload_detect_dostype(b, 16) == 0u); }
 }
 
 static void test_is_hunk_file(void)
@@ -325,6 +356,7 @@ int main(void)
     test_lseg_bad_checksum_rejected();
     test_pbff_nomount_roundtrip();
     test_parse_version();
+    test_detect_dostype();
     test_is_hunk_file();
     test_reserve_real_geometry();
     test_reserve_small_geometry();
