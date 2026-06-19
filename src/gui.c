@@ -1309,7 +1309,7 @@ static void gui_format(int index)
         gui_status(msg);
         break;
     case FMT_ERR_NO_HANDLER:
-        gui_msg("Format", "No filesystem handler for this type.\nNon-ROM filesystems need embedded-FS\nsupport (not available yet).");
+        gui_msg("Format", "No filesystem handler for this type.\nLoad it in Filesys... first, then format.");
         break;
     case FMT_ERR_RANGE:
     case FMT_ERR_MAKENODE:

@@ -344,13 +344,28 @@ FmtResult format_partition(const char *driver, uint32_t unit,
             BPTR vb; LONG ok; int kk;
             for (kk = 0; kk < 7 && livename[kk]; kk++) livecolon[kk] = livename[kk];
             livecolon[kk++] = ':'; livecolon[kk] = 0;
+            /* Reformat the EXISTING mount only if it has a live handler to talk
+               to. DeviceProc returns the handler's port, or NULL when the DOS
+               node exists with NO handler bound (dn_SegList == 0) — which is what
+               happens when the controller mounts an RDB partition but does NOT
+               load the embedded filesystem from its FSHD (confirmed with
+               FS-UAE's uaehf.device: the node mounts as NDOS, DeviceProc == NULL).
+               In that case there is nothing to ACTION_FORMAT, so fall through to
+               the fresh path: it binds OUR handler via Strategy-3 (InternalLoadSeg
+               the embedded FSHD/LSEG) and formats via an ephemeral mount — exactly
+               what the embedded-FS support is for. The handler-less node has no
+               process touching the blocks, so an ephemeral handler over them is
+               safe. (Verified on-target: PFS3 embedded -> Format writes a valid
+               PFS\1 volume via this path.) */
             port = DeviceProc((STRPTR)livecolon);
-            if (!port) return FMT_ERR_FORMAT;
-            Inhibit((STRPTR)livecolon, DOSTRUE);
-            vb = cstr_to_bstr(volname && volname[0] ? volname : p->name, volbstr);
-            ok = DoPkt(port, ACTION_FORMAT, (LONG)vb, (LONG)p->dos_type, 0L, 0L, 0L);
-            Inhibit((STRPTR)livecolon, DOSFALSE);
-            return ok ? FMT_OK : FMT_ERR_FORMAT;
+            if (port) {
+                Inhibit((STRPTR)livecolon, DOSTRUE);
+                vb = cstr_to_bstr(volname && volname[0] ? volname : p->name, volbstr);
+                ok = DoPkt(port, ACTION_FORMAT, (LONG)vb, (LONG)p->dos_type, 0L, 0L, 0L);
+                Inhibit((STRPTR)livecolon, DOSFALSE);
+                return ok ? FMT_OK : FMT_ERR_FORMAT;
+            }
+            /* else: no live handler -> fall through to the fresh/Strategy-3 path */
         }
     }
 
