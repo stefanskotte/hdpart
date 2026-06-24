@@ -31,6 +31,9 @@ static void test_model_free_safe(void)
 /* Simple RAM block device for tests: 4096 blocks of 512 bytes. */
 #define RAM_BLOCKS 4096
 typedef struct { uint8_t b[RAM_BLOCKS][512]; } RamDisk;
+static uint32_t t_be32(const uint8_t *p)
+{ return ((uint32_t)p[0]<<24)|((uint32_t)p[1]<<16)|((uint32_t)p[2]<<8)|p[3]; }
+
 static int ram_io(void *ctx, uint32_t blk, uint8_t *buf, int write)
 {
     RamDisk *d = (RamDisk *)ctx;
@@ -118,6 +121,56 @@ static void test_roundtrip(void)
         free(orig);
     }
     rdb_model_free(&r);
+    free(m.fs[0].seg_data); free(d);
+}
+
+/* The last LSEG block of a chain must carry a SummedLongs that reflects only the
+   real remaining longwords, NOT the full-block 128.  A strict Commodore-style
+   loader sizes each block's payload as (SummedLongs-5) longs; if the last block
+   claims 128 the zero pad is ingested and the seglist is not a valid load module
+   (field bug report 2026-06-24).  seg_len 1000 -> 3 blocks, last carries
+   1000-2*492 = 16 bytes = 4 longs, so SummedLongs must be 5+4 = 9. */
+static void test_lseg_last_block_summedlongs(void)
+{
+    RamDisk *d = (RamDisk *)calloc(1, sizeof *d);
+    RdbModel m; memset(&m, 0, sizeof m);
+    rdb_init_model(&m, 100, 16, 63);
+    CHECK(rdb_add_partition(&m, "DH0", 20, RDB_DOSTYPE_FFS_INTL) == RDB_OK);
+    m.num_fs = 1;
+    m.fs[0].dos_type = 0x50465303u;
+    m.fs[0].seg_len  = 1000;                 /* 3 LSEG blocks: 492 + 492 + 16 */
+    m.fs[0].seg_data = fake_seg(1000);
+    CHECK(rdb_serialize(&m, ram_io, d) == RDB_OK);
+
+    /* Walk the LSEG chain; the final block's SummedLongs must be < 128 and
+       reconstruction by (SummedLongs-5)*4 must total EXACTLY seg_len. */
+    {
+        uint32_t fshd = t_be32(&d->b[0][32]);            /* RDSK.FileSysHdr */
+        uint32_t b    = t_be32(&d->b[fshd][72]);         /* FSHD.SegList */
+        uint32_t total = 0, last_summed = 0, full_blocks = 0;
+        int guard = 0;
+        while (b != 0xffffffffu && b != 0 && b < RAM_BLOCKS && ++guard < 4096) {
+            uint32_t summed = t_be32(&d->b[b][4]);
+            uint32_t bytes  = (summed >= 5u) ? (summed - 5u) * 4u : 0u;
+            if (summed == 128u) full_blocks++;
+            total += bytes;
+            last_summed = summed;
+            b = t_be32(&d->b[b][16]);                    /* lsb_Next */
+        }
+        CHECK(full_blocks == 2);                         /* first two are full */
+        CHECK(last_summed == 9u);                        /* 5 hdr + 4 data longs */
+        CHECK(total == 1000u);                           /* exact, no zero pad */
+    }
+
+    /* Parse must recover the EXACT length (not padded to a 492 multiple), so a
+       load -> save -> reopen -> save cycle stays a valid module. */
+    {
+        RdbModel r; memset(&r, 0, sizeof r);
+        CHECK(rdb_parse(&r, ram_io, d) == RDB_OK);
+        CHECK(r.num_fs == 1);
+        CHECK(r.fs[0].seg_len == 1000u);                 /* exact round-trip */
+        rdb_model_free(&r);
+    }
     free(m.fs[0].seg_data); free(d);
 }
 
@@ -352,6 +405,7 @@ int main(void)
     test_serialize_with_fs();
     test_capacity_guard();
     test_roundtrip();
+    test_lseg_last_block_summedlongs();
     test_preserve_on_resave();
     test_lseg_bad_checksum_rejected();
     test_pbff_nomount_roundtrip();

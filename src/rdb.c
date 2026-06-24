@@ -417,7 +417,8 @@ int rdb_validate(const RdbModel *m)
 #define ID_FSHD 0x46534844u
 #define ID_LSEG 0x4C534547u
 #define FSHD_SUMMEDLONGS 64u
-#define LSEG_SUMMEDLONGS 128u
+/* LSEG SummedLongs is computed per block in write_lseg_block (5 header longs +
+   data longs); a full block works out to 128. */
 #define RDB_LOCATION_LIMIT 16u
 #define NULLPTR 0xFFFFFFFFu
 
@@ -580,17 +581,35 @@ static void write_fshd_block(uint8_t *blk, const RdbFileSys *fs,
     rdb_set_checksum(blk, FSHD_SUMMEDLONGS, 8);
 }
 
+/* Real data bytes carried by one LSEG block, from its stored lsb_SummedLongs:
+   (SummedLongs-5) longs, clamped to the 492-byte physical payload. */
+static uint32_t lseg_payload_bytes(const uint8_t *lb)
+{
+    uint32_t summed = be_get32(lb + 4);
+    uint32_t bytes  = (summed >= 5u) ? (summed - 5u) * 4u : 0u;
+    return (bytes > LSEG_PAYLOAD) ? LSEG_PAYLOAD : bytes;
+}
+
 static void write_lseg_block(uint8_t *blk, const uint8_t *data, uint32_t len,
                              uint32_t next_blk)
 {
+    /* lsb_SummedLongs encodes this block's real size: 5 header longs plus the
+       data longs actually carried.  A strict Commodore-style loader sizes each
+       block's payload as (SummedLongs-5) longs, so the LAST (short) block must
+       advertise a smaller SummedLongs than a full 128 — otherwise the trailing
+       zero pad is ingested and the seglist is no longer a valid load module.
+       Full blocks (len == 492) come out to the usual 128. */
+    uint32_t data_longs, summed;
     memset(blk, 0, 512);
+    if (len > LSEG_PAYLOAD) len = LSEG_PAYLOAD;
+    data_longs = (len + 3u) / 4u;            /* round up to a longword */
+    summed     = 5u + data_longs;            /* 5 hdr longs + data longs */
     be_put32(blk + 0,  ID_LSEG);
-    be_put32(blk + 4,  LSEG_SUMMEDLONGS);
+    be_put32(blk + 4,  summed);
     be_put32(blk + 12, 7u);
     be_put32(blk + LSEG_o_Next, next_blk);
-    if (len > LSEG_PAYLOAD) len = LSEG_PAYLOAD;
     memcpy(blk + LSEG_o_LoadData, data, len);
-    rdb_set_checksum(blk, LSEG_SUMMEDLONGS, 8);
+    rdb_set_checksum(blk, summed, 8);
 }
 
 int rdb_serialize(const RdbModel *m, BlockIO io, void *ctx)
@@ -735,7 +754,11 @@ static int read_fshd_chain(RdbModel *m, BlockIO io, void *ctx, uint32_t fshd_blk
         fs->source       = RDB_FS_EMBEDDED;
         dostype_name(fs->name, fs->dos_type);   /* readable default name */
 
-        /* First pass: count LSEG payload bytes; reject on bad ID or checksum. */
+        /* First pass: count LSEG payload bytes; reject on bad ID or checksum.
+           Each block's real payload is (SummedLongs-5) longs — honour the stored
+           value so the recovered seg_len is exact (a block written by us or by
+           HDToolBox carries a correct count; only a buggy padded last block would
+           over-report, which the LSEG_PAYLOAD clamp caps at 492). */
         seg_blk = be_get32(blk + FSHD_o_SegList);
         { uint32_t b = seg_blk; int g = 0; int lseg_ok = 1;
           while (b != NULLPTR && b != 0 && ++g < 4096) {
@@ -743,7 +766,7 @@ static int read_fshd_chain(RdbModel *m, BlockIO io, void *ctx, uint32_t fshd_blk
             if (io(ctx, b, lb, 0)) return RDB_ERR_IO;
             if (be_get32(lb + 0) != ID_LSEG ||
                 !rdb_checksum_ok(lb, be_get32(lb + 4))) { lseg_ok = 0; break; }
-            seg_len += LSEG_PAYLOAD;
+            seg_len += lseg_payload_bytes(lb);
             b = be_get32(lb + LSEG_o_Next);
           }
           if (!lseg_ok) { fshd_blk = be_get32(blk + FSHD_o_Next); continue; } }
@@ -754,12 +777,15 @@ static int read_fshd_chain(RdbModel *m, BlockIO io, void *ctx, uint32_t fshd_blk
         { uint32_t b = seg_blk; int lseg_ok = 1;
           while (b != NULLPTR && b != 0 && ++sguard < 4096 && off < cap) {
             uint8_t lb[512];
+            uint32_t n;
             if (io(ctx, b, lb, 0)) { rdb_seg_free(fs->seg_data); fs->seg_data = 0;
                                      return RDB_ERR_IO; }
             if (be_get32(lb + 0) != ID_LSEG ||
                 !rdb_checksum_ok(lb, be_get32(lb + 4))) { lseg_ok = 0; break; }
-            memcpy(fs->seg_data + off, lb + LSEG_o_LoadData, LSEG_PAYLOAD);
-            off += LSEG_PAYLOAD;
+            n = lseg_payload_bytes(lb);
+            if (n > cap - off) n = cap - off;        /* never overrun the buffer */
+            memcpy(fs->seg_data + off, lb + LSEG_o_LoadData, n);
+            off += n;
             b = be_get32(lb + LSEG_o_Next);
           }
           if (!lseg_ok) { rdb_seg_free(fs->seg_data); fs->seg_data = 0;

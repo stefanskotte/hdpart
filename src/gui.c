@@ -664,12 +664,18 @@ static int gui_save(void)
         int snn = 0;
         DevLiveness slv = safety_classify(g_cur_driver, g_cur_unit, snames, 8, &snn);
         if (slv == DEV_BOOT) {
-            gui_msg("Save",
-                    "You booted from this device.\n"
-                    "Writing a new partition table now would\n"
-                    "corrupt the running system. Boot from\n"
-                    "floppy (or another disk) to modify it.");
-            return 0;
+            /* You booted from this device. This is dangerous, but an advanced
+               user may know what they're doing (e.g. only editing a non-system
+               partition's table), so warn hard and let them override rather than
+               block outright. Changes typically take effect only after reboot. */
+            if (!gui_confirm("Save",
+                    "WARNING: you booted from this device.\n"
+                    "Writing a new partition table can corrupt\n"
+                    "the running system, and changes may not\n"
+                    "take effect until you reboot.\n"
+                    "Only proceed if you know what you are doing.\n"
+                    "Write anyway?"))
+                return 0;
         }
         if (slv == DEV_MOUNTED) {
             if (!gui_confirm("Save",
@@ -1687,7 +1693,7 @@ int gui_run(void)
         WA_Left, 40, WA_Top, 16,
         WA_Width,  g_leftb + 580 + g_scr->WBorRight,
         WA_Height, g_topb + 232 + g_scr->WBorBottom,
-        WA_Title, (ULONG)"HDPart 0.7",
+        WA_Title, (ULONG)"HDPart 0.8",
         WA_Gadgets, (ULONG)g_glist,
         WA_IDCMP, IDCMP_CLOSEWINDOW | IDCMP_REFRESHWINDOW | IDCMP_MOUSEBUTTONS | IDCMP_MENUPICK | IDCMP_VANILLAKEY | CYCLEIDCMP | BUTTONIDCMP | LISTVIEWIDCMP,
         WA_Flags, WFLG_DRAGBAR | WFLG_DEPTHGADGET | WFLG_CLOSEGADGET |
@@ -2051,7 +2057,7 @@ static const char *drv_err_text(int code)
 static void gui_about(void)
 {
     gui_msg("About HDPart",
-            "HDPart 0.7\n"
+            "HDPart 0.8\n"
             "RDB hard-disk partition tool\n"
             "for AmigaOS 2.04+ (KS V37+).\n"
             "\n"
