@@ -89,8 +89,8 @@ install-fsuae:
 #                       existing Workbench and double-click HDPart; it is also
 #                       bootable (auto-runs HDPart on its own screen). Needs
 #                       amitools' xdftool (pip3 install amitools).
-# ADFVER: keep in sync with the window title in src/gui.c ("HDPart 0.7").
-ADFVER = 0.7
+# ADFVER: keep in sync with the window title in src/gui.c ("HDPart 0.8").
+ADFVER = 0.8
 ADF    = out/HDPart-$(ADFVER).adf
 
 adf: $(OUT).exe tools/HDPart.info tools/Disk.info
@@ -104,11 +104,10 @@ adf: $(OUT).exe tools/HDPart.info tools/Disk.info
 	    + write tools/HDPart.info HDPart.info \
 	    + write tools/Disk.info Disk.info
 	@rm -f out/.adf-startup-sequence
-	@# Optionally bundle a (Commodore-copyrighted) asl.library into Libs/ so the
-	@# file requester works on a bare-floppy boot (no system LIBS:). The file is
-	@# gitignored — supplied locally or materialized in CI from a secret — so the
-	@# repo source stays third-party-clean. Use a 2.04/2.1-era (V37/V38) build so
-	@# it loads on Kickstart 2.04 through 3.1. HDPart late-assigns LIBS: to find it.
+	@# Bundle asl.library into Libs/ so the file requester works on a bare-floppy
+	@# boot (no system LIBS:). tools/asl.library ships in the repo (WB2.04 V37.27,
+	@# loads on Kickstart 2.04 through 3.1); HDPart late-assigns LIBS: to find it.
+	@# The guard keeps `make adf` working if the file is ever removed locally.
 	@if [ -f tools/asl.library ]; then \
 	    xdftool $(ADF) makedir Libs + write tools/asl.library Libs/asl.library ; \
 	    echo "Built -> $(ADF)  (+ bundled Libs/asl.library)" ; \
