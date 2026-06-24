@@ -361,7 +361,9 @@ static struct Gadget *build_gadgets(void)
 
     ng.ng_LeftEdge = 484 + g_leftb; ng.ng_TopEdge = 18 + g_topb; ng.ng_Width = 82; ng.ng_Height = 14;
     ng.ng_GadgetText = (UBYTE *)"_Load..."; ng.ng_GadgetID = GID_DRIVER;
-    g = CreateGadget(BUTTON_KIND, g, &ng, GA_Disabled, (ULONG)(AslBase == 0), GT_Underscore, (ULONG)'_', TAG_END);
+    /* Always enabled: gui_pick_file falls back to a typed-path dialog when
+       asl.library is absent (e.g. booted from the bare HDPart floppy). */
+    g = CreateGadget(BUTTON_KIND, g, &ng, GT_Underscore, (ULONG)'_', TAG_END);
     g_gad[GID_DRIVER] = g;
 
     /* Row 2 — Disk panel: Unit cycle + Scan button (normal weight, single height) */
@@ -542,6 +544,108 @@ static int gui_request(const char *title, const char *body, int twoButtons,
 
 static int  gui_confirm(const char *title, const char *body) { return gui_request(title, body, 1, 0); }
 static void gui_msg(const char *title, const char *body)      { (void)gui_request(title, body, 0, 0); }
+
+/* Fallback for when asl.library is unavailable (e.g. booting the bare HDPart
+   floppy, which carries no LIBS:asl.library): a one-field modal dialog to type
+   a full file path. Pre-fills `init` (a starting drawer); returns 1 with the
+   typed path in out[] on Ok, 0 on Cancel/close. */
+static int gui_path_dialog(const char *title, const char *init,
+                           char *out, int outsz)
+{
+    struct Window *dw;
+    struct Gadget *glist = 0, *g, *gStr;
+    struct NewGadget ng;
+    static char pathbuf[256];
+    int dt = g_topb, dl = g_leftb;
+    int dwW, dwH, dwL = 0, dwT = 0, btnY;
+    int done = 0, result = 0, j;
+
+    for (j = 0; init && init[j] && j < (int)sizeof(pathbuf) - 1; j++) pathbuf[j] = init[j];
+    pathbuf[j] = 0;
+
+    dwW  = dl + 360 + 24 + g_scr->WBorRight;
+    btnY = dt + 6 + 10 + 6 + 14 + 8;          /* prompt + string + gap */
+    dwH  = btnY + 14 + 8 + g_scr->WBorBottom;
+
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wincompatible-pointer-types"
+    g = CreateContext(&glist);
+#pragma GCC diagnostic pop
+    if (!g) return 0;
+    ng.ng_TextAttr = &g_font; ng.ng_VisualInfo = g_vi; ng.ng_Flags = 0;
+    ng.ng_LeftEdge = dl + 12; ng.ng_TopEdge = dt + 6 + 10;
+    ng.ng_Width = 360; ng.ng_Height = 14;
+    ng.ng_GadgetText = (UBYTE *)""; ng.ng_GadgetID = 20;
+    g = CreateGadget(STRING_KIND, g, &ng, GTST_String, (ULONG)pathbuf,
+                     GTST_MaxChars, outsz - 1 < 255 ? outsz - 1 : 255, TAG_END);
+    gStr = g;
+    ng.ng_TopEdge = btnY; ng.ng_Width = 90; ng.ng_Height = 14;
+    ng.ng_LeftEdge = dl + 12;             ng.ng_GadgetText = (UBYTE *)"Ok";     ng.ng_GadgetID = 21;
+    g = CreateGadget(BUTTON_KIND, g, &ng, TAG_END);
+    ng.ng_LeftEdge = dl + 360 + 12 - 90;  ng.ng_GadgetText = (UBYTE *)"Cancel"; ng.ng_GadgetID = 22;
+    g = CreateGadget(BUTTON_KIND, g, &ng, TAG_END);
+    if (!g) { FreeGadgets(glist); return 0; }
+
+    dlg_center(dwW, dwH, &dwL, &dwT);
+    dw = dlg_open(title, dwL, dwT, dwW, dwH, BUTTONIDCMP | STRINGIDCMP, glist);
+    if (!dw) { FreeGadgets(glist); return 0; }
+    GT_RefreshWindow(dw, 0);
+    gui_draw_text(dw, "Enter the full file path:", dl + 12, dt + 6);
+
+    while (!done) {
+        struct IntuiMessage *im;
+        WaitPort(dw->UserPort);
+        while ((im = GT_GetIMsg(dw->UserPort)) != 0) {
+            ULONG cl = im->Class;
+            struct Gadget *ig = (struct Gadget *)im->IAddress;
+            GT_ReplyIMsg(im);
+            if (cl == IDCMP_CLOSEWINDOW) { result = 0; done = 1; }
+            else if (cl == IDCMP_REFRESHWINDOW) {
+                GT_BeginRefresh(dw);
+                gui_draw_text(dw, "Enter the full file path:", dl + 12, dt + 6);
+                GT_EndRefresh(dw, TRUE);
+            } else if (cl == IDCMP_GADGETUP) {
+                if (ig->GadgetID == 21) {            /* Ok */
+                    const char *s = (const char *)((struct StringInfo *)gStr->SpecialInfo)->Buffer;
+                    int k = 0;
+                    while (s[k] && k < outsz - 1) { out[k] = s[k]; k++; }
+                    out[k] = 0;
+                    result = (out[0] != 0);          /* empty path = cancel */
+                    done = 1;
+                } else if (ig->GadgetID == 22) { result = 0; done = 1; }
+            }
+        }
+    }
+    dlg_close(dw, glist);
+    return result;
+}
+
+/* Pick a file: an ASL requester when asl.library is present, otherwise the
+   typed-path fallback. `init` is the starting drawer (e.g. "DEVS:", "L:").
+   Returns 1 with the full path in out[], 0 on cancel. */
+static int gui_pick_file(const char *title, const char *init, char *out, int outsz)
+{
+    struct FileRequester *fr;
+    int ok = 0;
+
+    if (!AslBase) return gui_path_dialog(title, init, out, outsz);
+
+    fr = (struct FileRequester *)AllocAslRequestTags(ASL_FileRequest,
+            ASLFR_TitleText,     (ULONG)title,
+            ASLFR_InitialDrawer, (ULONG)init,
+            ASLFR_Screen,        (ULONG)g_scr,   /* open on OUR screen, not WB */
+            TAG_END);
+    if (!fr) { gui_msg(title, "Could not open the file requester."); return 0; }
+    if (AslRequest(fr, 0)) {
+        int j = 0; const char *d = (const char *)fr->fr_Drawer;
+        while (d && d[j] && j < outsz - 1) { out[j] = d[j]; j++; }
+        out[j] = 0;
+        AddPart((STRPTR)out, (CONST_STRPTR)fr->fr_File, outsz);
+        ok = 1;
+    }
+    FreeAslRequest(fr);
+    return ok;
+}
 
 static char g_msgbuf[120];
 
@@ -2200,8 +2304,9 @@ static void gui_filesystems(void)
        Layout: x=10 w=152 | x=170 w=160 | x=338 w=80 | x=426 w=124 => last btn ends at 550, 10px right margin = 560 inner. */
     ng.ng_LeftEdge = dl + 10; ng.ng_TopEdge = dt + 138; ng.ng_Width = 152; ng.ng_Height = 14;
     ng.ng_GadgetText = (UBYTE *)"Add from file..."; ng.ng_GadgetID = 4;
-    g = CreateGadget(BUTTON_KIND, g, &ng,
-                     GA_Disabled, (ULONG)(AslBase == 0), TAG_END);
+    /* Always enabled: gui_pick_file falls back to a typed-path dialog when
+       asl.library is absent (e.g. booted from the bare HDPart floppy). */
+    g = CreateGadget(BUTTON_KIND, g, &ng, TAG_END);
 
     /* Copy from disk button — copies the first embedded FS (which=0) from another
        disk's RDB into this model.  Multi-FS source (which>0) is out of scope. */
@@ -2304,29 +2409,18 @@ static void gui_filesystems(void)
                     }
 
                 } else if (gid == 4) {
-                    /* Add from file: ASL requester (no pattern filter — WB 2.04 gotcha). */
-                    struct FileRequester *fr;
+                    /* Add from file (ASL requester, or a typed path when asl.library
+                       is absent — e.g. booting the bare HDPart floppy). */
                     static char fspath[256];
                     int rc;
 
-                    if (!AslBase) break;
                     if (g_fs_npool >= RDB_MAX_FS) {
                         gui_msg("Filesystems", fsl_err_text(FSL_EFULL));
                         break;
                     }
-                    fr = (struct FileRequester *)AllocAslRequestTags(ASL_FileRequest,
-                            ASLFR_TitleText,     (ULONG)"Select a filesystem handler",
-                            ASLFR_InitialDrawer, (ULONG)"L:",
-                            ASLFR_Screen,        (ULONG)g_scr,
-                            TAG_END);
-                    if (!fr) { gui_msg("Filesystems", "Could not open the file requester."); break; }
-                    if (!AslRequest(fr, 0)) { FreeAslRequest(fr); break; } /* cancelled */
-
-                    { int j = 0; const char *d = (const char *)fr->fr_Drawer;
-                      while (d && d[j] && j < (int)sizeof(fspath) - 1) { fspath[j] = d[j]; j++; }
-                      fspath[j] = 0; }
-                    AddPart((STRPTR)fspath, (CONST_STRPTR)fr->fr_File, sizeof(fspath));
-                    FreeAslRequest(fr);
+                    if (!gui_pick_file("Select a filesystem handler", "L:",
+                                       fspath, sizeof(fspath)))
+                        break;                                   /* cancelled */
 
                     /* fsload allocates seg_data; pool takes ownership directly. */
                     rc = fsload_from_file(fspath, &g_fs_pool[g_fs_npool]);
@@ -2435,28 +2529,12 @@ static void gui_filesystems(void)
    No probe — the user presses Scan to query it. */
 static void gui_load_driver(void)
 {
-    struct FileRequester *fr;
     static char path[256];
     static char name[DRV_NAME_LEN];
     int rc, i, n, sel = -1;
 
-    if (!AslBase) return;   /* button is disabled, but guard anyway */
-
-    fr = (struct FileRequester *)AllocAslRequestTags(ASL_FileRequest,
-            ASLFR_TitleText,     (ULONG)"Select a device driver",
-            ASLFR_InitialDrawer, (ULONG)"DEVS:",
-            ASLFR_Screen,        (ULONG)g_scr,   /* open on OUR screen, not WB */
-            TAG_END);
-    if (!fr) { gui_msg("Driver", "Could not open the file requester."); return; }
-
-    if (!AslRequest(fr, 0)) { FreeAslRequest(fr); return; }   /* cancelled */
-
-    /* Join drawer + file into path[] (AddPart inserts any needed separator). */
-    { int j = 0; const char *d = (const char *)fr->fr_Drawer;
-      while (d && d[j] && j < (int)sizeof(path) - 1) { path[j] = d[j]; j++; }
-      path[j] = 0; }
-    AddPart((STRPTR)path, (CONST_STRPTR)fr->fr_File, sizeof(path));
-    FreeAslRequest(fr);
+    if (!gui_pick_file("Select a device driver", "DEVS:", path, sizeof(path)))
+        return;                                   /* cancelled */
 
     rc = driver_load_file(path, name, sizeof(name));
     if (rc != DRVL_OK) { gui_msg("Driver", drv_err_text(rc)); return; }
