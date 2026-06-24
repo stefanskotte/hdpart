@@ -16,6 +16,7 @@
 #include <graphics/modeid.h>      /* HIRES_KEY, INVALID_ID (own-screen display mode) */
 #include <libraries/asl.h>
 #include <proto/asl.h>
+#include <dos/dos.h>              /* SHARED_LOCK, BPTR (asl.library LIBS: fallback) */
 #include <proto/dos.h>
 #include "gui.h"
 #include "discover.h"
@@ -1586,7 +1587,23 @@ int gui_run(void)
         if (GfxBase) CloseLibrary((struct Library *)GfxBase);
         return 20;
     }
-    AslBase = OpenLibrary("asl.library", 37);   /* optional: Driver... disabled if absent */
+    AslBase = OpenLibrary("asl.library", 37);   /* optional; absent on a bare floppy */
+    if (!AslBase) {
+        /* No system asl.library (e.g. booted from the bare HDPart floppy, which
+           carries no LIBS:). If the floppy ships one in PROGDIR:Libs, make LIBS:
+           resolve it — WITHOUT clobbering a real Workbench LIBS: — and retry.
+           AssignAdd appends to an existing LIBS:; AssignLock creates it when none
+           exists. Both consume the lock on success; we UnLock only on failure. */
+        BPTR libsdir = Lock((CONST_STRPTR)"PROGDIR:Libs", SHARED_LOCK);
+        if (libsdir) {
+            BPTR existing = Lock((CONST_STRPTR)"LIBS:", SHARED_LOCK);
+            LONG ok;
+            if (existing) { UnLock(existing); ok = AssignAdd((STRPTR)"LIBS", libsdir); }
+            else          { ok = AssignLock((STRPTR)"LIBS", libsdir); }
+            if (ok) AslBase = OpenLibrary("asl.library", 37);
+            else    UnLock(libsdir);
+        }
+    }
 
     /* Render on the Workbench screen ONLY if its font is the 8-point topaz our
        fixed-pixel layout is designed for. On a bare ADF boot Intuition opens a

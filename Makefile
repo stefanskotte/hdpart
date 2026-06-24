@@ -104,7 +104,17 @@ adf: $(OUT).exe tools/HDPart.info tools/Disk.info
 	    + write tools/HDPart.info HDPart.info \
 	    + write tools/Disk.info Disk.info
 	@rm -f out/.adf-startup-sequence
-	$(info Built -> $(ADF)  (880K OFS; mount under Workbench and run HDPart, or boot it))
+	@# Optionally bundle a (Commodore-copyrighted) asl.library into Libs/ so the
+	@# file requester works on a bare-floppy boot (no system LIBS:). The file is
+	@# gitignored — supplied locally or materialized in CI from a secret — so the
+	@# repo source stays third-party-clean. Use a 2.04/2.1-era (V37/V38) build so
+	@# it loads on Kickstart 2.04 through 3.1. HDPart late-assigns LIBS: to find it.
+	@if [ -f tools/asl.library ]; then \
+	    xdftool $(ADF) makedir Libs + write tools/asl.library Libs/asl.library ; \
+	    echo "Built -> $(ADF)  (+ bundled Libs/asl.library)" ; \
+	else \
+	    echo "Built -> $(ADF)  (no tools/asl.library; typed-path fallback applies on bare boot)" ; \
+	fi
 
 clean:
 	$(info Cleaning...)

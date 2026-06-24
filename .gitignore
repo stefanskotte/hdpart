@@ -8,3 +8,4 @@ amiga_hd/*
 amiga-exe/
 amiga_boot/
 amiga_scratch/
+tools/asl.library

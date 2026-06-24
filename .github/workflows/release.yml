@@ -75,6 +75,17 @@ jobs:
       - name: Build executable
         run: make
 
+      - name: Provide bundled asl.library (optional)
+        env:
+          ASL_LIBRARY_B64: ${{ secrets.ASL_LIBRARY_B64 }}
+        run: |
+          if [ -n "$ASL_LIBRARY_B64" ]; then
+            echo "$ASL_LIBRARY_B64" | base64 -d > tools/asl.library
+            echo "Materialized tools/asl.library from secret ($(wc -c < tools/asl.library) bytes) - will be bundled into the ADF Libs/."
+          else
+            echo "No ASL_LIBRARY_B64 secret set; release ADF will not bundle asl.library (typed-path fallback applies)."
+          fi
+
       - name: Build ADF
         run: make adf ADFVER="${{ steps.ver.outputs.version }}"
 
