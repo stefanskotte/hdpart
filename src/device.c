@@ -8,6 +8,7 @@
 #include <devices/scsidisk.h>
 #include <proto/exec.h>
 #include "device.h"
+#include "discover.h"   /* disc_parse_read_capacity10 / disc_synth_chs (pure) */
 
 struct DeviceHandle {
     struct MsgPort *port;
@@ -57,6 +58,50 @@ void dev_close(DeviceHandle *h)
     FreeVec(h);
 }
 
+/* SCSI READ CAPACITY(10): 10-byte CDB (opcode 0x25), 8-byte big-endian response.
+   Returns 0 and fills *block_bytes / *total_blocks on success; a DoIO error code
+   (or 1) on failure. Used as the geometry fallback for controllers whose driver
+   does not implement TD_GETGEOMETRY (notably the A3000 ROM scsi.device 37.x). */
+static int scsi_read_capacity10(DeviceHandle *h,
+                                ULONG *block_bytes, ULONG *total_blocks)
+{
+    static UBYTE cdb[10];
+    static UBYTE data[8];
+    static UBYTE sense[32];
+    struct SCSICmd sc;
+    LONG err;
+    uint32_t bb = 512, tot = 0;
+    int i;
+
+    for (i = 0; i < 10; i++) cdb[i]  = 0;
+    for (i = 0; i < 8;  i++) data[i] = 0;
+    cdb[0] = 0x25;   /* READ CAPACITY(10) */
+
+    sc.scsi_Data       = (UWORD *)data;
+    sc.scsi_Length     = sizeof(data);
+    sc.scsi_Actual     = 0;
+    sc.scsi_Command    = cdb;
+    sc.scsi_CmdLength  = sizeof(cdb);
+    sc.scsi_CmdActual  = 0;
+    sc.scsi_Flags      = SCSIF_READ | SCSIF_AUTOSENSE;
+    sc.scsi_Status     = 0;
+    sc.scsi_SenseData  = sense;
+    sc.scsi_SenseLength= sizeof(sense);
+    sc.scsi_SenseActual= 0;
+
+    h->req->iotd_Req.io_Command = HD_SCSICMD;
+    h->req->iotd_Req.io_Data    = &sc;
+    h->req->iotd_Req.io_Length  = sizeof(sc);
+    h->req->iotd_Req.io_Actual  = 0;
+    err = DoIO((struct IORequest *)h->req);
+    if (err != 0) return (int)err;            /* no SCSI passthrough / failed */
+    if (!disc_parse_read_capacity10(data, &bb, &tot)) return 1;
+
+    *block_bytes  = bb;
+    *total_blocks = tot;
+    return 0;
+}
+
 int dev_geometry(DeviceHandle *h, DeviceInfo *out)
 {
     struct DriveGeometry dg;
@@ -80,6 +125,26 @@ int dev_geometry(DeviceHandle *h, DeviceInfo *out)
     out->total_blocks = dg.dg_TotalSectors;
     out->has_media    = (err == 0);
     out->model[0]     = 0;
+
+    /* Fallback: some controllers (the A3000 ROM scsi.device 37.x) do not
+       implement TD_GETGEOMETRY — it errors, or reports a zero block count — so
+       the drive would otherwise be invisible. Ask the drive directly with SCSI
+       READ CAPACITY and synthesize a self-consistent CHS geometry from it. */
+    if (err != 0 || out->total_blocks == 0) {
+        ULONG bb = 512, tot = 0;
+        if (scsi_read_capacity10(h, &bb, &tot) == 0 && tot > 0) {
+            uint32_t cyl, heads, sectors;
+            disc_synth_chs(tot, &cyl, &heads, &sectors);
+            out->block_bytes  = bb;
+            h->block_bytes    = bb;
+            out->total_blocks = tot;
+            out->cylinders    = cyl;
+            out->heads        = heads;
+            out->sectors      = sectors;
+            out->has_media    = 1;
+            return 0;
+        }
+    }
     return (int)err;
 }
 

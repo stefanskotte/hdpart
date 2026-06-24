@@ -72,6 +72,41 @@ int disc_is_partitionable(const char *driver, uint32_t total_blocks)
     return 1;
 }
 
+int disc_parse_read_capacity10(const uint8_t resp[8],
+                               uint32_t *block_bytes, uint32_t *total_blocks)
+{
+    uint32_t last_lba =
+        ((uint32_t)resp[0] << 24) | ((uint32_t)resp[1] << 16) |
+        ((uint32_t)resp[2] <<  8) |  (uint32_t)resp[3];
+    uint32_t blk =
+        ((uint32_t)resp[4] << 24) | ((uint32_t)resp[5] << 16) |
+        ((uint32_t)resp[6] <<  8) |  (uint32_t)resp[7];
+    if (last_lba == 0xFFFFFFFFu) return 0;   /* needs READ CAPACITY(16) */
+    if (blk == 0) blk = 512;
+    if (block_bytes)  *block_bytes  = blk;
+    if (total_blocks) *total_blocks = last_lba + 1u;
+    return 1;
+}
+
+void disc_synth_chs(uint32_t total_blocks,
+                    uint32_t *cyl, uint32_t *heads, uint32_t *sectors)
+{
+    uint32_t h = 16, s = 63, cyl_blocks, c;
+    if (total_blocks == 0) {
+        if (cyl)     *cyl     = 0;
+        if (heads)   *heads   = 0;
+        if (sectors) *sectors = 0;
+        return;
+    }
+    cyl_blocks = h * s;                       /* 1008 */
+    if (total_blocks < cyl_blocks) { h = 1; s = 1; cyl_blocks = 1; }
+    c = total_blocks / cyl_blocks;
+    if (c == 0) c = 1;
+    if (cyl)     *cyl     = c;
+    if (heads)   *heads   = h;
+    if (sectors) *sectors = s;
+}
+
 /* ---- user-loaded driver registry (plain C; shared by host + target) ---- */
 #define DISC_EXTRA_MAX 8
 static char g_extra[DISC_EXTRA_MAX][DISC_DRIVER_LEN];

@@ -45,6 +45,23 @@ int disc_is_device_name(const char *s);
    has media (total_blocks>0) and is not a floppy (trackdisk.device). */
 int disc_is_partitionable(const char *driver, uint32_t total_blocks);
 
+/* Parse an 8-byte SCSI READ CAPACITY(10) response (big-endian: bytes 0..3 =
+   last logical block address, bytes 4..7 = block length). On success fills
+   *block_bytes (>=512; 0 in the response defaults to 512) and *total_blocks
+   (= last_lba + 1) and returns 1. Returns 0 when last_lba == 0xFFFFFFFF (the
+   ">=2TB, use READ CAPACITY(16)" sentinel, beyond HDPart's 32-bit range). */
+int disc_parse_read_capacity10(const uint8_t resp[8],
+                               uint32_t *block_bytes, uint32_t *total_blocks);
+
+/* Synthesize a self-consistent CHS geometry from a raw block count, for devices
+   whose driver does not implement TD_GETGEOMETRY (e.g. the A3000 ROM
+   scsi.device 37.x). RDB only needs heads*sectors (= blocks/cylinder) to be
+   self-consistent — the controller addresses LBA-style — so a standard 16x63
+   translation is used (1 block/cyl for media smaller than one cylinder).
+   total_blocks==0 yields all zeros. */
+void disc_synth_chs(uint32_t total_blocks,
+                    uint32_t *cyl, uint32_t *heads, uint32_t *sectors);
+
 /* ---- OS-bound entry point (implemented in discover.c) ---- */
 /* Fill out[] with up to `max` discovered disks; return the count. */
 int discover_disks(DiscDisk out[], int max);

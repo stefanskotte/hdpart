@@ -99,6 +99,47 @@ static void test_extra_driver_registry(void)
     CHECK(disc_extra_count() == 8);
 }
 
+static void test_parse_read_capacity10(void)
+{
+    /* last_lba = 0x001FFFFF (2097151), block_len = 512 -> 2097152 blocks. */
+    uint8_t r[8] = { 0x00,0x1F,0xFF,0xFF, 0x00,0x00,0x02,0x00 };
+    uint32_t bb = 0, tot = 0;
+    CHECK(disc_parse_read_capacity10(r, &bb, &tot) == 1);
+    CHECK(tot == 2097152u);
+    CHECK(bb == 512u);
+
+    /* block_len 0 in the response defaults to 512. */
+    { uint8_t r0[8] = { 0,0,0,9, 0,0,0,0 };
+      bb = 0; tot = 0;
+      CHECK(disc_parse_read_capacity10(r0, &bb, &tot) == 1);
+      CHECK(tot == 10u);
+      CHECK(bb == 512u); }
+
+    /* last_lba == 0xFFFFFFFF means >2TB / needs READ CAPACITY(16): reject. */
+    { uint8_t rmax[8] = { 0xFF,0xFF,0xFF,0xFF, 0,0,2,0 };
+      CHECK(disc_parse_read_capacity10(rmax, &bb, &tot) == 0); }
+}
+
+static void test_synth_chs(void)
+{
+    uint32_t c = 0, h = 0, s = 0;
+
+    /* Large drive: heads=16, sectors=63 (1008 blocks/cyl). */
+    disc_synth_chs(2097152u, &c, &h, &s);
+    CHECK(h == 16u && s == 63u);
+    CHECK(c == 2097152u / 1008u);              /* 2080, floored */
+    CHECK((uint64_t)c * h * s <= 2097152u);    /* never exceeds the medium */
+
+    /* Zero blocks -> all zero (caller treats as no media). */
+    disc_synth_chs(0u, &c, &h, &s);
+    CHECK(c == 0u && h == 0u && s == 0u);
+
+    /* Tiny medium (< one synthetic cylinder) still yields a usable geometry. */
+    disc_synth_chs(500u, &c, &h, &s);
+    CHECK(c >= 1u);
+    CHECK((uint64_t)c * h * s <= 500u);
+}
+
 int main(void)
 {
     test_bcpl_to_c();
@@ -107,6 +148,8 @@ int main(void)
     test_is_device_name();
     test_is_partitionable();
     test_extra_driver_registry();
+    test_parse_read_capacity10();
+    test_synth_chs();
     if (g_fail) { printf("%d CHECK(s) FAILED\n", g_fail); return 1; }
     printf("DISCOVER TESTS PASSED\n");
     return 0;
