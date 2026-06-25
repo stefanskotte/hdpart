@@ -1983,6 +1983,12 @@ static void gui_select_unit(int uidx)
         if (rdb_parse(&g_model, dev_block_io, h) == RDB_OK) {
             g_have_model = 1;
             fs_pool_merge_from_model(&g_model);
+        } else if (g_geo.has_media && g_geo.cylinders > 0) {
+            /* Blank disk (valid geometry, no RDB): start an empty in-memory table
+               so New / Filesystems work immediately without a failed Split first.
+               g_dirty stays 0 — nothing is written until the user Saves. */
+            rdb_init_model(&g_model, g_geo.cylinders, g_geo.heads, g_geo.sectors);
+            g_have_model = 1;
         }
         dev_close(h);
     }
