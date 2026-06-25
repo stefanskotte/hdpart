@@ -472,9 +472,27 @@ FmtResult format_partition(const char *driver, uint32_t unit,
         { int c; for (c = 0; c < RDB_NAME_LEN - 1 && p->name[c]; c++) rcolon[c] = p->name[c];
           rcolon[c++] = ':'; rcolon[c] = 0; }
         {
-            struct MsgPort *port = DeviceProc((STRPTR)rcolon);
+            struct MsgPort *port = 0;
             BPTR vb; LONG ok;
+            int tries;
+            /* STARTPROC race (field report 2026-06-25, crashes on real HW; never
+               exercised in FS-UAE because it auto-mounts every partition, so this
+               fresh path only runs on bare hardware): AddDosNode(ADNF_STARTPROC)
+               launches the handler ASYNCHRONOUSLY.  Poking it with Inhibit /
+               ACTION_FORMAT before it has filled in its dol_Task port and reached
+               its packet loop — while it is still opening the device and scanning
+               the disk — wedges the machine.  Let it come up first: settle, then
+               poll DeviceProc until the port appears, then a final brief settle so
+               the handler is in its loop before we send packets.  The leading
+               Delay also makes DeviceProc return the already-set port rather than
+               racing to start a second process. */
+            Delay(25);                              /* ~0.5s: let the handler init */
+            for (tries = 0; tries < 40 && !port; tries++) {
+                port = DeviceProc((STRPTR)rcolon);
+                if (!port) Delay(5);                /* up to ~4s more, 0.1s steps */
+            }
             if (!port) return FMT_ERR_FORMAT;
+            Delay(5);                               /* settle before first packet */
             Inhibit((STRPTR)rcolon, DOSTRUE);
             vb = cstr_to_bstr(volname && volname[0] ? volname : p->name, volbstr);
             ok = DoPkt(port, ACTION_FORMAT, (LONG)vb, (LONG)p->dos_type, 0L, 0L, 0L);
