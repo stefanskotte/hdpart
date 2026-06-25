@@ -550,8 +550,8 @@ static void gui_msg(const char *title, const char *body)      { (void)gui_reques
    floppy, which carries no LIBS:asl.library): a one-field modal dialog to type
    a full file path. Pre-fills `init` (a starting drawer); returns 1 with the
    typed path in out[] on Ok, 0 on Cancel/close. */
-static int gui_path_dialog(const char *title, const char *init,
-                           char *out, int outsz)
+static int gui_string_dialog(const char *title, const char *prompt,
+                             const char *init, char *out, int outsz)
 {
     struct Window *dw;
     struct Gadget *glist = 0, *g, *gStr;
@@ -591,7 +591,7 @@ static int gui_path_dialog(const char *title, const char *init,
     dw = dlg_open(title, dwL, dwT, dwW, dwH, BUTTONIDCMP | STRINGIDCMP, glist);
     if (!dw) { FreeGadgets(glist); return 0; }
     GT_RefreshWindow(dw, 0);
-    gui_draw_text(dw, "Enter the full file path:", dl + 12, dt + 6);
+    gui_draw_text(dw, prompt, dl + 12, dt + 6);
 
     while (!done) {
         struct IntuiMessage *im;
@@ -603,7 +603,7 @@ static int gui_path_dialog(const char *title, const char *init,
             if (cl == IDCMP_CLOSEWINDOW) { result = 0; done = 1; }
             else if (cl == IDCMP_REFRESHWINDOW) {
                 GT_BeginRefresh(dw);
-                gui_draw_text(dw, "Enter the full file path:", dl + 12, dt + 6);
+                gui_draw_text(dw, prompt, dl + 12, dt + 6);
                 GT_EndRefresh(dw, TRUE);
             } else if (cl == IDCMP_GADGETUP) {
                 if (ig->GadgetID == 21) {            /* Ok */
@@ -619,6 +619,20 @@ static int gui_path_dialog(const char *title, const char *init,
     }
     dlg_close(dw, glist);
     return result;
+}
+
+static int gui_path_dialog(const char *title, const char *init,
+                           char *out, int outsz)
+{
+    return gui_string_dialog(title, "Enter the full file path:", init, out, outsz);
+}
+
+/* Prompt for a volume name (label written by ACTION_FORMAT). Pre-fills with the
+   partition's RDB name. Returns 1 with the name in out[], 0 on Cancel. */
+static int gui_volname_dialog(const char *deflt, char *out, int outsz)
+{
+    return gui_string_dialog("Volume name", "Enter a volume name:",
+                             deflt, out, outsz);
 }
 
 /* Pick a file: an ASL requester when asl.library is present, otherwise the
@@ -1363,11 +1377,10 @@ static int gui_resize_dialog(int index)
 static void gui_format(int index)
 {
     static char names[8][8];
-    static char vol[36];
     static char msg[256];
     RdbPartition *pt;
     DevLiveness lv;
-    int nn = 0, i, p;
+    int nn = 0, p;
 
     if (!g_have_model || index < 0 || index >= g_model.num_parts) return;
     pt = &g_model.parts[index];
@@ -1410,29 +1423,31 @@ static void gui_format(int index)
         if (!gui_confirm("Format", msg)) return;
     }
 
-    /* Default volume label = partition name. */
-    for (i = 0; i < 35 && pt->name[i]; i++) vol[i] = pt->name[i];
-    vol[i] = 0;
-
-    switch (format_partition(g_cur_driver, g_cur_unit, &g_model, index, vol)) {
-    case FMT_OK:
-        p = 0;
-        s_cat(msg, &p, "Formatted ");
-        s_cat(msg, &p, pt->name);
-        s_cat(msg, &p, ": as an empty volume.");
-        msg[p] = 0;
-        gui_status(msg);
-        break;
-    case FMT_ERR_NO_HANDLER:
-        gui_msg("Format", "No filesystem handler for this type.\nLoad it in Filesys... first, then format.");
-        break;
-    case FMT_ERR_RANGE:
-    case FMT_ERR_MAKENODE:
-    case FMT_ERR_ADDNODE:
-    case FMT_ERR_FORMAT:
-    default:
-        gui_msg("Format", "Could not format the partition.");
-        break;
+    {
+        static char volname[32];
+        const char *deflt = g_model.parts[index].name;
+        if (!gui_volname_dialog(deflt, volname, sizeof(volname)))
+            return;                       /* user cancelled the format */
+        switch (format_partition(g_cur_driver, g_cur_unit, &g_model, index, volname)) {
+        case FMT_OK:
+            p = 0;
+            s_cat(msg, &p, "Formatted ");
+            s_cat(msg, &p, pt->name);
+            s_cat(msg, &p, ": as an empty volume.");
+            msg[p] = 0;
+            gui_status(msg);
+            break;
+        case FMT_ERR_NO_HANDLER:
+            gui_msg("Format", "No filesystem handler for this type.\nLoad it in Filesys... first, then format.");
+            break;
+        case FMT_ERR_RANGE:
+        case FMT_ERR_MAKENODE:
+        case FMT_ERR_ADDNODE:
+        case FMT_ERR_FORMAT:
+        default:
+            gui_msg("Format", "Could not format the partition.");
+            break;
+        }
     }
 }
 
