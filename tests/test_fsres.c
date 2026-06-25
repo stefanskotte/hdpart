@@ -62,9 +62,20 @@ static void test_bstr_eq(void)
     CHECK(fsres_bstr_eq(a, "DH50")== 0);
 }
 
+static void test_find_embedded_skips_empty(void)
+{
+    RdbModel m; memset(&m, 0, sizeof m);
+    static uint8_t seg[4] = {0,0,3,0xF3};
+    m.num_fs = 2;
+    m.fs[0].dos_type = 0x50465303u; m.fs[0].seg_data = 0;  m.fs[0].seg_len = 0;
+    m.fs[1].dos_type = 0x50465303u; m.fs[1].seg_data = seg; m.fs[1].seg_len = 4;
+    CHECK(fsres_find_embedded(&m, 0x50465303u) == &m.fs[1]);  /* skip empty fs[0] */
+}
+
 int main(void)
 {
     test_find_embedded();
+    test_find_embedded_skips_empty();
     test_resolve_fields_patched();
     test_resolve_fields_defaults();
     test_bstr_eq();
