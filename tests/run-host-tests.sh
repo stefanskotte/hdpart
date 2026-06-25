@@ -14,3 +14,5 @@ cc -std=c99 -Wall -Wextra -g -o /tmp/hdpart_safety tests/test_safety.c src/safet
 /tmp/hdpart_safety
 cc -std=c99 -Wall -Wextra -g -o /tmp/hdpart_format tests/test_format.c src/format.c src/rdb.c
 /tmp/hdpart_format
+cc -std=c99 -Wall -Wextra -g -o /tmp/hdpart_fsres tests/test_fsres.c src/fsres.c
+/tmp/hdpart_fsres
