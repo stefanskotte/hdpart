@@ -475,8 +475,10 @@ FmtResult format_partition(const char *driver, uint32_t unit,
             struct MsgPort *port = DeviceProc((STRPTR)rcolon);
             BPTR vb; LONG ok;
             if (!port) return FMT_ERR_FORMAT;
+            Inhibit((STRPTR)rcolon, DOSTRUE);
             vb = cstr_to_bstr(volname && volname[0] ? volname : p->name, volbstr);
             ok = DoPkt(port, ACTION_FORMAT, (LONG)vb, (LONG)p->dos_type, 0L, 0L, 0L);
+            Inhibit((STRPTR)rcolon, DOSFALSE);
             if (!ok) return FMT_ERR_FORMAT;
         }
         return FMT_OK;
