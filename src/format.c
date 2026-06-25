@@ -13,7 +13,9 @@
 #include <proto/dos.h>
 #include <proto/expansion.h>
 #include "safety.h"
+#include "fsres.h"
 #endif
+#include <string.h>
 #include "format.h"
 
 /* DE_ indexes relative to env[0]=DE_TABLESIZE. */
@@ -398,6 +400,86 @@ FmtResult format_partition(const char *driver, uint32_t unit,
             }
             /* fall through to the fresh/Strategy-3 path */
         }
+    }
+
+    /* Approach A — truly-fresh partition (no DOS node with this name yet):
+       mount persistently under the REAL partition name so a usable, named DH#:
+       device survives the session (no reboot), replicating scsi.device:
+       filesystem.resource lookup/register -> MakeDosNode(real name) ->
+       AddDosNode(STARTPROC, persist) -> GetDeviceProc -> ACTION_FORMAT. */
+    if (!fsres_dosnode_exists(p->name)) {
+        struct Library *ExpBase;
+        struct DeviceNode *dnp;
+        static ULONG ppp[4 + FMT_ENV_LONGS];
+        static char  rdriver[40];
+        static char  rcolon[10];
+        BPTR seg;
+        FsHandlerFields hf;
+        const RdbFileSys *efs;
+        int z;
+
+        /* Resolve a seglist: an already-loaded handler in filesystem.resource,
+           else our embedded FSHD/LSEG (which we then register). */
+        memset(&hf, 0, sizeof hf);
+        seg = fsres_find_seglist((uint32_t)p->dos_type);
+        if (!seg) {
+            efs = fsres_find_embedded(m, (uint32_t)p->dos_type);
+            if (efs) {
+                fsres_resolve_fields(efs, &hf);
+                seg = embedded_loadseg(efs->seg_data, efs->seg_len);
+                if (seg) fsres_register(&hf, seg);   /* best-effort */
+            }
+        } else {
+            /* Use sane defaults for node params when reusing a resource seglist. */
+            hf.dn_stack = 4096; hf.dn_pri = 10; hf.dn_globalvec = 0xFFFFFFFFu;
+        }
+
+        ExpBase = OpenLibrary((STRPTR)"expansion.library", 37);
+        if (!ExpBase) return FMT_ERR_MAKENODE;
+
+        for (z = 0; z < 39 && driver[z]; z++) rdriver[z] = driver[z];
+        rdriver[z] = 0;
+        ppp[0] = (ULONG)p->name;            /* REAL partition name, e.g. "DH5" */
+        ppp[1] = (ULONG)rdriver;
+        ppp[2] = (ULONG)unit;
+        ppp[3] = 0;
+        for (z = 0; z < FMT_ENV_LONGS; z++) ppp[4 + z] = env[z];
+
+        dnp = (struct DeviceNode *)MakeDosNode((APTR)ppp);
+        if (!dnp) { CloseLibrary(ExpBase); return FMT_ERR_MAKENODE; }
+
+        if (seg) {
+            dnp->dn_SegList   = seg;
+            dnp->dn_GlobalVec = (BPTR)(ULONG)hf.dn_globalvec;
+            dnp->dn_StackSize = hf.dn_stack ? hf.dn_stack : 4096;
+            dnp->dn_Priority  = hf.dn_pri;
+        } else if (!bind_handler(dnp, (ULONG)p->dos_type, m)) {
+            /* No resource entry, no embedded image, no live-mount clone. */
+            CloseLibrary(ExpBase);
+            return FMT_ERR_NO_HANDLER;
+        }
+
+        if (!AddDosNode(0, ADNF_STARTPROC, dnp)) {
+            CloseLibrary(ExpBase);
+            return FMT_ERR_ADDNODE;
+        }
+        CloseLibrary(ExpBase);              /* node now owned by DOS, persists */
+
+        /* Build "<name>:" and format via the live device proc. Use DeviceProc
+           (already used in this file; returns/starts the handler port for the
+           just-added node) — do NOT mix with GetDeviceProc. NO RemDosEntry: the
+           device stays mounted for the session. */
+        { int c; for (c = 0; c < 7 && p->name[c]; c++) rcolon[c] = p->name[c];
+          rcolon[c++] = ':'; rcolon[c] = 0; }
+        {
+            struct MsgPort *port = DeviceProc((STRPTR)rcolon);
+            BPTR vb; LONG ok;
+            if (!port) return FMT_ERR_FORMAT;
+            vb = cstr_to_bstr(volname && volname[0] ? volname : p->name, volbstr);
+            ok = DoPkt(port, ACTION_FORMAT, (LONG)vb, (LONG)p->dos_type, 0L, 0L, 0L);
+            if (!ok) return FMT_ERR_FORMAT;
+        }
+        return FMT_OK;
     }
 
     /* Copy driver into a stable static buffer for MakeDosNode parmPacket. */
