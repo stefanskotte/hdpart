@@ -70,12 +70,20 @@ static void test_serialize_with_fs(void)
 
     /* RDSK FileSysHdr (offset 32) must point at a block whose ID is 'FSHD'. */
     {
-        uint8_t blk[512]; uint32_t fshd;
+        uint8_t blk[512]; uint32_t fshd, pf;
         ram_io(d, 0, blk, 0);
         fshd = (blk[32]<<24)|(blk[33]<<16)|(blk[34]<<8)|blk[35];
         CHECK(fshd != 0xFFFFFFFFu);
         ram_io(d, fshd, blk, 0);
         CHECK(blk[0]=='F' && blk[1]=='S' && blk[2]=='H' && blk[3]=='D');
+        /* fhb_PatchFlags (offset 40) MUST advertise SegList (0x80): the FSHD has
+           an LSEG chain, so a strict boot-time loader needs the bit set to patch
+           dn_SegList — without it the handler never binds and the partition won't
+           mount after reboot (field report 2026-06-25).  Forced on at serialize
+           time whenever there is a seglist, even if the model's patch_flags (here
+           0) omitted it. */
+        pf = (blk[40]<<24)|(blk[41]<<16)|(blk[42]<<8)|blk[43];
+        CHECK((pf & 0x80u) != 0u);
     }
     free(m.fs[0].seg_data); free(d);
 }

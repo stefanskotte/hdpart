@@ -12,9 +12,11 @@
    Bit 4 = dn_StackSize, bit 5 = dn_Priority, bit 8 = dn_GlobalVec. */
 #define FSB_STACKSIZE  4
 #define FSB_PRIORITY   5
+#define FSB_SEGLIST    7
 #define FSB_GLOBALVEC  8
 #define FSF_STACKSIZE  (1u << FSB_STACKSIZE)   /* 0x010 */
 #define FSF_PRIORITY   (1u << FSB_PRIORITY)    /* 0x020 */
+#define FSF_SEGLIST    (1u << FSB_SEGLIST)     /* 0x080 */
 #define FSF_GLOBALVEC  (1u << FSB_GLOBALVEC)   /* 0x100 */
 
 int fsload_from_file(const char *path, RdbFileSys *out)
@@ -54,10 +56,13 @@ int fsload_from_file(const char *path, RdbFileSys *out)
     { uint32_t dt = fsload_detect_dostype(buf, (uint32_t)flen);
       out->dos_type = dt ? dt : 0x50465303u; }
     out->version     = fsload_parse_version(buf, (uint32_t)flen);
-    /* PatchFlags: StackSize | Priority | GlobalVec — the three handler params
-       we provide.  Bit positions from mounter.c ProcessPatchFlags():
-       FSF_STACKSIZE (0x010) | FSF_PRIORITY (0x020) | FSF_GLOBALVEC (0x100). */
-    out->patch_flags = FSF_STACKSIZE | FSF_PRIORITY | FSF_GLOBALVEC; /* 0x130 */
+    /* PatchFlags: SegList | StackSize | Priority | GlobalVec.  SegList (0x80) is
+       mandatory — the handler code lives in this RDB's LSEG chain, so the boot
+       loader must patch dn_SegList from it; without it the FS is unusable and the
+       partition will not mount after a reboot (field report 2026-06-25).  The
+       other three are the handler params we provide.  Bit positions from
+       mounter.c ProcessPatchFlags(). Matches fsres_register()'s live value. */
+    out->patch_flags = FSF_SEGLIST | FSF_STACKSIZE | FSF_PRIORITY | FSF_GLOBALVEC; /* 0x1B0 */
     out->dn_stack    = 4096;
     out->dn_pri      = 10;
     out->dn_globalvec = (uint32_t)-1;  /* -1 = not a BCPL program */

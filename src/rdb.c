@@ -568,7 +568,14 @@ static void write_fshd_block(uint8_t *blk, const RdbFileSys *fs,
     be_put32(blk + FSHD_o_Flags,     0u);
     be_put32(blk + FSHD_o_DosType,   fs->dos_type);
     be_put32(blk + FSHD_o_Version,   fs->version);
-    be_put32(blk + FSHD_o_PatchFlags,fs->patch_flags);
+    /* fhb_PatchFlags MUST advertise SegList (0x80) whenever an LSEG chain is
+       present, else a strict boot-time RDB loader never patches dn_SegList and
+       the handler fails to bind -> the partition will not mount after a reboot
+       (field report 2026-06-25).  Force the bit on at the serialization boundary
+       so the on-disk invariant holds regardless of how patch_flags was populated
+       (e.g. an older HDPart, or a copy from a disk whose RDB omitted it). */
+    be_put32(blk + FSHD_o_PatchFlags,
+             fs->patch_flags | (first_lseg ? 0x80u : 0u));
     be_put32(blk + FSHD_o_Type,      fs->dn_type);
     be_put32(blk + FSHD_o_Task,      fs->dn_task);
     be_put32(blk + FSHD_o_Lock,      fs->dn_lock);
