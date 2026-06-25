@@ -174,6 +174,29 @@ static void test_lseg_last_block_summedlongs(void)
     free(m.fs[0].seg_data); free(d);
 }
 
+/* rdb_present: fast RDB classification without reading PART/FSHD chains. */
+static void test_rdb_present(void)
+{
+    RamDisk *d = (RamDisk *)calloc(1, sizeof *d);
+    RdbModel m; memset(&m, 0, sizeof m);
+    rdb_init_model(&m, 100, 16, 63);
+    CHECK(rdb_add_partition(&m, "DH0", 20, RDB_DOSTYPE_FFS_INTL) == RDB_OK);
+    /* Embed a multi-block FS so a full parse would read many LSEG blocks; rdb_present must not. */
+    m.num_fs = 1;
+    m.fs[0].dos_type = 0x50465303u;
+    m.fs[0].seg_len  = 1000;
+    m.fs[0].seg_data = fake_seg(1000);
+    CHECK(rdb_serialize(&m, ram_io, d) == RDB_OK);
+    CHECK(rdb_present(ram_io, d) == RDB_OK);          /* valid RDB present */
+
+    {
+        RamDisk *blank = (RamDisk *)calloc(1, sizeof *blank);   /* all zero blocks */
+        CHECK(rdb_present(ram_io, blank) == RDB_ERR_NO_RDB);
+        free(blank);
+    }
+    free(m.fs[0].seg_data); free(d);
+}
+
 static void test_preserve_on_resave(void)
 {
     /* A disk with an embedded FS, parsed and re-saved, keeps the FS. */
@@ -406,6 +429,7 @@ int main(void)
     test_capacity_guard();
     test_roundtrip();
     test_lseg_last_block_summedlongs();
+    test_rdb_present();
     test_preserve_on_resave();
     test_lseg_bad_checksum_rejected();
     test_pbff_nomount_roundtrip();

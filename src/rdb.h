@@ -171,6 +171,13 @@ int rdb_serialize(const RdbModel *m, BlockIO io, void *ctx);
    RDB_ERR_NO_RDB, or RDB_ERR_IO. */
 int rdb_parse(RdbModel *m, BlockIO io, void *ctx);
 
+/* Lightweight presence check: scans blocks 0..RDB_LOCATION_LIMIT for a valid
+   RDSK block WITHOUT reading the partition or filesystem-header chains. Returns
+   RDB_OK, RDB_ERR_NO_RDB, or RDB_ERR_IO. Use for fast disk classification
+   (discovery) where the partition table and embedded filesystem are not needed —
+   avoids reading the (potentially ~120-block) embedded handler on every probe. */
+int rdb_present(BlockIO io, void *ctx);
+
 /* Release all heap owned by the model (each fs[].seg_data) and zero num_fs.
    Safe to call repeatedly and on a zero-initialized model. */
 void rdb_model_free(RdbModel *m);

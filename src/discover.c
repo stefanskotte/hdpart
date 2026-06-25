@@ -212,7 +212,6 @@ static void probe_one(DiscDisk *d)
     }
 
     if (dev_geometry(h, &info) == 0 && info.has_media && info.total_blocks > 0) {
-        static RdbModel m;   /* ~1.8KB: keep off the 4KB Shell stack */
         d->size_mb = disc_blocks_to_mb(info.total_blocks, info.block_bytes);
         d->partitionable = disc_is_partitionable(d->driver, info.total_blocks);
         if (d->label[0] == 0) {
@@ -223,7 +222,11 @@ static void probe_one(DiscDisk *d)
                 d->label[n] = 0;
             }
         }
-        if (rdb_parse(&m, dev_block_io, h) == RDB_OK) {
+        /* Classify with the lightweight RDB presence check — discovery only needs
+           "has an RDB?", not the partition table or the embedded handler, so this
+           avoids reading the (potentially ~120-block) embedded filesystem on every
+           probed unit. The full table + FS load happens later on unit-select. */
+        if (rdb_present(dev_block_io, h) == RDB_OK) {
             if (d->status != DST_MOUNTED) d->status = DST_RDB;
         } else {
             if (d->status != DST_MOUNTED) d->status = DST_BLANK;

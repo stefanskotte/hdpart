@@ -725,6 +725,24 @@ static void dostype_name(char *out, uint32_t t)
     }
 }
 
+/* Grow a heap seg buffer geometrically to hold at least `need` bytes, preserving
+   the first `used` bytes. Returns the (possibly new) buffer, or 0 on alloc
+   failure (the old buffer is then freed by the caller). No realloc API exists,
+   so this allocs-new + copies + frees-old; geometric growth keeps it to a few
+   allocations for a typical ~120-block handler. */
+static uint8_t *seg_grow(uint8_t *buf, uint32_t used, uint32_t *cap, uint32_t need)
+{
+    uint32_t nc = *cap ? *cap : 4096u;
+    uint8_t *nb;
+    if (need <= *cap) return buf;
+    while (nc < need) nc <<= 1;
+    nb = (uint8_t *)rdb_seg_alloc(nc);
+    if (!nb) return 0;
+    if (buf) { memcpy(nb, buf, used); rdb_seg_free(buf); }
+    *cap = nc;
+    return nb;
+}
+
 /* Read the FSHD chain starting at block `fshd_blk` into m->fs[]. Returns RDB_OK
    or RDB_ERR_IO. Silently stops at RDB_MAX_FS or a bad/zero pointer. */
 static int read_fshd_chain(RdbModel *m, BlockIO io, void *ctx, uint32_t fshd_blk)
@@ -734,8 +752,7 @@ static int read_fshd_chain(RdbModel *m, BlockIO io, void *ctx, uint32_t fshd_blk
     while (fshd_blk != NULLPTR && fshd_blk != 0 && m->num_fs < RDB_MAX_FS
            && ++guard < 64) {
         RdbFileSys *fs = &m->fs[m->num_fs];
-        uint32_t seg_blk, seg_len = 0, cap, off = 0;
-        int sguard = 0;
+        uint32_t seg_blk;
         if (io(ctx, fshd_blk, blk, 0)) return RDB_ERR_IO;
         if (be_get32(blk + 0) != ID_FSHD ||
             !rdb_checksum_ok(blk, FSHD_SUMMEDLONGS)) break;
@@ -754,66 +771,73 @@ static int read_fshd_chain(RdbModel *m, BlockIO io, void *ctx, uint32_t fshd_blk
         fs->source       = RDB_FS_EMBEDDED;
         dostype_name(fs->name, fs->dos_type);   /* readable default name */
 
-        /* First pass: count LSEG payload bytes; reject on bad ID or checksum.
-           Each block's real payload is (SummedLongs-5) longs — honour the stored
-           value so the recovered seg_len is exact (a block written by us or by
-           HDToolBox carries a correct count; only a buggy padded last block would
-           over-report, which the LSEG_PAYLOAD clamp caps at 492). */
+        /* Single pass: read each LSEG block ONCE, validating (bad ID/checksum =>
+           reject this FS) and copying its payload into a geometrically-grown
+           buffer. Each block's real payload is (SummedLongs-5) longs — honour the
+           stored value (clamped to 492) so the recovered seg_len is exact. Reading
+           the chain once (vs the old two-pass) halves the disk I/O for an embedded
+           handler (~120 blocks for PFS3). */
         seg_blk = be_get32(blk + FSHD_o_SegList);
         { uint32_t b = seg_blk; int g = 0; int lseg_ok = 1;
+          uint8_t *buf = 0; uint32_t cap = 0, off = 0;
           while (b != NULLPTR && b != 0 && ++g < 4096) {
             uint8_t lb[512];
-            if (io(ctx, b, lb, 0)) return RDB_ERR_IO;
-            if (be_get32(lb + 0) != ID_LSEG ||
-                !rdb_checksum_ok(lb, be_get32(lb + 4))) { lseg_ok = 0; break; }
-            seg_len += lseg_payload_bytes(lb);
-            b = be_get32(lb + LSEG_o_Next);
-          }
-          if (!lseg_ok) { fshd_blk = be_get32(blk + FSHD_o_Next); continue; } }
-        cap = seg_len;
-        fs->seg_data = (uint8_t *)rdb_seg_alloc(cap ? cap : 1);
-        if (!fs->seg_data) return RDB_ERR_IO;
-        /* Second pass: copy payloads; reject on bad ID or checksum (free + skip). */
-        { uint32_t b = seg_blk; int lseg_ok = 1;
-          while (b != NULLPTR && b != 0 && ++sguard < 4096 && off < cap) {
-            uint8_t lb[512];
             uint32_t n;
-            if (io(ctx, b, lb, 0)) { rdb_seg_free(fs->seg_data); fs->seg_data = 0;
-                                     return RDB_ERR_IO; }
+            if (io(ctx, b, lb, 0)) { rdb_seg_free(buf); return RDB_ERR_IO; }
             if (be_get32(lb + 0) != ID_LSEG ||
                 !rdb_checksum_ok(lb, be_get32(lb + 4))) { lseg_ok = 0; break; }
             n = lseg_payload_bytes(lb);
-            if (n > cap - off) n = cap - off;        /* never overrun the buffer */
-            memcpy(fs->seg_data + off, lb + LSEG_o_LoadData, n);
-            off += n;
+            if (n) {
+                uint8_t *nb = seg_grow(buf, off, &cap, off + n);
+                if (!nb) { rdb_seg_free(buf); return RDB_ERR_IO; }
+                buf = nb;
+                memcpy(buf + off, lb + LSEG_o_LoadData, n);
+                off += n;
+            }
             b = be_get32(lb + LSEG_o_Next);
           }
-          if (!lseg_ok) { rdb_seg_free(fs->seg_data); fs->seg_data = 0;
-                          fshd_blk = be_get32(blk + FSHD_o_Next); continue; } }
-        fs->seg_len = off;
+          if (!lseg_ok) { rdb_seg_free(buf);
+                          fshd_blk = be_get32(blk + FSHD_o_Next); continue; }
+          fs->seg_data = buf;          /* may be 0 for an empty (no-LSEG) handler */
+          fs->seg_len  = off; }
         m->num_fs++;
         fshd_blk = be_get32(blk + FSHD_o_Next);
     }
     return RDB_OK;
 }
 
+/* Scan blocks 0..RDB_LOCATION_LIMIT-1 for a valid RDSK block. On success
+   returns 1 with the block left in blk[]; returns 0 (no RDB) or -1 (IO error). */
+static int find_rdsk_block(BlockIO io, void *ctx, uint8_t *blk)
+{
+    uint32_t b;
+    for (b = 0; b < RDB_LOCATION_LIMIT; b++) {
+        if (io(ctx, b, blk, 0)) return -1;
+        if (be_get32(blk + RDB_o_ID) == ID_RDSK &&
+            rdb_checksum_ok(blk, be_get32(blk + RDB_o_SummedLongs)))
+            return 1;
+    }
+    return 0;
+}
+
+int rdb_present(BlockIO io, void *ctx)
+{
+    uint8_t blk[RDB_BLOCK_BYTES];
+    int r = find_rdsk_block(io, ctx, blk);
+    return (r == 1) ? RDB_OK : (r < 0 ? RDB_ERR_IO : RDB_ERR_NO_RDB);
+}
+
 int rdb_parse(RdbModel *m, BlockIO io, void *ctx)
 {
     uint8_t blk[RDB_BLOCK_BYTES];
-    uint32_t b, part_ptr, fshd_ptr;
-    int found = 0;
+    uint32_t part_ptr, fshd_ptr;
+    int found;
 
     memset(m, 0, sizeof(*m));
 
-    for (b = 0; b < RDB_LOCATION_LIMIT; b++) {
-        if (io(ctx, b, blk, 0)) return RDB_ERR_IO;
-        if (be_get32(blk + RDB_o_ID) == ID_RDSK &&
-            rdb_checksum_ok(blk, be_get32(blk + RDB_o_SummedLongs))) {
-            found = 1;
-            break;
-        }
-    }
-    if (!found) return RDB_ERR_NO_RDB;
+    found = find_rdsk_block(io, ctx, blk);
+    if (found < 0) return RDB_ERR_IO;
+    if (found == 0) return RDB_ERR_NO_RDB;
 
     m->block_bytes   = be_get32(blk + RDB_o_BlockBytes);
     if (m->block_bytes == 0) m->block_bytes = RDB_BLOCK_BYTES;
