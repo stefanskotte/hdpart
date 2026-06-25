@@ -412,7 +412,7 @@ FmtResult format_partition(const char *driver, uint32_t unit,
         struct DeviceNode *dnp;
         static ULONG ppp[4 + FMT_ENV_LONGS];
         static char  rdriver[40];
-        static char  rcolon[10];
+        static char  rcolon[RDB_NAME_LEN + 2];
         BPTR seg;
         FsHandlerFields hf;
         const RdbFileSys *efs;
@@ -469,7 +469,7 @@ FmtResult format_partition(const char *driver, uint32_t unit,
            (already used in this file; returns/starts the handler port for the
            just-added node) — do NOT mix with GetDeviceProc. NO RemDosEntry: the
            device stays mounted for the session. */
-        { int c; for (c = 0; c < 7 && p->name[c]; c++) rcolon[c] = p->name[c];
+        { int c; for (c = 0; c < RDB_NAME_LEN - 1 && p->name[c]; c++) rcolon[c] = p->name[c];
           rcolon[c++] = ':'; rcolon[c] = 0; }
         {
             struct MsgPort *port = DeviceProc((STRPTR)rcolon);
