@@ -35,7 +35,7 @@ void fsres_resolve_fields(const RdbFileSys *fs, FsHandlerFields *out);
 int fsres_bstr_eq(const uint8_t *bstr, const char *cstr);
 
 #ifdef HDPART_AMIGA
-#include <exec/types.h>
+#include <dos/dos.h>
 /* OS. fse_SegList (BPTR) of a filesystem.resource entry matching dos_type's
    family, or 0 if none. */
 BPTR fsres_find_seglist(uint32_t dos_type);

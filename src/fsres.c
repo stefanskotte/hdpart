@@ -1,6 +1,3 @@
-#ifdef HDPART_AMIGA
-#include <dos/dos.h>
-#endif
 #include "fsres.h"
 #include <string.h>
 
