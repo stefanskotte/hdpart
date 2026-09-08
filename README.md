@@ -48,12 +48,6 @@ Host-side RDB engine tests (system `cc`, no toolchain needed):
 ./tests/verify-rdbtool.sh       # byte-for-byte cross-check vs amitools rdbtool
 ```
 
-## Releases
-
-Pushing a `release-x.x` git tag triggers a GitHub Actions build that publishes a
-release with the versioned ADF and executable. The tag version must match the
-`ADFVER` in the `Makefile` (and the window title in `src/gui.c`).
-
 ## License
 
 HDPart's own source is released under the **MIT License** — see [`LICENSE`](LICENSE).
@@ -62,3 +56,4 @@ amitools / rdbtool are © Christian Vogelgsang and the Bartman toolchain is © i
 authors, each under their own license; **HDPart bundles no amitools, Bartman,
 Commodore, or Amiga files** (the toolchain, Kickstart ROM, and Workbench fonts are
 all external to this repo).
+

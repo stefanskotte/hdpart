@@ -13,4 +13,5 @@ hard_drive_0 = /Users/sfs/Devel/party/amiga_hd
 hard_drive_0_label = HDPart
 hard_drive_1 = /Users/sfs/Devel/party/amiga_scratch/scratch_blank.hdf
 hard_drive_2 = /Users/sfs/Devel/party/amiga_scratch/scratch_rdb.hdf
+hard_drive_3 = /Users/sfs/Devel/party/amiga_scratch/scratch_150mb.hdf
 save_disk = 0
