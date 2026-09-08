@@ -1576,21 +1576,107 @@ static void gui_split(void)
     gui_update_buttons();
 }
 
+/* Perceived brightness (0..15) of a 4-bit-per-gun RGB value, ITU-R 601 weights.
+   Only used to compare two pens, so the coarse GetRGB4 view of the palette is
+   plenty — an 8-bit screen's low nibbles cannot flip a contrast verdict. */
+static int rgb4_luma(ULONG rgb4)
+{
+    int r = (int)((rgb4 >> 8) & 0xF);
+    int g = (int)((rgb4 >> 4) & 0xF);
+    int b = (int)(rgb4 & 0xF);
+    return (r * 77 + g * 151 + b * 28) >> 8;
+}
+
+/* Minimum luminance gap (of 15) for text to be legible over its background. */
+#define MENU_MIN_LUMA_DIFF 4
+
+/* Luminance of one DrawInfo pen: -1 = not a usable palette index, -2 = a V39
+   "magic" pen (PEN_C3 and friends, 0xFEFC..0xFEFF), which names the complement
+   of colours 0..3 rather than an index and contrasts by construction. */
+static int pen_luma(struct Screen *scr, int pen)
+{
+    struct ColorMap *cm = scr->ViewPort.ColorMap;
+    if (pen >= 0xFEFC) return -2;
+    if (!cm || pen < 0 || pen >= (int)cm->Count) return -1;
+    return rgb4_luma(GetRGB4(cm, pen));
+}
+
+/* 1 if pen `fg` reads over pen `bg` on scr's palette. */
+static int pens_readable(struct Screen *scr, int fg, int bg)
+{
+    int lf = pen_luma(scr, fg), lb = pen_luma(scr, bg), d;
+    if (lf == -2 || lb == -2) return 1;
+    if (lf < 0 || lb < 0) return 0;
+    d = lf - lb; if (d < 0) d = -d;
+    return d >= MENU_MIN_LUMA_DIFF;
+}
+
+/* NewLook (V39) menus, or the classic black-on-white ones?
+
+   NewLook menus are the KS3.x system look: the menu box is rendered 3D from the
+   screen's DrawInfo pens (BARDETAILPEN text over BARBLOCKPEN fill, the hovered
+   item FILLTEXTPEN over FILLPEN) instead of DetailPen/BlockPen. We want them
+   whenever the screen can actually carry them, and the classic look below KS3.0
+   — where GadTools has no such tag anyway.
+
+   Three conditions, all necessary:
+     - gadtools.library V39+ (KS3.0). GTMN_NewLookMenus does not exist before
+       that, so KS2.0/2.04/2.1 always get classic menus.
+     - the screen was opened with SA_Pens (DRIF_NEWLOOK) and its DrawInfo is
+       DRI_VERSION 2+ with the bar pens present: without pens the whole screen
+       renders flat/old-look, and NewLook menus on it would be both wrong and
+       inconsistent with our (equally flat) gadgets. Our cloned own-screen does
+       pass SA_Pens, so it qualifies; the bare no-Workbench fallback does not.
+     - the two pen pairs actually contrast. This is what bit an OS 3.2 tester on
+       v0.3: a customised palette had FILLTEXTPEN = black over a dark blue
+       FILLPEN, so the highlighted item was invisible. Rather than give up on
+       NewLook everywhere (what v0.4 did), check the palette and fall back to
+       classic only on the screens where it would be unreadable. */
+/* Decided once, before the window opens: WA_NewLookMenus is a window property
+   and CreateMenus/LayoutMenus must agree with it. */
+static int g_newlook = 0;
+
+static int menus_use_newlook(void)
+{
+    struct DrawInfo *dri;
+    int ok = 0;
+
+    if (!GadToolsBase || GadToolsBase->lib_Version < 39) return 0;
+    dri = GetScreenDrawInfo(g_scr);
+    if (!dri) return 0;
+    if ((dri->dri_Flags & DRIF_NEWLOOK) && dri->dri_Version >= 2 &&
+        dri->dri_Pens && dri->dri_NumPens > BARBLOCKPEN) {
+        ok = pens_readable(g_scr, (int)dri->dri_Pens[BARDETAILPEN],
+                                  (int)dri->dri_Pens[BARBLOCKPEN]) &&
+             pens_readable(g_scr, (int)dri->dri_Pens[FILLTEXTPEN],
+                                  (int)dri->dri_Pens[FILLPEN]);
+    }
+    FreeScreenDrawInfo(g_scr, dri);
+    return ok;
+}
+
 /* Create + layout the menu strip and attach it to g_win. Returns 1 on success. */
 static int build_menus(void)
 {
-    /* Lay menus out CLASSIC (no GTMN_NewLookMenus) on every Kickstart. NewLook
-       menus (V39+) render the highlighted item with the screen's FILLPEN /
-       FILLTEXTPEN DrawInfo pens; HDPart runs on the user's Workbench public
-       screen, and on customised WBs those pens are not guaranteed to contrast
-       (seen on an OS 3.2 setup: FILLTEXTPEN = black over a blue FILLPEN -> the
-       hovered item is invisible). Classic menus instead use the screen's
-       DetailPen / BlockPen, the fundamental window pens, which are always high
-       contrast — giving readable, consistent menus across KS2.0..3.2+ and
-       matching the classic look on the V37 baseline. */
-    g_menu = CreateMenus(g_newmenu, TAG_END);
-    if (!g_menu) return 0;
-    if (!LayoutMenus(g_menu, g_vi, TAG_END)) {
+    LONG laid;
+
+    /* NewLook takes all three of these, or none of them: the window flag
+       (WA_NewLookMenus, set at OpenWindow — Intuition renders the menu, and
+       without it the strip comes out old-look no matter how it was laid out),
+       CreateMenus (picks the V39 checkmark / Amiga-key images) and LayoutMenus
+       (sizes the items for them). Passing only the GadTools half was exactly the
+       first attempt at this, and changed nothing on screen. */
+    if (g_newlook) {
+        g_menu = CreateMenus(g_newmenu, GTMN_NewLookMenus, TRUE, TAG_END);
+        if (!g_menu) return 0;
+        laid = LayoutMenus(g_menu, g_vi, GTMN_NewLookMenus, TRUE, TAG_END);
+    } else {
+        /* Classic: a V37 GadTools never sees the V39 tag at all. */
+        g_menu = CreateMenus(g_newmenu, TAG_END);
+        if (!g_menu) return 0;
+        laid = LayoutMenus(g_menu, g_vi, TAG_END);
+    }
+    if (!laid) {
         FreeMenus(g_menu); g_menu = 0; return 0;
     }
     SetMenuStrip(g_win, g_menu);
@@ -1704,6 +1790,8 @@ int gui_run(void)
 
     if (!build_gadgets()) goto cleanup_gad;  /* FreeGadgets handles a partial/NULL chain */
 
+    g_newlook = menus_use_newlook();   /* needed by WA_NewLookMenus, just below */
+
     g_win = OpenWindowTags(0,
         WA_Left, 40, WA_Top, 16,
         WA_Width,  g_leftb + 580 + g_scr->WBorRight,
@@ -1713,6 +1801,9 @@ int gui_run(void)
         WA_IDCMP, IDCMP_CLOSEWINDOW | IDCMP_REFRESHWINDOW | IDCMP_MOUSEBUTTONS | IDCMP_MENUPICK | IDCMP_VANILLAKEY | CYCLEIDCMP | BUTTONIDCMP | LISTVIEWIDCMP,
         WA_Flags, WFLG_DRAGBAR | WFLG_DEPTHGADGET | WFLG_CLOSEGADGET |
                   WFLG_ACTIVATE | WFLG_SMART_REFRESH,
+        /* V39 tag, documented as ignored by V37 and earlier, so it is safe to
+           pass unconditionally with the decision as its value. */
+        WA_NewLookMenus, (ULONG)(g_newlook ? TRUE : FALSE),
         g_pub ? WA_PubScreen : WA_CustomScreen, (ULONG)g_scr,
         TAG_END);
     if (!g_win) goto cleanup_gad;
