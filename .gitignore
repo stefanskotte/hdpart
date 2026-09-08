@@ -10,3 +10,7 @@ amiga_boot/
 amiga_scratch/
 .vscode/
 .playwright-mcp/
+
+# asl.library is Commodore-copyrighted: never commit it. Drop a local copy
+# here if you want `make adf` to bundle one into the floppy.
+tools/asl.library

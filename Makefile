@@ -82,7 +82,7 @@ hd: $(OUT).exe
 install-fsuae:
 	@mkdir -p "$(FSUAE_CFG_DIR)"
 	@cp tools/fsuae/*.fs-uae "$(FSUAE_CFG_DIR)/"
-	$(info Installed FS-UAE configs -> $(FSUAE_CFG_DIR)/  (HDPart, HDPart-204, HDPart-204-ownscreen))
+	$(info Installed FS-UAE configs -> $(FSUAE_CFG_DIR)/  (every tools/fsuae/*.fs-uae))
 
 # `make adf`            build a shareable 880K OFS floppy with the program + icons
 #                       (out/HDPart-$(ADFVER).adf). Primary use: mount under an
@@ -104,15 +104,17 @@ adf: $(OUT).exe tools/HDPart.info tools/Disk.info
 	    + write tools/HDPart.info HDPart.info \
 	    + write tools/Disk.info Disk.info
 	@rm -f out/.adf-startup-sequence
-	@# Bundle asl.library into Libs/ so the file requester works on a bare-floppy
-	@# boot (no system LIBS:). tools/asl.library ships in the repo (WB2.04 V37.27,
-	@# loads on Kickstart 2.04 through 3.1); HDPart late-assigns LIBS: to find it.
-	@# The guard keeps `make adf` working if the file is ever removed locally.
+	@# asl.library is NOT shipped in this repo (it is Commodore-copyrighted) and
+	@# is not ROM-resident, so the stock floppy has no file requester: the pickers
+	@# fall back to typed paths, and Project/Load asl.library... can bring in a
+	@# requester from any disk that has one. If you drop your own copy at
+	@# tools/asl.library (V37+, gitignored) it gets bundled into Libs/ here, and
+	@# HDPart late-assigns LIBS: to PROGDIR:Libs to find it.
 	@if [ -f tools/asl.library ]; then \
 	    xdftool $(ADF) makedir Libs + write tools/asl.library Libs/asl.library ; \
-	    echo "Built -> $(ADF)  (+ bundled Libs/asl.library)" ; \
+	    echo "Built -> $(ADF)  (+ local Libs/asl.library)" ; \
 	else \
-	    echo "Built -> $(ADF)  (no tools/asl.library; typed-path fallback applies on bare boot)" ; \
+	    echo "Built -> $(ADF)  (no asl.library; typed-path fallback + Load asl.library...)" ; \
 	fi
 
 clean:

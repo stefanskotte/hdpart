@@ -218,7 +218,7 @@ static void gui_status(const char *s)
 
 /* FULLMENUNUM indices (menu,item) for enable/disable + dispatch readability. */
 enum { MN_PROJECT=0, MN_DISK=1, MN_PART=2 };
-enum { IT_ABOUT=0, IT_SAVE=2, IT_QUIT=4 };               /* Project items */
+enum { IT_ABOUT=0, IT_ASL=1, IT_SAVE=3, IT_QUIT=5 };     /* Project items */
 enum { ID_SCAN=0, ID_LOAD=1, ID_REFRESH=3, ID_INIT=4, ID_FS=5 };  /* Disk items   */
 enum { IP_NEW=0, IP_EDIT=1, IP_DELETE=2, IP_SPLIT=4, IP_RESIZE=5, IP_FORMAT=6 }; /* Partition items */
 
@@ -247,6 +247,7 @@ static void gui_update_buttons(void)
     GT_SetGadgetAttrs(g_gad[GID_FORMAT], g_win, 0, GA_Disabled, (ULONG)!hasSel, TAG_END);
     GT_SetGadgetAttrs(g_gad[GID_FS],     g_win, 0, GA_Disabled, (ULONG)!hasModel, TAG_END);
     gui_menu_enable(MN_PROJECT, IT_SAVE,    hasModel && g_dirty);
+    gui_menu_enable(MN_PROJECT, IT_ASL,     !AslBase);   /* nothing to do once loaded */
     gui_menu_enable(MN_DISK,    ID_SCAN,    g_target_driver[0] != 0);
     gui_menu_enable(MN_DISK,    ID_REFRESH, g_cur_unitidx >= 0);
     gui_menu_enable(MN_DISK,    ID_INIT,    hasGeo);
@@ -314,6 +315,7 @@ static void gui_refresh_parts(void)
 static struct NewMenu g_newmenu[] = {
     { NM_TITLE, "Project",       0,  0, 0, 0 },
     {  NM_ITEM, "About HDPart...",0, 0, 0, (APTR)0 },
+    {  NM_ITEM, "Load asl.library...", 0, 0, 0, 0 },
     {  NM_ITEM, NM_BARLABEL,     0,  0, 0, 0 },
     {  NM_ITEM, "Save",         "S", 0, 0, 0 },
     {  NM_ITEM, NM_BARLABEL,     0,  0, 0, 0 },
@@ -660,6 +662,85 @@ static int gui_pick_file(const char *title, const char *init, char *out, int out
     }
     FreeAslRequest(fr);
     return ok;
+}
+
+/* Case-insensitive test that `s` ends in ".library". */
+static int ends_in_library(const char *s)
+{
+    static const char suf[] = ".library";
+    int n = 0, i;
+    while (s[n]) n++;
+    if (n < 8) return 0;
+    for (i = 0; i < 8; i++) {
+        char c = s[n - 8 + i];
+        if (c >= 'A' && c <= 'Z') c = (char)(c - 'A' + 'a');
+        if (c != suf[i]) return 0;
+    }
+    return 1;
+}
+
+/* Open asl.library out of `drawer` by making LIBS: resolve it. OpenLibrary only
+   ever searches LIBS: (and RAM:), so pointing LIBS: at the drawer is the way to
+   load a library from an arbitrary place. The drawer is probed for the file
+   FIRST so a wrong path never leaves a junk assign behind. AssignAdd appends to
+   an existing LIBS: (never clobbering a real Workbench one); AssignLock creates
+   it when there is none. Both consume the lock on success — UnLock only on
+   failure. Returns 1 if AslBase is open afterwards. */
+static int asl_open_from_drawer(const char *drawer)
+{
+    static char probe[256];
+    BPTR libsdir, existing, f;
+    LONG ok;
+    int i = 0;
+
+    if (AslBase) return 1;
+    while (drawer[i] && i < (int)sizeof(probe) - 1) { probe[i] = drawer[i]; i++; }
+    probe[i] = 0;
+    if (!AddPart((STRPTR)probe, (CONST_STRPTR)"asl.library", sizeof(probe))) return 0;
+    f = Lock((CONST_STRPTR)probe, SHARED_LOCK);
+    if (!f) return 0;                       /* no asl.library in that drawer */
+    UnLock(f);
+
+    libsdir = Lock((CONST_STRPTR)drawer, SHARED_LOCK);
+    if (!libsdir) return 0;
+    existing = Lock((CONST_STRPTR)"LIBS:", SHARED_LOCK);
+    if (existing) { UnLock(existing); ok = AssignAdd((STRPTR)"LIBS", libsdir); }
+    else          { ok = AssignLock((STRPTR)"LIBS", libsdir); }
+    if (!ok) { UnLock(libsdir); return 0; }
+    AslBase = OpenLibrary("asl.library", 37);
+    return AslBase ? 1 : 0;
+}
+
+/* Project/Load asl.library... — HDPart bundles no library of its own, so on a
+   bare floppy boot (no system LIBS:) the file requester is unavailable and the
+   pickers fall back to typed paths. This lets the user point HDPart at any
+   asl.library they do have — on a Workbench disk, another partition, wherever —
+   and get the real requester for the rest of the session. Accepts the drawer or
+   the full path to the library file. */
+static void gui_load_asl(void)
+{
+    static char path[256];
+    int n = 0, cut = -1, i;
+
+    if (AslBase) { gui_msg("Load asl.library", "asl.library is already loaded."); return; }
+    if (!gui_string_dialog("Load asl.library", "Drawer holding asl.library:",
+                           "SYS:Libs", path, sizeof(path)))
+        return;
+
+    /* Trim a trailing "...library" so a full file path works too: keep a ':'
+       (it is part of the volume name), drop a '/'. */
+    while (path[n]) n++;
+    for (i = 0; i < n; i++) if (path[i] == '/' || path[i] == ':') cut = i;
+    if (ends_in_library(path + cut + 1))
+        path[(cut < 0) ? 0 : (path[cut] == ':' ? cut + 1 : cut)] = 0;
+    if (!path[0]) { const char *pd = "PROGDIR:"; for (i = 0; pd[i]; i++) path[i] = pd[i]; path[i] = 0; }
+
+    if (asl_open_from_drawer(path)) {
+        gui_status("asl.library loaded - file requesters enabled.");
+        gui_update_buttons();
+    } else {
+        gui_msg("Load asl.library", "No asl.library could be opened from\nthat drawer.");
+    }
 }
 
 static char g_msgbuf[120];
@@ -1694,23 +1775,14 @@ int gui_run(void)
         if (GfxBase) CloseLibrary((struct Library *)GfxBase);
         return 20;
     }
-    AslBase = OpenLibrary("asl.library", 37);   /* optional; absent on a bare floppy */
-    if (!AslBase) {
-        /* No system asl.library (e.g. booted from the bare HDPart floppy, which
-           carries no LIBS:). If the floppy ships one in PROGDIR:Libs, make LIBS:
-           resolve it — WITHOUT clobbering a real Workbench LIBS: — and retry.
-           AssignAdd appends to an existing LIBS:; AssignLock creates it when none
-           exists. Both consume the lock on success; we UnLock only on failure. */
-        BPTR libsdir = Lock((CONST_STRPTR)"PROGDIR:Libs", SHARED_LOCK);
-        if (libsdir) {
-            BPTR existing = Lock((CONST_STRPTR)"LIBS:", SHARED_LOCK);
-            LONG ok;
-            if (existing) { UnLock(existing); ok = AssignAdd((STRPTR)"LIBS", libsdir); }
-            else          { ok = AssignLock((STRPTR)"LIBS", libsdir); }
-            if (ok) AslBase = OpenLibrary("asl.library", 37);
-            else    UnLock(libsdir);
-        }
-    }
+    /* asl.library is optional: it is not ROM-resident on KS2.04/3.x (it lives in
+       LIBS: on the Workbench disk) and HDPart bundles none, so a bare floppy boot
+       has no file requester. Try the system LIBS: first, then a Libs/ drawer next
+       to the binary for anyone who copied one onto the disk themselves. Failing
+       both, the pickers use the typed-path dialog and Project/Load asl.library...
+       can still bring in a requester at any time. */
+    AslBase = OpenLibrary("asl.library", 37);
+    if (!AslBase) (void)asl_open_from_drawer("PROGDIR:Libs");
 
     /* Render on the Workbench screen ONLY if its font is the 8-point topaz our
        fixed-pixel layout is designed for. On a bare ADF boot Intuition opens a
@@ -1880,6 +1952,7 @@ int gui_run(void)
                         UWORD mn = MENUNUM(mnum), it = ITEMNUM(mnum);
                         if (mn == MN_PROJECT) {
                             if (it == IT_ABOUT) gui_about();
+                            else if (it == IT_ASL) gui_load_asl();
                             else if (it == IT_SAVE) gui_save();
                             else if (it == IT_QUIT) {
                                 if (!g_dirty || gui_confirm("Quit HDPart",

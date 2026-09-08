@@ -1,0 +1,20 @@
+# HDPart file-requester test: Kickstart 2.04, NO Workbench (so no system LIBS:
+# and no asl.library — the state a bare HDPart floppy boots into). Boots the
+# project's amiga_boot/ directory, whose s/startup-sequence auto-runs HDPart on
+# its own screen; the pickers therefore fall back to typed paths.
+#
+# A Workbench 2.04 disk sits in DF1: (NOT df0:, so it does not boot) purely as a
+# source of a library: Project -> "Load asl.library..." -> type  DF1:Libs  and the
+# real ASL file requester should light up for the rest of the session (the menu
+# item greys out once it is loaded). HDPart bundles no asl.library of its own.
+#
+# Refresh the binary with `make hd` after each build.
+
+[fs-uae]
+amiga_model = A500+
+chip_memory = 2048
+kickstart_file = amiga-os-204.rom
+floppy_drive_1 = /Users/sfs/Downloads/WB204/Workbench v2.04 rev 37.67 (1991)(Commodore)(Disk 1 of 4)(Workbench).adf
+hard_drive_0 = /Users/sfs/Devel/party/amiga_boot
+hard_drive_0_label = HDBoot
+save_disk = 0
