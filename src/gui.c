@@ -459,20 +459,26 @@ static void dlg_center(int w, int h, int *left, int *top)
     *left = L < 0 ? 0 : L;
     *top  = T < 0 ? 0 : T;
 }
+/* The dialog window currently on top, or NULL. Only used to parent the ASL
+   requester (see gui_pick_file); dlg_close always clears it, so it is either a
+   live window or NULL — a nested dialog just falls back to the main window. */
+static struct Window *g_dlgwin = 0;
+
 static struct Window *dlg_open(const char *title, int L, int T, int w, int h,
                                ULONG idcmp, struct Gadget *glist)
 {
-    return OpenWindowTags(0,
+    return (g_dlgwin = OpenWindowTags(0,
         WA_Left, L, WA_Top, T, WA_Width, w, WA_Height, h,
         WA_Title, (ULONG)title, WA_Gadgets, (ULONG)glist,
         WA_IDCMP, IDCMP_CLOSEWINDOW | IDCMP_REFRESHWINDOW | idcmp,
         WA_Flags, WFLG_DRAGBAR | WFLG_DEPTHGADGET | WFLG_ACTIVATE | WFLG_SMART_REFRESH,
         g_pub ? WA_PubScreen : WA_CustomScreen, (ULONG)g_scr,
-        TAG_END);
+        TAG_END));
 }
 static void dlg_refresh(struct Window *w) { GT_BeginRefresh(w); GT_EndRefresh(w, TRUE); }
 static void dlg_close(struct Window *w, struct Gadget *glist)
 {
+    if (w == g_dlgwin) g_dlgwin = 0;
     if (w) CloseWindow(w);
     if (glist) FreeGadgets(glist);
 }
@@ -647,10 +653,22 @@ static int gui_pick_file(const char *title, const char *init, char *out, int out
 
     if (!AslBase) return gui_path_dialog(title, init, out, outsz);
 
+    /* ASLFR_Window is the ONE way a V37 asl.library can be told where to open:
+       it is tag ASL_TB+2, the old V37 ASL_Window, whereas ASLFR_Screen (ASL_TB+40)
+       is V38+ and a V37 library ignores it — it then tries the default public
+       screen, and on a Workbench-less boot there is none, so AslRequest() simply
+       returned FALSE and the button appeared to do nothing. Parent to whichever
+       window is in front (a dialog, e.g. Filesystems, else the main window) so
+       the requester also cannot open behind it. The last three tags are V38/V44/
+       V45 and are ignored by older libraries. */
     fr = (struct FileRequester *)AllocAslRequestTags(ASL_FileRequest,
             ASLFR_TitleText,     (ULONG)title,
             ASLFR_InitialDrawer, (ULONG)init,
-            ASLFR_Screen,        (ULONG)g_scr,   /* open on OUR screen, not WB */
+            ASLFR_Window,        (ULONG)(g_dlgwin ? g_dlgwin : g_win),
+            ASLFR_Screen,        (ULONG)g_scr,   /* V38+: used when no window */
+            ASLFR_SleepWindow,   TRUE,
+            ASLFR_PopToFront,    TRUE,
+            ASLFR_Activate,      TRUE,
             TAG_END);
     if (!fr) { gui_msg(title, "Could not open the file requester."); return 0; }
     if (AslRequest(fr, 0)) {
@@ -736,7 +754,7 @@ static void gui_load_asl(void)
     if (!path[0]) { const char *pd = "PROGDIR:"; for (i = 0; pd[i]; i++) path[i] = pd[i]; path[i] = 0; }
 
     if (asl_open_from_drawer(path)) {
-        gui_status("asl.library loaded - file requesters enabled.");
+        gui_status("asl.library loaded.");
         gui_update_buttons();
     } else {
         gui_msg("Load asl.library", "No asl.library could be opened from\nthat drawer.");
