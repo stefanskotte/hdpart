@@ -69,6 +69,12 @@ class Suite {
       this.results.push({ name, pass: false, err: err.message });
       console.log(`  FAIL ${name}: ${err.message}`);
       try { await this.e.shot(`${this.dir}/shots/FAIL-${this.results.length}.png`); } catch { /* emulator gone */ }
+      try {   // what the program was doing: a timeout alone can't tell busy from stuck
+        const task = JSON.parse(await this.e.tool('winuae_tasks')).find((x) => x.address === this.e.process);
+        console.log(`       task: ${JSON.stringify(task)}`);
+        console.log(`       windows: ${JSON.stringify((await this.e.windows()).map((w) => w.title))}`);
+        console.log(`       unit=${await this.e.g32('g_cur_unitidx')} dirty=${await this.dirty()} status="${await this.status()}"`);
+      } catch { /* emulator gone */ }
       throw err;
     }
   }
