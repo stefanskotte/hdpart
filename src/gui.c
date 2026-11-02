@@ -1026,6 +1026,17 @@ static void preset_apply(struct Window *dw, struct Gadget *field, struct Gadget 
     GT_SetGadgetAttrs(help, dw, 0, GTTX_Text, (ULONG)helps[idx], TAG_END);
 }
 
+/* Group frames for the Edit dialog: identity, boot, and advanced transfer settings. */
+#define ED_W 408
+static void edit_chrome(struct Window *dw)
+{
+    struct RastPort *rp = dw->RPort;
+    int x = g_leftb + 4, w = ED_W - 8;
+    DrawBevelBox(rp, x, g_topb + 3,  w, 56, GT_VisualInfo, (ULONG)g_vi, TAG_END);
+    DrawBevelBox(rp, x, g_topb + 61, w, 20, GT_VisualInfo, (ULONG)g_vi, TAG_END);
+    DrawBevelBox(rp, x, g_topb + 83, w, 68, GT_VisualInfo, (ULONG)g_vi, TAG_END);
+}
+
 static int gui_edit_dialog(int index)
 {
     struct Window *dw;
@@ -1120,7 +1131,8 @@ static int gui_edit_dialog(int index)
     if (!g) return 0;
     ng.ng_TextAttr = &g_font; ng.ng_VisualInfo = g_vi; ng.ng_Flags = 0;
 
-    ng.ng_LeftEdge = dl + 110; ng.ng_TopEdge = dt + 6; ng.ng_Width = 180; ng.ng_Height = 14;
+    /* Fields share one left edge (x=104) with labels to their left. */
+    ng.ng_LeftEdge = dl + 104; ng.ng_TopEdge = dt + 7; ng.ng_Width = 292; ng.ng_Height = 14;
     ng.ng_GadgetText = (UBYTE *)"Name"; ng.ng_GadgetID = 1;
     g = CreateGadget(STRING_KIND, g, &ng, GTST_String, (ULONG)nameBuf, GTST_MaxChars, 31, TAG_END);
     gName = g;
@@ -1130,21 +1142,21 @@ static int gui_edit_dialog(int index)
       p += u2s(sizeMaxLabel + p, maxMB); sizeMaxLabel[p++]=' '; sizeMaxLabel[p++]='M'; sizeMaxLabel[p++]='B';
       sizeMaxLabel[p] = 0; }
 
-    ng.ng_LeftEdge = dl + 110; ng.ng_TopEdge = dt + 26; ng.ng_Width = 80; ng.ng_Height = 14;
+    ng.ng_LeftEdge = dl + 104; ng.ng_TopEdge = dt + 23; ng.ng_Width = 80; ng.ng_Height = 14;
     ng.ng_GadgetText = (UBYTE *)"Size (MB)"; ng.ng_GadgetID = 2;
     g = CreateGadget(INTEGER_KIND, g, &ng, GTIN_Number, curMB, GTIN_MaxChars, 7, TAG_END);
     gSize = g;
 
-    ng.ng_LeftEdge = dl + 200; ng.ng_Width = 110; ng.ng_GadgetText = 0; ng.ng_GadgetID = 0;
+    ng.ng_LeftEdge = dl + 192; ng.ng_Width = 110; ng.ng_GadgetText = 0; ng.ng_GadgetID = 0;
     g = CreateGadget(TEXT_KIND, g, &ng, GTTX_Text, (ULONG)sizeMaxLabel, TAG_END);
 
-    /* FS row: FFS/OFS (+ 'keep') cycle, plus Intl and DirCache checkboxes. */
-    ng.ng_LeftEdge = dl + 110; ng.ng_TopEdge = dt + 48; ng.ng_Width = 80; ng.ng_Height = 14;
-    ng.ng_GadgetText = (UBYTE *)"FS"; ng.ng_GadgetID = 4;
+    /* Filesystem: FFS/OFS (+ pool and 'keep') cycle, plus Intl and DirCache. */
+    ng.ng_LeftEdge = dl + 104; ng.ng_TopEdge = dt + 40; ng.ng_Width = 110; ng.ng_Height = 14;
+    ng.ng_GadgetText = (UBYTE *)"Filesystem"; ng.ng_GadgetID = 4;
     g = CreateGadget(CYCLE_KIND, g, &ng, GTCY_Labels, (ULONG)fsLabels, GTCY_Active, (ULONG)fsActive, TAG_END);
     gFsCyc = g;
 
-    ng.ng_LeftEdge = dl + 236; ng.ng_TopEdge = dt + 48; ng.ng_Width = 26; ng.ng_Height = 11;
+    ng.ng_LeftEdge = dl + 268; ng.ng_TopEdge = dt + 41; ng.ng_Width = 26; ng.ng_Height = 11;
     ng.ng_GadgetText = (UBYTE *)"Intl"; ng.ng_GadgetID = 14;
     { int ckDis = !fsRom || (fsActive >= fsPoolBase);
       g = CreateGadget(CHECKBOX_KIND, g, &ng,
@@ -1152,7 +1164,7 @@ static int gui_edit_dialog(int index)
                        GA_Disabled,  (ULONG)ckDis, TAG_END); }
     gIntl = g;
 
-    ng.ng_LeftEdge = dl + 320; ng.ng_TopEdge = dt + 48; ng.ng_Width = 26; ng.ng_Height = 11;
+    ng.ng_LeftEdge = dl + 362; ng.ng_TopEdge = dt + 41; ng.ng_Width = 26; ng.ng_Height = 11;
     ng.ng_GadgetText = (UBYTE *)"Cache"; ng.ng_GadgetID = 15;
     { int ckDis = !fsRom || !v39 || (fsActive >= fsPoolBase);
       g = CreateGadget(CHECKBOX_KIND, g, &ng,
@@ -1160,52 +1172,52 @@ static int gui_edit_dialog(int index)
                        GA_Disabled,  (ULONG)ckDis, TAG_END); }
     gCache = g;
 
-    /* Bootable (checkbox) + Boot Pri (integer) share a row. */
-    ng.ng_LeftEdge = dl + 110; ng.ng_TopEdge = dt + 70; ng.ng_Width = 26; ng.ng_Height = 11;
+    /* Boot group. */
+    ng.ng_LeftEdge = dl + 104; ng.ng_TopEdge = dt + 66; ng.ng_Width = 26; ng.ng_Height = 11;
     ng.ng_GadgetText = (UBYTE *)"Bootable"; ng.ng_GadgetID = 5;
     g = CreateGadget(CHECKBOX_KIND, g, &ng, GTCB_Checked, (ULONG)(pt->bootable ? TRUE : FALSE), TAG_END);
     gBoot = g;
 
-    ng.ng_LeftEdge = dl + 230; ng.ng_TopEdge = dt + 70; ng.ng_Width = 50; ng.ng_Height = 14;
+    ng.ng_LeftEdge = dl + 268; ng.ng_TopEdge = dt + 64; ng.ng_Width = 50; ng.ng_Height = 14;
     ng.ng_GadgetText = (UBYTE *)"Boot Pri"; ng.ng_GadgetID = 6;
     g = CreateGadget(INTEGER_KIND, g, &ng, GTIN_Number, (ULONG)(LONG)pt->boot_pri, GTIN_MaxChars, 6, TAG_END);
     gPri = g;
 
     /* MaxTransfer: cycle (preset names) + hex value field + help line. */
-    ng.ng_LeftEdge = dl + 110; ng.ng_TopEdge = dt + 92; ng.ng_Width = 120; ng.ng_Height = 14;
+    ng.ng_LeftEdge = dl + 104; ng.ng_TopEdge = dt + 87; ng.ng_Width = 110; ng.ng_Height = 14;
     ng.ng_GadgetText = (UBYTE *)"MaxTransfer"; ng.ng_GadgetID = 7;
     g = CreateGadget(CYCLE_KIND, g, &ng, GTCY_Labels, (ULONG)kMaxTLabels, GTCY_Active, (ULONG)maxtIdx, TAG_END);
     gMaxTCyc = g;
-    ng.ng_LeftEdge = dl + 236; ng.ng_TopEdge = dt + 92; ng.ng_Width = 100; ng.ng_GadgetText = 0; ng.ng_GadgetID = 12;
+    ng.ng_LeftEdge = dl + 218; ng.ng_Width = 100; ng.ng_GadgetText = 0; ng.ng_GadgetID = 12;
     g = CreateGadget(STRING_KIND, g, &ng, GTST_String, (ULONG)maxtBuf, GTST_MaxChars, 11,
                      GA_Disabled, (ULONG)(maxtIdx < N_MAXT), TAG_END);
     gMaxT = g;
-    ng.ng_LeftEdge = dl + 10; ng.ng_TopEdge = dt + 110; ng.ng_Width = 300; ng.ng_GadgetText = 0; ng.ng_GadgetID = 0;
+    ng.ng_LeftEdge = dl + 104; ng.ng_TopEdge = dt + 102; ng.ng_Width = 292; ng.ng_GadgetText = 0; ng.ng_GadgetID = 0;
     g = CreateGadget(TEXT_KIND, g, &ng, GTTX_Text, (ULONG)kMaxTHelp[maxtIdx], TAG_END);
     gMaxTHelp = g;
 
     /* Mask: cycle (controller presets) + hex value field + help line. */
-    ng.ng_LeftEdge = dl + 110; ng.ng_TopEdge = dt + 128; ng.ng_Width = 120; ng.ng_Height = 14;
+    ng.ng_LeftEdge = dl + 104; ng.ng_TopEdge = dt + 119; ng.ng_Width = 110; ng.ng_Height = 14;
     ng.ng_GadgetText = (UBYTE *)"Mask"; ng.ng_GadgetID = 8;
     g = CreateGadget(CYCLE_KIND, g, &ng, GTCY_Labels, (ULONG)kMaskLabels, GTCY_Active, (ULONG)maskIdx, TAG_END);
     gMaskCyc = g;
-    ng.ng_LeftEdge = dl + 236; ng.ng_TopEdge = dt + 128; ng.ng_Width = 100; ng.ng_GadgetText = 0; ng.ng_GadgetID = 13;
+    ng.ng_LeftEdge = dl + 218; ng.ng_Width = 100; ng.ng_GadgetText = 0; ng.ng_GadgetID = 13;
     g = CreateGadget(STRING_KIND, g, &ng, GTST_String, (ULONG)maskBuf, GTST_MaxChars, 11,
                      GA_Disabled, (ULONG)(maskIdx < N_MASK), TAG_END);
     gMask = g;
-    ng.ng_LeftEdge = dl + 10; ng.ng_TopEdge = dt + 146; ng.ng_Width = 300; ng.ng_GadgetText = 0; ng.ng_GadgetID = 0;
+    ng.ng_LeftEdge = dl + 104; ng.ng_TopEdge = dt + 134; ng.ng_Width = 292; ng.ng_GadgetText = 0; ng.ng_GadgetID = 0;
     g = CreateGadget(TEXT_KIND, g, &ng, GTTX_Text, (ULONG)kMaskHelp[maskIdx], TAG_END);
     gMaskHelp = g;
 
-    ng.ng_LeftEdge = dl + 10; ng.ng_TopEdge = dt + 168; ng.ng_Width = 70; ng.ng_Height = 14;
+    ng.ng_LeftEdge = dl + 4; ng.ng_TopEdge = dt + 155; ng.ng_Width = 90; ng.ng_Height = 14;
     ng.ng_GadgetText = (UBYTE *)"Ok"; ng.ng_GadgetID = 10;
     g = CreateGadget(BUTTON_KIND, g, &ng, TAG_END);
-    ng.ng_LeftEdge = dl + 270; ng.ng_GadgetText = (UBYTE *)"Cancel"; ng.ng_GadgetID = 11;
+    ng.ng_LeftEdge = dl + ED_W - 94; ng.ng_GadgetText = (UBYTE *)"Cancel"; ng.ng_GadgetID = 11;
     g = CreateGadget(BUTTON_KIND, g, &ng, TAG_END);
     if (!g) { FreeGadgets(dglist); return 0; }
 
-    {   int dwW = dl + 350 + g_scr->WBorRight;
-        int dwH = dt + 190 + g_scr->WBorBottom;
+    {   int dwW = dl + ED_W + g_scr->WBorRight;
+        int dwH = dt + 173 + g_scr->WBorBottom;
         int dwL = 0, dwT = 0;
         dlg_center(dwW, dwH, &dwL, &dwT);
         dw = dlg_open("Edit Partition", dwL, dwT, dwW, dwH,
@@ -1213,6 +1225,7 @@ static int gui_edit_dialog(int index)
     }
     if (!dw) { FreeGadgets(dglist); return 0; }
     GT_RefreshWindow(dw, 0);
+    edit_chrome(dw);
 
     while (!done) {
         struct IntuiMessage *im;
@@ -1223,7 +1236,9 @@ static int gui_edit_dialog(int index)
             UWORD code = im->Code;
             GT_ReplyIMsg(im);
             if (cl == IDCMP_CLOSEWINDOW) { done = 1; }
-            else if (cl == IDCMP_REFRESHWINDOW) { dlg_refresh(dw); }
+            else if (cl == IDCMP_REFRESHWINDOW) {
+                GT_BeginRefresh(dw); edit_chrome(dw); GT_EndRefresh(dw, TRUE);
+            }
             else if (cl == IDCMP_GADGETUP) {
                 if (ig == gMaxTCyc) {
                     preset_apply(dw, gMaxT, gMaxTHelp, (int)code, kMaxTValues, N_MAXT, kMaxTHelp);

@@ -345,6 +345,7 @@ class Suite {
       await this.clickMain(GID.EDIT);
       const w = await e.waitWin('Edit Partition');
       await e.click(w, ED.FS); await sleep(250); await e.click(w, ED.FS); await sleep(250);
+      await e.shot(`${this.dir}/shots/edit.png`);
       await e.clickClose(w, ED.OK);
       ok((await this.row(1)).includes('PFS\\3'), `row: ${await this.row(1)}`);
       eq(await this.dirty(), 1, 'dirty');
