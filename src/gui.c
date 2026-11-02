@@ -2050,7 +2050,7 @@ int gui_run(void)
         WA_Top,  g_scr->BarHeight + 4,
         WA_Width,  g_leftb + WIN_W + g_scr->WBorRight,
         WA_Height, g_topb + WIN_H + g_scr->WBorBottom,
-        WA_Title, (ULONG)"HDPart 0.11",
+        WA_Title, (ULONG)"HDPart 0.11.1",
         WA_Gadgets, (ULONG)g_glist,
         WA_IDCMP, IDCMP_CLOSEWINDOW | IDCMP_REFRESHWINDOW | IDCMP_MOUSEBUTTONS | IDCMP_MENUPICK | IDCMP_VANILLAKEY | CYCLEIDCMP | BUTTONIDCMP | ARROWIDCMP,
         WA_Flags, WFLG_DRAGBAR | WFLG_DEPTHGADGET | WFLG_CLOSEGADGET |
@@ -2447,7 +2447,7 @@ static const char *drv_err_text(int code)
 static void gui_about(void)
 {
     gui_msg("About HDPart",
-            "HDPart 0.11\n"
+            "HDPart 0.11.1\n"
             "RDB hard-disk partition tool\n"
             "for AmigaOS 2.04+ (KS V37+).\n"
             "\n"
