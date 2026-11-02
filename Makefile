@@ -117,6 +117,11 @@ adf: $(OUT).exe tools/HDPart.info tools/Disk.info
 	    echo "Built -> $(ADF)  (no asl.library; typed-path fallback + Load asl.library...)" ; \
 	fi
 
+# `make target-test`    run the full on-target suite in WinUAE on KS 2.04, 3.1 and 3.2.
+#                       Needs WinUAE, mcp-winuae-emu and ROMs: see tests/target/README.md.
+target-test: $(OUT).exe
+	@node tests/target/run.mjs $(KS)
+
 clean:
 	$(info Cleaning...)
 ifdef WINDOWS

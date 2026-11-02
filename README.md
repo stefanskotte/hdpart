@@ -5,13 +5,15 @@ usable HDToolBox replacement aimed at CF/SD-on-IDE retro setups. GadTools GUI,
 single window, runs on a real Workbench or boots standalone from its own floppy.
 
 - Discover a device → read its Rigid Disk Block → init / partition / resize / split → save.
-- **Format** a partition into a ready, empty volume live — no reboot — using the
-  ROM filesystem (FFS/OFS, Intl, DirCache). Won't touch the disk you booted from.
+- **Format** a partition into a ready, empty volume live — no reboot. Won't format
+  the disk you booted from.
+- **Filesystems:** the ROM ones (FFS/OFS, Intl, DirCache), plus PFS3 and SFS
+  handlers embedded in the RDB, loaded from a file or copied from another disk.
 - Two-panel GUI (Disk / Partitions) with a disk-map bar, a screen-top Amiga menu
   bar, and keyboard shortcuts.
 - Freestanding 68000 build — runs on a stock A500+/A600/A1200/A4000.
 
-![HDPart 0.5 partitioning a disk](docs/screenshot.png)
+![HDPart partitioning a disk](docs/screenshot.png)
 
 ## Credits & attribution
 
@@ -46,6 +48,14 @@ Host-side RDB engine tests (system `cc`, no toolchain needed):
 ```sh
 ./tests/run-host-tests.sh       # unit tests for the RDB engine
 ./tests/verify-rdbtool.sh       # byte-for-byte cross-check vs amitools rdbtool
+```
+
+On-target suite, which drives the real GUI in WinUAE on Kickstart 2.04, 3.1 and
+3.2 (needs your own ROMs and a filesystem handler; see
+[`tests/target/README.md`](tests/target/README.md)):
+
+```sh
+make target-test
 ```
 
 ## License
