@@ -990,7 +990,7 @@ static const uint32_t    kMaxTValues[] = { 0x0001FE00u, 0x00FFFFFFu, 0x7FFFFFFFu
 static const char *const kMaxTHelp[]   = {
     "Safe on every disk",
     "SCSI controllers",
-    "KS 3.2 IDE, or drivers that split",
+    "3.1.4+ IDE, or drivers that split",
     "Too high can silently corrupt data"
 };
 #define N_MAXT 3
@@ -1031,9 +1031,9 @@ static const char kMaxTInfo[] =
     "the filesystem asks the driver for.\n"
     "\n"
     "Too high can silently corrupt data with FFS or\n"
-    "SFS on KS 2.05/3.1 onboard IDE: no error shows.\n"
-    "The KS 3.2 driver handles any length. PFS3 limits\n"
-    "itself on scsi.device.\n"
+    "SFS on IDE before OS 3.1.4: no error shows.\n"
+    "The 3.1.4 and later drivers handle any length.\n"
+    "PFS3 limits itself on scsi.device.\n"
     "\n"
     "Too low only makes large transfers slower, so\n"
     "IDE safe is the safe choice if unsure.";
@@ -1379,8 +1379,8 @@ static int gui_edit_dialog(int index)
                     if (!parse_hex32(mt, &mtv) || !parse_hex32(mk, &mkv) || !parse_hex32(mm, &mmv)) {
                         gui_msg("Edit", "MaxTransfer, Mask and Buffer memory\nmust be hex (e.g. 0x7FFFFFFE).");
                     } else if (mtv < g_model.block_bytes || mtv >= 0x80000000u) {
-                        /* Below a block PFS3 can loop forever; at the top bit FFS before
-                           KS 3.2 compares signed and can overrun the caller's buffer. */
+                        /* Below a block PFS3 can loop forever; at the top bit FFS 40.1
+                           and earlier compare signed and can overrun the caller's buffer. */
                         gui_msg("Edit", "MaxTransfer must be at least one block\nand below 0x80000000.");
                     } else if (bufs < 1) {
                         gui_msg("Edit", "Buffers must be 1 or more.");
@@ -3208,13 +3208,13 @@ static void gui_draw_details(void)
 
         p = u32_to_hex(buf, pt->maxtransfer);
         /* See docs/reference/rom-findings-maxtransfer-mask-buffers.md. scsi.device below
-           V47 trusts the drive for the next address past 256 sectors. PFS3 caps itself. */
+           V45 (OS 3.1.4) trusts the drive for the next address past 256 sectors. PFS3 caps itself. */
         if (pt->maxtransfer > 0x1FE00u && streq(g_cur_driver, "scsi.device") &&
             (pt->dos_type & 0xFFFFFF00u) != 0x50465300u) {
             struct Library *dv;
             Forbid();
             dv = (struct Library *)FindName(&SysBase->DeviceList, (CONST_STRPTR)"scsi.device");
-            if (dv && dv->lib_Version < 47) s_cat(buf, &p, "  ! too high for IDE");
+            if (dv && dv->lib_Version < 45) s_cat(buf, &p, "  ! too high for IDE");
             Permit();
         }
         buf[p] = 0;

@@ -27,7 +27,7 @@ Labels:
 
 - No ROM module was compressed or unreachable in the parts I needed.
 - KS 2.04 A500+ has no scsi.device (OBSERVED: no RomTag). Its FFS is still relevant.
-- Not analysed: carddisk.device (PCMCIA), A4000T ROM, IDEfix, Zorro controller ROMs, patched scsi.device 43/44.
+- Not analysed: carddisk.device (PCMCIA), IDEfix, Zorro controller ROMs, OS 3.2.3 and later (not in the collection). See section 2 for the full version sweep.
 - Variants of one module were compared on the first 4K only, plus spot checks of the relevant instructions.
   The "same" claims above are that strong and no stronger.
 
@@ -65,6 +65,43 @@ So:
 - Addressing is CHS only (`divu` at $FB6E62, no LBA bit). OBSERVED.
 - Drive selection reads word 47 of IDENTIFY and enables READ/WRITE MULTIPLE with up to 16 sectors ($FB71F0-$FB720C,
   commands $C4/$C5). OBSERVED, and EMULATED in the WinUAE log.
+
+### Every version, 36.38 to 47.4 (sweep of all ROMs, OS 3.5/3.9 updates, 3.1.4 and 3.2.2)
+
+The fix landed in **45.3 (OS 3.1.4, rt_Version 45)**, not in the 3.2 driver. The authors' scsi-RelNotes (Update3.2.2) state
+"Fixed the transmission for more than 255 blocks in a go, making MAXTRANSFER hopefully obsolete."
+
+`bad` = EMULATED with the ATA2+S drive: reads of 257/512/1024 sectors return 1/256/768 wrong sectors and a 512-sector write
+leaves 271 wrong, all with io_Error=0. `clean` = all correct in the same test. Reads of 255 and 256 were clean everywhere.
+
+| Driver | Where | Chunk, next address | Result |
+|---|---|---|---|
+| scsidisk 36.38, 37.19 | A3000 2.0, 2.04 | SCSI, no read-back loop (fingerprint) | n/a |
+| scsidisk 37.34 | A600 2.05 37.300 | 256, read-back (fingerprint $F87F30, $F87F5C) | not run |
+| scsidisk 37.55 | A600 2.05 37.350 | 256, read-back ($F87F84, $F87FB0) | **bad** |
+| scsidisk 37.64 | 3.0 A1200, A4000 | 256, read-back | **bad** (A1200) |
+| scsidisk 40.4 | 3.1 A4000 40.55, CD32 | 256, read-back | **bad** (A4000) |
+| scsidisk 40.4, 40.12 | 3.1 A3000 | SCSI, no read-back loop | n/a |
+| scsidisk 40.5 | 3.1 A600 40.63 | 256, read-back | **bad** |
+| scsidisk 40.12 | 3.1 A1200, A4000 40.68 | 256, read-back | **bad** (A1200, table below) |
+| scsidisk 40.20 | 3.1 A4000 40.70 | 256, read-back | **bad** |
+| IDE_scsidisk 43.30 | OS 3.5 ROM Update | 256, read-back (byte patterns only) | not run |
+| IDE_scsidisk 43.35 | OS 3.9 ROM Update | 256, read-back, limit 65535 (code at hunk offset $8BC0) | not run |
+| IDE_scsidisk 45.7 | 3.1.4 and 3.1.4.1 ROMs | Limit 255 ($FB579A), new CDB per chunk ($FB64C8) | **clean** (A1200, A4000) |
+| IDE_scsidisk 47.4 | 3.2, 3.2.1, 3.2.2 | As 45.7, translator uses a software counter | **clean** (3.2 and 3.2.2 A1200) |
+| scsidisk, A4000T_scsidisk 47.4 | 3.2.2 A3000, A4000T | SCSI, no read-back loop | n/a |
+
+WinUAE's own log prints "IDE maxtransfer check detected split >256 block transfer" during these runs.
+
+Limits of this table:
+
+- 45.7 still has a read-back in its translator, for both CHS and LBA ($FB6FC2, helper $FB7078). CMD_READ/CMD_WRITE never reach it because
+  the front end splits at 255 first, so only a direct HD_SCSICMD READ(10) above 255 sectors could. 47.4 replaced the LBA half with a software counter. OBSERVED.
+- The notes record a 4 GB bug fixed in 45.8: "A transfer across a 4GB boundary with more than 255 blocks involved would erroneously
+  trigger an error." So on 3.1.4 such a transfer fails loudly. Not run here. 0x1FE00 stays below the 255-block trigger.
+- 43.x was read, not run, because it loads from the OS ROM Update file. Build fingerprints are matches on instruction patterns.
+- All builds with the same version string are assumed the same. Only a sample was disassembled.
+- HDPart warns on name "scsi.device" below V45. An A3000's SCSI driver has the same name, so it gets the warning without needing it.
 
 ### scsi.device 47.4 (KS 3.2 IDE): fixed in the driver
 
@@ -136,7 +173,7 @@ Reads (2.04 $F99E8C-$F99ECC; 3.1 $FAAAEE-$FAAB30; 3.2 $FA994A-$FA9956, $FA9D1A-$
 - Only contiguous runs produce long transfers, so a fragmented partition may hide a bad value for a long time. INFERRED.
 - 3.2 only: if the Direct SCSI flag is set (bit 16 of de_Interleave, $FA992C), clamp to 0xFFFF << blockshift ($FA9E82-$FA9E92). OBSERVED.
 
-**Bug: top bit set on FFS before 3.2** (2.04, 2.05, 3.1):
+**Bug: top bit set on FFS through 40.1** (2.0, 2.04, 2.05, 3.0, 3.1; signed `ble` in all, by fingerprint):
 
 ```
 f9aad0: move.l d2,d5          ; requested length
@@ -150,7 +187,7 @@ ok:     lsr.l  d0,d5          ; becomes 0x7FFFFF blocks, no longer bounded by th
   The result is an overlong transfer into the caller's buffer, a memory overrun. On write it would take data from past the
   caller's buffer. INFERRED, **not run**.
 - Same code on the write side ($F9AEF2) and in 3.1 ($FA919E `ble`). OBSERVED.
-- 3.2 masks the top bit and uses unsigned compares ($FA9D46, $FA7EA6 `bls`). OBSERVED.
+- 3.2 masks the top bit and uses unsigned compares ($FA9D46, $FA7EA6 `bls`). OBSERVED. FFS 46.13 (3.1.4, $FA8076) and 45.9 (OS 3.9 update) already use `bls`; whether they mask the top bit was not checked. OS 3.5's 45.1 was not checked.
 - So values ≥0x80000000 must be refused. PFS3 and SFS use unsigned compares here and are not affected. OBSERVED.
 
 ### Mask
@@ -281,7 +318,7 @@ docs/reference/amiga-disk-size-maxtransfer-mask.md
 
 | Claim | Verdict |
 |---|---|
-| 0x1FE00 "required on every partition with any FS" on onboard IDE | **Too broad.** Needed for FFS and SFS on KS 2.05 and 3.1 scsi.device. Not needed with PFS3-AiO on that device. Not needed by driver logic on KS 3.2 (47.4). Still harmless everywhere, so right as a default. |
+| 0x1FE00 "required on every partition with any FS" on onboard IDE | **Too broad.** Needed for FFS and SFS on scsi.device from 37.34 to 43.35 (KS 2.05 to OS 3.9). Not needed with PFS3-AiO on that device. Not needed by driver logic from 45.x (OS 3.1.4) on. Still harmless everywhere, so right as a default. |
 | Higher values cause "read/write errors and corruption" | **Half wrong.** EMULATED: no error at all, silent wrong data and silent overwrites. Only on drives leaving stale registers; which real drives do that is UNVERIFIED. |
 | Limit is exactly 255 sectors | **Not supported.** 256 sectors was fine in all runs, and PFS3-AiO caps at 256. The boundary is 256/257 by code. 255 is a safe margin, needed only if a drive mishandles count 0 (UNVERIFIED). |
 | "No effect on speed" | **Mostly.** Each chunk is another command. Very small values go down to one block per request. Cost at 0x1FE00 not measured. |
@@ -292,7 +329,7 @@ docs/reference/amiga-disk-size-maxtransfer-mask.md
 | Mask only matters for DMA | **Confirmed for ROM IDE** (PIO, odd address handled). A3000 DMA driver also self-protects. |
 | A1200/A4000 IDE mask 0xFFFFFFFC | **No basis in the ROMs, and slightly harmful.** Driver handles any alignment. On FFS it forces word-aligned buffers through block-by-block copying. |
 | Mask/MaxTransfer are "emergency workarounds" | **Misleading.** Mask is a routing choice between direct and copied I/O, and does not cover FFS's own buffers. |
-| scsi.device table: "39.x Kickstart 3.1" | **Wrong version**: the 3.1 ROMs hold 40.12. KS 3.2's 47.4 (LBA48, 255 chunks) is missing from the table. |
+| scsi.device table: "39.x Kickstart 3.1" | **Wrong version**: the 3.1 ROMs hold 40.12. 3.1.4's 45.7 and KS 3.2's 47.4 (LBA48, 255 chunks) are missing from the table. |
 | "CHS only" for original scsi.device | **Confirmed** for 37.34 and 40.12. |
 | Capacity, FS size and other tables | Out of scope, not checked. |
 
@@ -315,10 +352,10 @@ docs/reference/amiga-disk-size-maxtransfer-mask.md
 
 | Label | Value | Guidance |
 |---|---|---|
-| IDE safe (default) | 0x1FE00 | Onboard IDE on KS below 3.2 with FFS or SFS. Safe everywhere. |
+| IDE safe (default) | 0x1FE00 | Onboard IDE before OS 3.1.4 with FFS or SFS. Safe everywhere. |
 | SCSI | 0xFFFFFF | SCSI controllers. A3000 splits long transfers itself. |
-| No limit | 0x7FFFFFFF | Only if the driver handles any length, such as KS 3.2 IDE. |
-| Custom | | Block size to 0x7FFFFFFF. Higher corrupts memory on FFS before 3.2. |
+| No limit | 0x7FFFFFFF | Only if the driver handles any length, such as OS 3.1.4 or later IDE. |
+| Custom | | Block size to 0x7FFFFFFF. Higher corrupts memory on FFS 40.1 and earlier. |
 
 **Mask**
 
@@ -358,6 +395,7 @@ not establish the second from the ROMs.
 - FFS end to end on emulated IDE with a bad MaxTransfer. The probe calls the device directly; that FFS issues such transfers is from the code.
 - The FFS overrun and PFS3 hang were not executed.
 - No real hardware. No ATA standard was read.
+- OS 3.2.3 or later: not in the collection.
 - pfs3aio-custom and 2.05 FFS: spot checks only.
 
 Probe source and harness: scratchpad/w/exp (t.s, run.mjs). Ran on port 2346; the repo was not modified.

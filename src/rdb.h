@@ -70,7 +70,7 @@ typedef struct {
 #define RDB_RESERVED_CYLS 2u          /* cylinders reserved for RDB metadata */
 #define RDB_RESERVED_MIN_BLOCKS 1024u /* reserve >= this many metadata blocks (table + ~512KB embedded FS) */
 #define RDB_DOSTYPE_FFS_INTL 0x444F5303u
-/* New partitions: above this, FFS and SFS on KS 2.05/3.1 onboard IDE can silently
+/* New partitions: above this, FFS and SFS on onboard IDE before OS 3.1.4 can silently
    corrupt data. See docs/reference/rom-findings-maxtransfer-mask-buffers.md. */
 #define RDB_DEFAULT_MAXTRANSFER 0x0001FE00u
 /* A table too short to hold the field: the OS applies no limit, so show that. */
