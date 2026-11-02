@@ -281,6 +281,23 @@ class Suite {
       await e.waitFor('resize dialog closed', async () => !(await e.win('Resize partition')));
       ok((await this.row(0)) !== before, 'row unchanged after resize');
     });
+    await this.step('Resize: growing asks too, and Cancel leaves it unchanged', async () => {
+      const before = await this.row(0);
+      await this.selectPart(0);
+      await this.clickMain(GID.RESIZE);
+      const w = await e.waitWin('Resize partition');
+      await e.typeInto(w, 2, '3');
+      await sleep(400);
+      await e.click(w, 10);
+      await e.waitFor('confirmation on grow',
+        async () => (await e.windows()).filter((x) => x.title === 'Resize partition').length === 2);
+      await e.clickClose(await e.win('Resize partition'), CANCEL);
+      await e.waitFor('back in the dialog',
+        async () => (await e.windows()).filter((x) => x.title === 'Resize partition').length === 1);
+      await e.clickClose(await e.win('Resize partition'), 11);
+      await this.idle();
+      eq(await this.row(0), before, 'row after cancelling a grow');
+    });
     await this.step('New: fills the gap the resize left', async () => {
       await this.clickMain(GID.NEW);
       await this.answer('Edit Partition', ED.OK);
@@ -441,7 +458,7 @@ class Suite {
     });
     await this.step('Filesystems: Copy from disk imports the embedded handler', async () => {
       const label = await e.gstr('g_unittext', (await e.g32('g_cur_unitidx')) * 24, 24);
-      const srcUnit = Number(label.match(/Unit (\d+)/)[1]);
+      const srcUnit = Number(label.match(/#(\d+)/)[1]);
       await this.pickUnit(' 16 MB');
       await this.clickMain(GID.FS);
       const w = await e.waitWin('Filesystems');

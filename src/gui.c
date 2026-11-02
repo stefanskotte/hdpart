@@ -56,7 +56,7 @@ static struct Menu    *g_menu = 0;   /* menu strip attached to g_win */
 static DiscDisk g_disks[DISC_MAX];
 static int      g_ndisks;
 static const char *g_drvlabels[DISC_MAX + 2];   /* Driver cycle: prompt + names */
-static char     g_unittext[DISC_MAX][24];        /* "Unit <n> <size> MB", one per listed unit */
+static char     g_unittext[DISC_MAX][24];        /* "#<n> <size> MB", one per listed unit */
 static const char *g_unit_empty = "";            /* shown in the Units list when it has no units */
 static RdbModel g_model;
 static int      g_have_model;
@@ -1524,9 +1524,10 @@ static void resize_extent(char *buf, uint32_t lo, uint32_t hi)
 }
 
 /* Resize the selected partition: Size (MB) + which edge moves -> a new cylinder
-   range, applied via rdb_resize_cyl. Confirms only when the change is destructive
-   (shrink, or any Start-edge move). Returns 1 if applied (caller need not act: the
-   dialog refreshes the view itself), else 0. */
+   range, applied via rdb_resize_cyl. Confirms any actual change: growing can lose the
+   volume too, because FFS places its root block relative to the partition size.
+   Returns 1 if applied (caller need not act: the dialog refreshes the view itself),
+   else 0. */
 static int gui_resize_dialog(int index)
 {
     struct Window *dw;
@@ -1656,7 +1657,7 @@ static int gui_resize_dialog(int index)
                     n = (uint32_t)((struct StringInfo *)gSize->SpecialInfo)->LongInt;
                     RZ_RECOMPUTE();
                 } else if (ig->GadgetID == 10) {                 /* Ok */
-                    uint32_t cyls, nl, nh; int destructive, go = 1;
+                    uint32_t cyls, nl, nh;
                     /* A click leaves a typed number without a GADGETUP: read it here. */
                     n = (uint32_t)((struct StringInfo *)gSize->SpecialInfo)->LongInt;
                     RZ_RECOMPUTE();
@@ -1664,13 +1665,10 @@ static int gui_resize_dialog(int index)
                     if (anchor == 0) { nl = oldLow;  nh = oldLow + cyls - 1; }
                     else             { nh = oldHigh; nl = oldHigh - cyls + 1; }
                     if (nl == oldLow && nh == oldHigh) { done = 1; break; }   /* no change */
-                    destructive = (nl != oldLow) || (nh < oldHigh);
-                    if (destructive)
-                        go = gui_request("Resize partition",
+                    if (gui_request("Resize partition",
                                 "Resizing changes the partition's extent.\n"
                                 "Reformat afterward - existing data will be lost.",
-                                1, "Proceed");
-                    if (go) {
+                                1, "Proceed")) {
                         int r = rdb_resize_cyl(&g_model, index, nl, nh);
                         if (r == RDB_OK) {
                             g_dirty = 1; applied = 1; done = 1;
@@ -2294,9 +2292,9 @@ static int gui_build_units(const char *emptyText)
         DiscDisk *d = &g_disks[sel[j]];
         char *t = g_unittext[j];
         int p = 0;
-        s_cat(t, &p, "Unit ");
+        s_cat(t, &p, "#");
         p += u2s(t + p, (ULONG)d->unit);
-        s_pad(t, &p, 7);
+        s_pad(t, &p, 5);
         p += u2s(t + p, (ULONG)d->size_mb);
         s_cat(t, &p, " MB");
         t[p] = 0;
