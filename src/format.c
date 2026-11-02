@@ -220,9 +220,8 @@ static BPTR embedded_loadseg(const uint8_t *data, uint32_t len)
    covers custom filesystems (e.g. a PFS handler loaded from a booted disk's RDB)
    as well as ROM FFS. Reading another node's seglist pointer is harmless even if
    that node is the boot disk.
-   Strategy 2 (fallback): the FileSystem.resource entry's fse_SegList field
-   directly — AmigaOS 3.2 leaves fse_PatchFlags == 0 but still populates
-   fse_SegList (the older "patch by PatchFlags bits" approach binds nothing here).
+   Strategy 2 (fallback): the FileSystem.resource entry's fse_SegList, when its
+   PatchFlags advertise one.
    Strategy 3 (last resort): reconstruct a seglist from an embedded FSHD/LSEG
    hunk image in this RDB model via InternalLoadSeg. Enables Format for a custom
    FS (e.g. PFS3) that is embedded in the RDB but was never loaded on the running
@@ -233,6 +232,17 @@ static int bind_handler(struct DeviceNode *dn, ULONG dos_type,
                         const RdbModel *model)
 {
     ULONG fam = dos_type & 0xFFFFFF00u;
+
+    /* The ROM filesystem: a node with dn_SegList 0 and no dn_Handler runs DOS's own
+       default filesystem, which serves the whole DOS\x family. Checked first because
+       a live "DOS" mount is not proof of a usable handler: a host-directory volume
+       (UAE, and similar) reports a DOS DosType but runs something else entirely. */
+    if (fam == 0x444F5300u) {
+        dn->dn_SegList = 0;
+        if (dn->dn_StackSize == 0) dn->dn_StackSize = 4096;
+        if (dn->dn_Priority  == 0) dn->dn_Priority  = 10;
+        return 1;
+    }
 
     /* Strategy 1: clone from a live mount of the same FS family. */
     {
@@ -279,7 +289,8 @@ static int bind_handler(struct DeviceNode *dn, ULONG dos_type,
              fse->fse_Node.ln_Succ;
              fse = (struct FileSysEntry *)fse->fse_Node.ln_Succ) {
             if (fse->fse_DosType != dos_type && (fse->fse_DosType & 0xFFFFFF00u) != fam) continue;
-            if (!fse->fse_SegList) continue;
+            /* Only when PatchFlags says the field exists: see fsres_find_seglist. */
+            if (!((ULONG)fse->fse_PatchFlags & FSPF_SEGLIST) || !fse->fse_SegList) continue;
             dn->dn_SegList   = fse->fse_SegList;
             dn->dn_GlobalVec = (BPTR)-1;        /* FFS/PFS handlers are not BCPL */
             if (dn->dn_StackSize == 0) dn->dn_StackSize = 4096;
@@ -323,7 +334,9 @@ FmtResult format_partition(const char *driver, uint32_t unit,
     static char  driverbuf[40];
     static char  devname[10];              /* ephemeral "HDP0" */
     static char  devcolon[12];             /* ephemeral "HDP0:" */
-    static UBYTE volbstr[34];
+    /* A BSTR is passed as a BPTR (address >> 2), so it must be long-aligned; a
+       plain UBYTE array is not guaranteed to be. */
+    static UBYTE volbstr[34] __attribute__((aligned(4)));
     struct DeviceNode *dn;
     const RdbPartition *p;
     int i, k;
@@ -408,7 +421,6 @@ FmtResult format_partition(const char *driver, uint32_t unit,
        filesystem.resource lookup/register -> MakeDosNode(real name) ->
        AddDosNode(STARTPROC, persist) -> GetDeviceProc -> ACTION_FORMAT. */
     if (!fsres_dosnode_exists(p->name)) {
-        struct Library *ExpBase;
         struct DeviceNode *dnp;
         static ULONG ppp[4 + FMT_ENV_LONGS];
         static char  rdriver[40];
@@ -434,8 +446,10 @@ FmtResult format_partition(const char *driver, uint32_t unit,
             hf.dn_stack = 4096; hf.dn_pri = 10; hf.dn_globalvec = 0xFFFFFFFFu;
         }
 
-        ExpBase = OpenLibrary((STRPTR)"expansion.library", 37);
-        if (!ExpBase) return FMT_ERR_MAKENODE;
+        /* Must be named ExpansionBase: the MakeDosNode/AddDosNode inlines use that
+           identifier, whatever other variable the library was opened into. */
+        ExpansionBase = OpenLibrary((STRPTR)"expansion.library", 37);
+        if (!ExpansionBase) return FMT_ERR_MAKENODE;
 
         for (z = 0; z < 39 && driver[z]; z++) rdriver[z] = driver[z];
         rdriver[z] = 0;
@@ -446,7 +460,7 @@ FmtResult format_partition(const char *driver, uint32_t unit,
         for (z = 0; z < FMT_ENV_LONGS; z++) ppp[4 + z] = env[z];
 
         dnp = (struct DeviceNode *)MakeDosNode((APTR)ppp);
-        if (!dnp) { CloseLibrary(ExpBase); return FMT_ERR_MAKENODE; }
+        if (!dnp) { CloseLibrary(ExpansionBase); return FMT_ERR_MAKENODE; }
 
         if (seg) {
             dnp->dn_SegList   = seg;
@@ -455,15 +469,15 @@ FmtResult format_partition(const char *driver, uint32_t unit,
             dnp->dn_Priority  = hf.dn_pri;
         } else if (!bind_handler(dnp, (ULONG)p->dos_type, m)) {
             /* No resource entry, no embedded image, no live-mount clone. */
-            CloseLibrary(ExpBase);
+            CloseLibrary(ExpansionBase);
             return FMT_ERR_NO_HANDLER;
         }
 
         if (!AddDosNode(0, ADNF_STARTPROC, dnp)) {
-            CloseLibrary(ExpBase);
+            CloseLibrary(ExpansionBase);
             return FMT_ERR_ADDNODE;
         }
-        CloseLibrary(ExpBase);              /* node now owned by DOS, persists */
+        CloseLibrary(ExpansionBase);              /* node now owned by DOS, persists */
 
         /* Build "<name>:" and format via the live device proc. Use DeviceProc
            (already used in this file; returns/starts the handler port for the

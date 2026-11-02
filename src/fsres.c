@@ -62,7 +62,10 @@ BPTR fsres_find_seglist(uint32_t dos_type)
          fse = (struct FileSysEntry *)fse->fse_Node.ln_Succ) {
         if (fse->fse_DosType != dos_type &&
             ((ULONG)fse->fse_DosType & 0xFFFFFF00u) != fam) continue;
-        if (!fse->fse_SegList) continue;
+        /* Only read fse_SegList when PatchFlags says it is there. KS 2.04's ROM FFS
+           entries stop right after fse_PatchFlags (26 bytes, PatchFlags 0), so that
+           offset is the middle of the NEXT entry; running it as a handler crashes. */
+        if (!((ULONG)fse->fse_PatchFlags & FSPF_SEGLIST) || !fse->fse_SegList) continue;
         seg = fse->fse_SegList; break;
     }
     Permit();
