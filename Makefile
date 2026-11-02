@@ -89,8 +89,8 @@ install-fsuae:
 #                       existing Workbench and double-click HDPart; it is also
 #                       bootable (auto-runs HDPart on its own screen). Needs
 #                       amitools' xdftool (pip3 install amitools).
-# ADFVER: keep in sync with the window title in src/gui.c ("HDPart 0.10").
-ADFVER = 0.10
+# ADFVER: keep in sync with the window title in src/gui.c ("HDPart 0.10.1").
+ADFVER = 0.10.1
 ADF    = out/HDPart-$(ADFVER).adf
 
 adf: $(OUT).exe tools/HDPart.info tools/Disk.info
