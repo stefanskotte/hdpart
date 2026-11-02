@@ -20,7 +20,8 @@ export function readRdb(file) {
   for (let n = r.readUInt32BE(28); n !== NIL;) {
     const p = block(d, n, 'PART');
     out.parts.push({ name: p.toString('latin1', 37, 37 + p[36]), low: p.readUInt32BE(128 + 36), high: p.readUInt32BE(128 + 40),
-      dosType: p.readUInt32BE(128 + 64) });
+      dosType: p.readUInt32BE(128 + 64), numBuffers: p.readUInt32BE(128 + 44), bufMemType: p.readUInt32BE(128 + 48),
+      maxTransfer: p.readUInt32BE(128 + 52), mask: p.readUInt32BE(128 + 56) });
     n = p.readUInt32BE(16);
   }
   for (let n = r.readUInt32BE(32); n !== NIL;) {

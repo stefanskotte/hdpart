@@ -41,7 +41,7 @@ int format_build_envec(const RdbModel *m, int part_index, uint32_t env[FMT_ENV_L
     env[FE_LOWCYL]       = p->low_cyl;
     env[FE_HIGHCYL]      = p->high_cyl;
     env[FE_NUMBUFFERS]   = p->num_buffers ? p->num_buffers : 30u;
-    env[FE_BUFMEMTYPE]   = 0;
+    env[FE_BUFMEMTYPE]   = p->bufmemtype;
     env[FE_MAXTRANSFER]  = p->maxtransfer;
     env[FE_MASK]         = p->mask;
     env[FE_BOOTPRI]      = (uint32_t)p->boot_pri;

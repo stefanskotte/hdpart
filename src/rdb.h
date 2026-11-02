@@ -30,6 +30,7 @@ typedef struct {
     uint32_t high_cyl;
     uint32_t dos_type;           /* e.g. 0x444F5303 = DOS\3 (FFS Intl) */
     uint32_t num_buffers;
+    uint32_t bufmemtype;         /* DOSEnvVec de_BufMemType */
     int32_t  boot_pri;
     uint8_t  bootable;           /* 0/1 — mirrors bit 0 of flags */
     uint32_t flags;              /* pb_Flags: bit0=BOOTABLE, bit1=NOMOUNT, ... */
@@ -69,7 +70,11 @@ typedef struct {
 #define RDB_RESERVED_CYLS 2u          /* cylinders reserved for RDB metadata */
 #define RDB_RESERVED_MIN_BLOCKS 1024u /* reserve >= this many metadata blocks (table + ~512KB embedded FS) */
 #define RDB_DOSTYPE_FFS_INTL 0x444F5303u
-#define RDB_DEFAULT_MAXTRANSFER 0x7FFFFFFFu  /* DOSEnvVec de_MaxTransfer default */
+/* New partitions: above this, FFS and SFS on KS 2.05/3.1 onboard IDE can silently
+   corrupt data. See docs/reference/rom-findings-maxtransfer-mask-buffers.md. */
+#define RDB_DEFAULT_MAXTRANSFER 0x0001FE00u
+/* A table too short to hold the field: the OS applies no limit, so show that. */
+#define RDB_ABSENT_MAXTRANSFER  0x7FFFFFFFu
 #define RDB_DEFAULT_MASK        0x7FFFFFFEu  /* DOSEnvVec de_Mask default */
 
 void rdb_init_model(RdbModel *m, uint32_t cyl, uint32_t heads, uint32_t sectors);

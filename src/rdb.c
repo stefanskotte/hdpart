@@ -194,7 +194,7 @@ int rdb_add_partition_at(RdbModel *m, const char *name, uint32_t start_cyl,
     p = &m->parts[m->num_parts];        /* tentative */
     copy_name(p->name, name);
     p->low_cyl = start_cyl; p->high_cyl = end;
-    p->dos_type = dos_type; p->num_buffers = 30; p->boot_pri = 0; p->bootable = 0;
+    p->dos_type = dos_type; p->num_buffers = 30; p->bufmemtype = 0; p->boot_pri = 0; p->bootable = 0;
     p->flags = 0;
     p->maxtransfer = RDB_DEFAULT_MAXTRANSFER; p->mask = RDB_DEFAULT_MASK;
     m->num_parts++;
@@ -282,7 +282,7 @@ int rdb_add_partition_cyl(RdbModel *m, const char *name, uint32_t start_cyl,
     p = &m->parts[m->num_parts];
     copy_name(p->name, name);
     p->low_cyl = start_cyl; p->high_cyl = end_cyl;
-    p->dos_type = dos_type; p->num_buffers = 30; p->boot_pri = 0; p->bootable = 0;
+    p->dos_type = dos_type; p->num_buffers = 30; p->bufmemtype = 0; p->boot_pri = 0; p->bootable = 0;
     p->flags = 0;
     p->maxtransfer = RDB_DEFAULT_MAXTRANSFER; p->mask = RDB_DEFAULT_MASK;
     m->num_parts++;
@@ -373,6 +373,7 @@ int rdb_add_partition(RdbModel *m, const char *name, uint32_t size_mb,
     p->high_cyl    = end;
     p->dos_type    = dos_type;
     p->num_buffers = 30;
+    p->bufmemtype  = 0;
     p->boot_pri    = 0;
     p->bootable    = 0;
     p->flags       = 0;
@@ -548,7 +549,7 @@ static void write_partition_block(uint8_t *blk, const RdbModel *m,
     env_put(blk, DE_LowCyl,       p->low_cyl);
     env_put(blk, DE_HighCyl,      p->high_cyl);
     env_put(blk, DE_NumBuffers,   p->num_buffers);
-    env_put(blk, DE_BufMemType,   0);
+    env_put(blk, DE_BufMemType,   p->bufmemtype);
     env_put(blk, DE_MaxTransfer,  p->maxtransfer);
     env_put(blk, DE_Mask,         p->mask);
     env_put(blk, DE_BootPri,      (uint32_t)p->boot_pri);
@@ -905,8 +906,9 @@ int rdb_parse(RdbModel *m, BlockIO io, void *ctx)
           p->num_buffers = env_get_bounded(blk, DE_NumBuffers,  ts, 0u);
           p->boot_pri    = (int32_t)env_get_bounded(blk, DE_BootPri,
                                                     ts, 0u);
+          p->bufmemtype  = env_get_bounded(blk, DE_BufMemType,  ts, 0u);
           p->maxtransfer = env_get_bounded(blk, DE_MaxTransfer, ts,
-                                           RDB_DEFAULT_MAXTRANSFER);
+                                           RDB_ABSENT_MAXTRANSFER);
           p->mask        = env_get_bounded(blk, DE_Mask,        ts,
                                            RDB_DEFAULT_MASK);
           p->dos_type    = env_get_bounded(blk, DE_DosType,     ts,

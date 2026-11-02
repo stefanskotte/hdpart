@@ -53,7 +53,10 @@ and Refresh, Filesystems (Add, refused file, Remove, assign, Copy from disk), Fo
 (fresh PFS, fresh FFS, reformat mounted, labels on disk), refused driver file, menu
 pick, right-Amiga and plain-key shortcuts, auto-mount after reboot, Quit prompt.
 
+Advanced settings too: MaxTransfer, Mask, Buffers and Buffer memory presets reach the
+disk, their help buttons open, and an unsafe MaxTransfer is refused.
+
 **Not covered yet:** the ASL file requester (the boots have no `asl.library`, so file
-pickers use the typed path) and Load asl.library, loading a working `.device`, MaxTransfer,
-Mask, Bootable and Boot Pri, Resize with Move Start, booting from a formatted partition,
+pickers use the typed path) and Load asl.library, loading a working `.device`, Bootable
+and Boot Pri, Resize with Move Start, booting from a formatted partition,
 reading and writing files on a formatted volume, and real hardware.

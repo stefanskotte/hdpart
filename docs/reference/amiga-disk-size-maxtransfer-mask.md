@@ -1,3 +1,8 @@
+> **Superseded in part.** This is a captured community FAQ. Its MaxTransfer and Mask
+> claims were checked against the Kickstart ROMs, PFS3 and SFS in
+> [rom-findings-maxtransfer-mask-buffers.md](rom-findings-maxtransfer-mask-buffers.md),
+> and several were wrong or too broad. Trust that document where they differ.
+
 # Amiga disk sizes, MaxTransfer & Mask — reference
 
 Captured 2026-06-10 from the EAB "CF / SD and large drives FAQ"

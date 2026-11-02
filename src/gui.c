@@ -981,30 +981,93 @@ static int parse_hex32(const char *s, uint32_t *out)
 }
 
 /* Edit partition `index` of g_model via a modal dialog. Returns 1 if applied. */
-/* MaxTransfer / Mask presets for the editor cycles. The cycle shows the short
-   NAME; the adjacent hex field always holds the effective value (filled+disabled
-   for a preset, editable for Custom). Values/guidance from the captured EAB FAQ
-   (docs/reference/amiga-disk-size-maxtransfer-mask.md). */
-static const char *const kMaxTLabels[] = { "IDE", "SCSI", "No limit", "Custom", 0 };
+/* Presets for the advanced settings. The cycle shows the short NAME; the adjacent
+   field always holds the effective value (filled + disabled for a preset, editable
+   for Custom). Values and wording come from disassembling the Kickstart ROMs, PFS3
+   and SFS: docs/reference/rom-findings-maxtransfer-mask-buffers.md. */
+static const char *const kMaxTLabels[] = { "IDE safe", "SCSI", "No limit", "Custom", 0 };
 static const uint32_t    kMaxTValues[] = { 0x0001FE00u, 0x00FFFFFFu, 0x7FFFFFFFu };
 static const char *const kMaxTHelp[]   = {
-    "0x1FE00: onboard IDE - required!",
-    "0xFFFFFF: SCSI controllers",
-    "0x7FFFFFFF: IDEfix/PFS3-AiO/PCMCIA",
-    "Advanced - enter a hex value"
+    "Safe on every disk",
+    "SCSI controllers",
+    "KS 3.2 IDE, or drivers that split",
+    "Too high can silently corrupt data"
 };
 #define N_MAXT 3
 
-static const char *const kMaskLabels[] = { "Default", "Zorro II DMA", "A1200/A4000", "No mask", "Custom", 0 };
-static const uint32_t    kMaskValues[] = { 0x7FFFFFFEu, 0x00FFFFFFu, 0xFFFFFFFCu, 0xFFFFFFFFu };
+static const char *const kMaskLabels[] = { "Default", "Zorro II DMA", "No mask", "Long-aligned", "Custom", 0 };
+static const uint32_t    kMaskValues[] = { 0x7FFFFFFEu, 0x00FFFFFEu, 0xFFFFFFFFu, 0xFFFFFFFCu };
 static const char *const kMaskHelp[]   = {
-    "DMA mask; OK as-is for plain IDE",
-    "Zorro II DMA controller (24-bit)",
-    "A1200/A4000 internal IDE",
-    "No masking (Zorro III / no DMA)",
+    "IDE, A3000 and 32-bit DMA",
+    "24-bit DMA: see Buffer memory too",
+    "IDE and A3000 only",
+    "Only if your controller asks for it",
     "Advanced - enter a hex value"
 };
 #define N_MASK 4
+
+static const char *const kBufLabels[] = { "Default", "Low memory", "More cache", "Custom", 0 };
+static const uint32_t    kBufValues[] = { 30u, 10u, 100u };
+static const char *const kBufHelp[]   = {
+    "FFS ~17 KB; PFS3 uses 150, ~155 KB",
+    "FFS ~6 KB; PFS3 ~11 KB; SFS uses 32",
+    "FFS ~56 KB, PFS3 ~106, SFS ~54",
+    "Type a number, 1 or more"
+};
+#define N_BUF 3
+
+static const char *const kMemLabels[] = { "Any", "Chip", "Custom", 0 };
+static const uint32_t    kMemValues[] = { 0u, 3u };
+static const char *const kMemHelp[]   = {
+    "IDE and 32-bit DMA",
+    "Zorro II DMA with RAM above 16 MB",
+    "Advanced - enter a hex value"
+};
+#define N_MEM 2
+
+/* The long explanations behind the "?" buttons. */
+static const char kMaxTInfo[] =
+    "MaxTransfer: the largest single read or write\n"
+    "the filesystem asks the driver for.\n"
+    "\n"
+    "Too high can silently corrupt data with FFS or\n"
+    "SFS on KS 2.05/3.1 onboard IDE: no error shows.\n"
+    "The KS 3.2 driver handles any length. PFS3 limits\n"
+    "itself on scsi.device.\n"
+    "\n"
+    "Too low only makes large transfers slower, so\n"
+    "IDE safe is the safe choice if unsure.";
+static const char kMaskInfo[] =
+    "Mask: which addresses the controller can reach\n"
+    "directly.\n"
+    "\n"
+    "A transfer outside the mask goes through another\n"
+    "buffer: slower, but it still works. Onboard IDE\n"
+    "and the A3000 do not depend on it.\n"
+    "\n"
+    "A Zorro II DMA card needs Zorro II DMA here, and\n"
+    "Buffer memory set so FFS buffers are in reach:\n"
+    "FFS does not apply the mask to its own buffers.";
+static const char kBufInfo[] =
+    "Buffers: how many blocks the filesystem keeps in\n"
+    "memory. More uses more RAM, per buffer about:\n"
+    "FFS 0.6 KB, PFS3 1 KB, SFS 0.5 KB.\n"
+    "\n"
+    "PFS3 uses at least 10 and at most 600, and treats\n"
+    "exactly 30 as 150. SFS uses at least 32.\n"
+    "If RAM runs out, FFS keeps what it got, but PFS3\n"
+    "and SFS can fail to set up.\n"
+    "\n"
+    "Speed was not measured, so no value is promised\n"
+    "to be the fastest.";
+static const char kMemInfo[] =
+    "Buffer memory: the memory type the filesystem\n"
+    "allocates its buffers from.\n"
+    "\n"
+    "Any suits IDE and 32-bit DMA.\n"
+    "Chip is for a Zorro II DMA card in a machine with\n"
+    "RAM above 16 MB. Chip memory is slower, and FFS\n"
+    "does not apply Mask to its own buffers.";
 
 /* Index of v among vals[0..n), or n (the 'Custom' slot) if it is not a preset. */
 static int preset_index(const uint32_t *vals, int n, uint32_t v)
@@ -1034,7 +1097,32 @@ static void edit_chrome(struct Window *dw)
     int x = g_leftb + 4, w = ED_W - 8;
     DrawBevelBox(rp, x, g_topb + 3,  w, 56, GT_VisualInfo, (ULONG)g_vi, TAG_END);
     DrawBevelBox(rp, x, g_topb + 61, w, 20, GT_VisualInfo, (ULONG)g_vi, TAG_END);
-    DrawBevelBox(rp, x, g_topb + 83, w, 68, GT_VisualInfo, (ULONG)g_vi, TAG_END);
+    DrawBevelBox(rp, x, g_topb + 83, w, 128, GT_VisualInfo, (ULONG)g_vi, TAG_END);
+}
+
+/* Same as preset_apply, for the decimal Buffers field. */
+static void buffers_apply(struct Window *dw, struct Gadget *field, struct Gadget *help, int idx)
+{
+    if (idx < N_BUF)
+        GT_SetGadgetAttrs(field, dw, 0, GTIN_Number, (ULONG)kBufValues[idx], GA_Disabled, TRUE, TAG_END);
+    else
+        GT_SetGadgetAttrs(field, dw, 0, GA_Disabled, FALSE, TAG_END);
+    GT_SetGadgetAttrs(help, dw, 0, GTTX_Text, (ULONG)kBufHelp[idx], TAG_END);
+}
+
+/* One advanced setting: label + preset cycle, value field, "?" button, help line.
+   `field` is created by the caller, which knows its kind. Returns the cycle. */
+static struct Gadget *edit_row(struct Gadget **g, struct NewGadget *ng, int y, const char *label,
+                               int cycId, int qId, const char *const *labels, int active)
+{
+    struct Gadget *cyc;
+    ng->ng_LeftEdge = g_leftb + 104; ng->ng_TopEdge = g_topb + y; ng->ng_Width = 110; ng->ng_Height = 14;
+    ng->ng_GadgetText = (UBYTE *)label; ng->ng_GadgetID = cycId;
+    cyc = *g = CreateGadget(CYCLE_KIND, *g, ng, GTCY_Labels, (ULONG)labels, GTCY_Active, (ULONG)active, TAG_END);
+    ng->ng_LeftEdge = g_leftb + 376; ng->ng_Width = 20; ng->ng_GadgetText = (UBYTE *)"?"; ng->ng_GadgetID = qId;
+    *g = CreateGadget(BUTTON_KIND, *g, ng, TAG_END);
+    ng->ng_LeftEdge = g_leftb + 218; ng->ng_Width = 100; ng->ng_GadgetText = 0;
+    return cyc;
 }
 
 static int gui_edit_dialog(int index)
@@ -1044,16 +1132,17 @@ static int gui_edit_dialog(int index)
     struct Gadget *gName = 0, *gSize = 0, *gBoot = 0, *gPri = 0, *gMaxT = 0, *gMask = 0;
     struct Gadget *gMaxTCyc = 0, *gMaskCyc = 0, *gMaxTHelp = 0, *gMaskHelp = 0;
     struct Gadget *gFsCyc = 0, *gIntl = 0, *gCache = 0;
+    struct Gadget *gBufCyc = 0, *gBuf = 0, *gBufHelp = 0, *gMemCyc = 0, *gMem = 0, *gMemHelp = 0;
     struct NewGadget ng;
     RdbPartition *pt = &g_model.parts[index];
     static char nameBuf[32];
     static char sizeMaxLabel[24];
-    static char maxtBuf[12], maskBuf[12];
+    static char maxtBuf[12], maskBuf[12], memBuf[12];
     static const char *fsLabels[4 + RDB_MAX_FS];   /* FFS,OFS,[pool*8],[keep],NULL */
     static int fsPoolIdx[4 + RDB_MAX_FS];
     static char fsKeep[12];
     static char fsPoolLbl[RDB_MAX_FS][12];  /* stable DosType label strings for cycle */
-    int maxtIdx, maskIdx;
+    int maxtIdx, maskIdx, bufIdx, memIdx;
     int fsRom, fsActive, fsIdx, fsKeepIdx, fsPoolBase, v39;
     uint32_t startCyl = pt->low_cyl;
     uint32_t maxEndExclusive;   /* first cylinder not available to this part */
@@ -1083,6 +1172,9 @@ static int gui_edit_dialog(int index)
     u32_to_hex(maskBuf, pt->mask);
     maxtIdx = preset_index(kMaxTValues, N_MAXT, pt->maxtransfer);
     maskIdx = preset_index(kMaskValues, N_MASK, pt->mask);
+    u32_to_hex(memBuf, pt->bufmemtype);
+    bufIdx  = preset_index(kBufValues, N_BUF, pt->num_buffers);
+    memIdx  = preset_index(kMemValues, N_MEM, pt->bufmemtype);
 
     /* Filesystem: ROM DOS\x decodes to FFS/OFS + Intl + DirCache bits; anything
        else (PFS3/SFS/custom) gets a read-only 'keep' entry that preserves it.
@@ -1183,33 +1275,44 @@ static int gui_edit_dialog(int index)
     g = CreateGadget(INTEGER_KIND, g, &ng, GTIN_Number, (ULONG)(LONG)pt->boot_pri, GTIN_MaxChars, 6, TAG_END);
     gPri = g;
 
-    /* MaxTransfer: cycle (preset names) + hex value field + help line. */
-    ng.ng_LeftEdge = dl + 104; ng.ng_TopEdge = dt + 87; ng.ng_Width = 110; ng.ng_Height = 14;
-    ng.ng_GadgetText = (UBYTE *)"MaxTransfer"; ng.ng_GadgetID = 7;
-    g = CreateGadget(CYCLE_KIND, g, &ng, GTCY_Labels, (ULONG)kMaxTLabels, GTCY_Active, (ULONG)maxtIdx, TAG_END);
-    gMaxTCyc = g;
-    ng.ng_LeftEdge = dl + 218; ng.ng_Width = 100; ng.ng_GadgetText = 0; ng.ng_GadgetID = 12;
+    /* Advanced settings: preset + value + "?" on one line, help line beneath. */
+    gMaxTCyc = edit_row(&g, &ng, 87, "MaxTransfer", 7, 20, kMaxTLabels, maxtIdx);
+    ng.ng_GadgetID = 12;
     g = CreateGadget(STRING_KIND, g, &ng, GTST_String, (ULONG)maxtBuf, GTST_MaxChars, 11,
                      GA_Disabled, (ULONG)(maxtIdx < N_MAXT), TAG_END);
     gMaxT = g;
-    ng.ng_LeftEdge = dl + 104; ng.ng_TopEdge = dt + 102; ng.ng_Width = 292; ng.ng_GadgetText = 0; ng.ng_GadgetID = 0;
+    ng.ng_LeftEdge = dl + 104; ng.ng_TopEdge = dt + 102; ng.ng_Width = 292; ng.ng_GadgetID = 0;
     g = CreateGadget(TEXT_KIND, g, &ng, GTTX_Text, (ULONG)kMaxTHelp[maxtIdx], TAG_END);
     gMaxTHelp = g;
 
-    /* Mask: cycle (controller presets) + hex value field + help line. */
-    ng.ng_LeftEdge = dl + 104; ng.ng_TopEdge = dt + 119; ng.ng_Width = 110; ng.ng_Height = 14;
-    ng.ng_GadgetText = (UBYTE *)"Mask"; ng.ng_GadgetID = 8;
-    g = CreateGadget(CYCLE_KIND, g, &ng, GTCY_Labels, (ULONG)kMaskLabels, GTCY_Active, (ULONG)maskIdx, TAG_END);
-    gMaskCyc = g;
-    ng.ng_LeftEdge = dl + 218; ng.ng_Width = 100; ng.ng_GadgetText = 0; ng.ng_GadgetID = 13;
+    gMaskCyc = edit_row(&g, &ng, 118, "Mask", 8, 21, kMaskLabels, maskIdx);
+    ng.ng_GadgetID = 13;
     g = CreateGadget(STRING_KIND, g, &ng, GTST_String, (ULONG)maskBuf, GTST_MaxChars, 11,
                      GA_Disabled, (ULONG)(maskIdx < N_MASK), TAG_END);
     gMask = g;
-    ng.ng_LeftEdge = dl + 104; ng.ng_TopEdge = dt + 134; ng.ng_Width = 292; ng.ng_GadgetText = 0; ng.ng_GadgetID = 0;
+    ng.ng_LeftEdge = dl + 104; ng.ng_TopEdge = dt + 133; ng.ng_Width = 292; ng.ng_GadgetID = 0;
     g = CreateGadget(TEXT_KIND, g, &ng, GTTX_Text, (ULONG)kMaskHelp[maskIdx], TAG_END);
     gMaskHelp = g;
 
-    ng.ng_LeftEdge = dl + 4; ng.ng_TopEdge = dt + 155; ng.ng_Width = 90; ng.ng_Height = 14;
+    gBufCyc = edit_row(&g, &ng, 149, "Buffers", 16, 22, kBufLabels, bufIdx);
+    ng.ng_GadgetID = 17;
+    g = CreateGadget(INTEGER_KIND, g, &ng, GTIN_Number, (ULONG)pt->num_buffers, GTIN_MaxChars, 6,
+                     GA_Disabled, (ULONG)(bufIdx < N_BUF), TAG_END);
+    gBuf = g;
+    ng.ng_LeftEdge = dl + 104; ng.ng_TopEdge = dt + 164; ng.ng_Width = 292; ng.ng_GadgetID = 0;
+    g = CreateGadget(TEXT_KIND, g, &ng, GTTX_Text, (ULONG)kBufHelp[bufIdx], TAG_END);
+    gBufHelp = g;
+
+    gMemCyc = edit_row(&g, &ng, 180, "Buffer mem", 18, 23, kMemLabels, memIdx);
+    ng.ng_GadgetID = 19;
+    g = CreateGadget(STRING_KIND, g, &ng, GTST_String, (ULONG)memBuf, GTST_MaxChars, 11,
+                     GA_Disabled, (ULONG)(memIdx < N_MEM), TAG_END);
+    gMem = g;
+    ng.ng_LeftEdge = dl + 104; ng.ng_TopEdge = dt + 195; ng.ng_Width = 292; ng.ng_GadgetID = 0;
+    g = CreateGadget(TEXT_KIND, g, &ng, GTTX_Text, (ULONG)kMemHelp[memIdx], TAG_END);
+    gMemHelp = g;
+
+    ng.ng_LeftEdge = dl + 4; ng.ng_TopEdge = dt + 214; ng.ng_Width = 90; ng.ng_Height = 14;
     ng.ng_GadgetText = (UBYTE *)"Ok"; ng.ng_GadgetID = 10;
     g = CreateGadget(BUTTON_KIND, g, &ng, TAG_END);
     ng.ng_LeftEdge = dl + ED_W - 94; ng.ng_GadgetText = (UBYTE *)"Cancel"; ng.ng_GadgetID = 11;
@@ -1217,7 +1320,7 @@ static int gui_edit_dialog(int index)
     if (!g) { FreeGadgets(dglist); return 0; }
 
     {   int dwW = dl + ED_W + g_scr->WBorRight;
-        int dwH = dt + 173 + g_scr->WBorBottom;
+        int dwH = dt + 232 + g_scr->WBorBottom;
         int dwL = 0, dwT = 0;
         dlg_center(dwW, dwH, &dwL, &dwT);
         dw = dlg_open("Edit Partition", dwL, dwT, dwW, dwH,
@@ -1244,6 +1347,14 @@ static int gui_edit_dialog(int index)
                     preset_apply(dw, gMaxT, gMaxTHelp, (int)code, kMaxTValues, N_MAXT, kMaxTHelp);
                 } else if (ig == gMaskCyc) {
                     preset_apply(dw, gMask, gMaskHelp, (int)code, kMaskValues, N_MASK, kMaskHelp);
+                } else if (ig == gBufCyc) {
+                    buffers_apply(dw, gBuf, gBufHelp, (int)code);
+                } else if (ig == gMemCyc) {
+                    preset_apply(dw, gMem, gMemHelp, (int)code, kMemValues, N_MEM, kMemHelp);
+                } else if (ig->GadgetID >= 20 && ig->GadgetID <= 23) {
+                    static const char *const info[] = { kMaxTInfo, kMaskInfo, kBufInfo, kMemInfo };
+                    static const char *const head[] = { "MaxTransfer", "Mask", "Buffers", "Buffer memory" };
+                    gui_msg(head[ig->GadgetID - 20], info[ig->GadgetID - 20]);
                 } else if (ig == gFsCyc) {
                     int keep = (fsKeepIdx >= 0 && (int)code == fsKeepIdx);
                     int pool = (!keep && (int)code >= fsPoolBase);
@@ -1261,10 +1372,18 @@ static int gui_edit_dialog(int index)
                     char *nm = (char *)((struct StringInfo *)gName->SpecialInfo)->Buffer;
                     const char *mt = (const char *)((struct StringInfo *)gMaxT->SpecialInfo)->Buffer;
                     const char *mk = (const char *)((struct StringInfo *)gMask->SpecialInfo)->Buffer;
-                    uint32_t mtv, mkv;
+                    const char *mm = (const char *)((struct StringInfo *)gMem->SpecialInfo)->Buffer;
+                    LONG bufs = ((struct StringInfo *)gBuf->SpecialInfo)->LongInt;
+                    uint32_t mtv, mkv, mmv;
                     int r;
-                    if (!parse_hex32(mt, &mtv) || !parse_hex32(mk, &mkv)) {
-                        gui_msg("Edit", "MaxTransfer / Mask must be hex (e.g. 0x7FFFFFFE).");
+                    if (!parse_hex32(mt, &mtv) || !parse_hex32(mk, &mkv) || !parse_hex32(mm, &mmv)) {
+                        gui_msg("Edit", "MaxTransfer, Mask and Buffer memory\nmust be hex (e.g. 0x7FFFFFFE).");
+                    } else if (mtv < g_model.block_bytes || mtv >= 0x80000000u) {
+                        /* Below a block PFS3 can loop forever; at the top bit FFS before
+                           KS 3.2 compares signed and can overrun the caller's buffer. */
+                        gui_msg("Edit", "MaxTransfer must be at least one block\nand below 0x80000000.");
+                    } else if (bufs < 1) {
+                        gui_msg("Edit", "Buffers must be 1 or more.");
                     } else {
                         /* Compute the DosType from the FS controls (keep entry
                            preserves a non-ROM type). */
@@ -1296,6 +1415,8 @@ static int gui_edit_dialog(int index)
                             pt->boot_pri    = (int32_t)((struct StringInfo *)gPri->SpecialInfo)->LongInt;
                             pt->maxtransfer = mtv;
                             pt->mask        = mkv;
+                            pt->num_buffers = (uint32_t)bufs;
+                            pt->bufmemtype  = mmv;
                             applied = 1; done = 1;
                         } else {
                             gui_msg("Edit", "Invalid name or size (overlaps / out of range).");
@@ -3086,10 +3207,16 @@ static void gui_draw_details(void)
           } }
 
         p = u32_to_hex(buf, pt->maxtransfer);
-        /* See docs/reference/amiga-disk-size-maxtransfer-mask.md: scsi.device is the
-           onboard IDE driver on A600/A1200/A4000, where more than 0x1FE00 corrupts data. */
-        if (pt->maxtransfer > 0x1FE00u && streq(g_cur_driver, "scsi.device"))
-            s_cat(buf, &p, "  ! check for IDE");
+        /* See docs/reference/rom-findings-maxtransfer-mask-buffers.md. scsi.device below
+           V47 trusts the drive for the next address past 256 sectors. PFS3 caps itself. */
+        if (pt->maxtransfer > 0x1FE00u && streq(g_cur_driver, "scsi.device") &&
+            (pt->dos_type & 0xFFFFFF00u) != 0x50465300u) {
+            struct Library *dv;
+            Forbid();
+            dv = (struct Library *)FindName(&SysBase->DeviceList, (CONST_STRPTR)"scsi.device");
+            if (dv && dv->lib_Version < 47) s_cat(buf, &p, "  ! too high for IDE");
+            Permit();
+        }
         buf[p] = 0;
         gui_detail_row(y + 50, "MaxTransfer", buf);
     }

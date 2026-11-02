@@ -276,19 +276,22 @@ static void test_part_flags(void)
     CHECK(rdb_add_partition(&m, "DH0", 200, RDB_DOSTYPE_FFS_INTL) == RDB_OK);
 
     /* defaults on a fresh partition */
-    CHECK(m.parts[0].maxtransfer == 0x7FFFFFFFu);
+    CHECK(m.parts[0].maxtransfer == 0x0001FE00u);
+    CHECK(m.parts[0].bufmemtype == 0);
     CHECK(m.parts[0].mask        == 0x7FFFFFFEu);
     CHECK(m.parts[0].bootable    == 0);
     CHECK(m.parts[0].boot_pri    == 0);
 
     /* set custom flag values, serialize, parse back */
-    m.parts[0].maxtransfer = 0x0001FE00u;
+    m.parts[0].maxtransfer = 0x00FFFFFFu;
+    m.parts[0].bufmemtype = 3;
     m.parts[0].mask        = 0xFFFFFFFEu;
     m.parts[0].bootable    = 1;
     m.parts[0].boot_pri    = 5;
     CHECK(rdb_serialize(&m, ram_io, 0) == RDB_OK);
     CHECK(rdb_parse(&back, ram_io, 0) == RDB_OK);
-    CHECK(back.parts[0].maxtransfer == 0x0001FE00u);
+    CHECK(back.parts[0].maxtransfer == 0x00FFFFFFu);
+    CHECK(back.parts[0].bufmemtype == 3);
     CHECK(back.parts[0].mask        == 0xFFFFFFFEu);
     CHECK(back.parts[0].bootable    == 1);
     CHECK(back.parts[0].boot_pri    == 5);
@@ -359,7 +362,7 @@ static void test_split_range(void)
  *   - Write 0xDEADBEEF into those four beyond-table slots.
  * Then fix the PART block checksum and re-parse.
  * Expected: rdb_parse uses safe defaults for all beyond-table fields:
- *   dos_type=RDB_DOSTYPE_FFS_INTL, maxtransfer=RDB_DEFAULT_MAXTRANSFER,
+ *   dos_type=RDB_DOSTYPE_FFS_INTL, maxtransfer=RDB_ABSENT_MAXTRANSFER,
  *   mask=RDB_DEFAULT_MASK, boot_pri=0.
  * Normal parse path (de_TableSize=16) must still read the real values. */
 static void test_short_table_size(void)
@@ -407,7 +410,7 @@ static void test_short_table_size(void)
     CHECK(rdb_parse(&back, ram_io, 0) == RDB_OK);
     CHECK(back.num_parts == 1);
     CHECK(back.parts[0].dos_type    == RDB_DOSTYPE_FFS_INTL);    /* not 0xDEADBEEF */
-    CHECK(back.parts[0].maxtransfer == RDB_DEFAULT_MAXTRANSFER); /* not 0xDEADBEEF */
+    CHECK(back.parts[0].maxtransfer == RDB_ABSENT_MAXTRANSFER); /* not 0xDEADBEEF */
     CHECK(back.parts[0].mask        == RDB_DEFAULT_MASK);        /* not 0xDEADBEEF */
     CHECK(back.parts[0].boot_pri    == 0);                       /* not garbage    */
 

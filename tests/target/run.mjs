@@ -285,6 +285,7 @@ class Suite {
       const r = readRdb(this.diskA);
       eq(r.parts.map((p) => p.name).join(), 'DH0,DH1,DH2', 'names on disk');
       eq(r.fs.length, 0, 'no filesystem embedded');
+      eq(r.parts[0].maxTransfer, 0x1FE00, 'new partition uses the IDE-safe MaxTransfer');
       this.expectedRows = await this.rows();
     });
     await this.step('Refresh: re-reads the same table', async () => {
@@ -316,6 +317,37 @@ class Suite {
       eq(await this.dirty(), 0, 'dirty');
       await this.pickUnit(' 8 MB');
       eq(await this.nparts(), 3, 'saved table reloaded');
+    });
+    await this.step('Edit: presets, help buttons and validation for the advanced settings', async () => {
+      await this.selectPart(2);
+      await this.clickMain(GID.EDIT);
+      const w = await e.waitWin('Edit Partition');
+      await sleep(1500);                 // gadgets take a moment to render on a 68000
+      await e.shot(`${this.dir}/shots/edit-advanced.png`);
+      for (const [q, title] of [[20, 'MaxTransfer'], [21, 'Mask'], [22, 'Buffers'], [23, 'Buffer memory']]) {
+        await e.click(w, q);
+        const help = await e.waitWin(title);
+        if (q === 22) { await sleep(1500); await e.shot(`${this.dir}/shots/help-buffers.png`); }
+        await e.clickClose(help, OK);
+      }
+      // Custom MaxTransfer at the top bit is refused, with the dialog left open.
+      for (let i = 0; i < 3; i++) { await e.click(w, 7); await sleep(200); }   // IDE safe -> Custom
+      await e.typeInto(w, 12, '0x80000000');
+      await e.click(w, ED.OK);
+      const box = await e.waitFor('refusal message', async () => (await e.windows()).find((x) => x.title === 'Edit')?.addr);
+      await e.clickClose(box, OK);
+      ok(await e.win('Edit Partition'), 'dialog stays open after a refused value');
+      await e.typeInto(w, 12, '0x00020000');
+      await e.click(w, 16); await sleep(200); await e.click(w, 16); await sleep(200);   // Buffers -> More cache
+      await e.click(w, 18); await sleep(200);                                            // Buffer memory -> Chip
+      await e.click(w, 8); await sleep(200);                                             // Mask -> Zorro II DMA
+      await e.clickClose(w, ED.OK);
+      await this.save();
+      const p = readRdb(this.diskA).parts[2];
+      eq(p.maxTransfer, 0x20000, 'MaxTransfer on disk');
+      eq(p.numBuffers, 100, 'Buffers on disk');
+      eq(p.bufMemType, 3, 'Buffer memory on disk');
+      eq(p.mask, 0x00FFFFFE, 'Mask on disk');
     });
     await this.step('Filesystems: Add from file detects PFS\\3 and its version', async () => {
       await this.clickMain(GID.FS);
