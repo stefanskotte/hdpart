@@ -20,6 +20,12 @@ uint32_t rdb_sum_longs(const uint8_t *blk, uint32_t summed_longs);
 uint32_t rdb_mb_to_cyls(uint32_t mb, uint32_t cyl_blocks, uint32_t block_bytes);
 uint32_t rdb_cyls_to_mb(uint32_t cyls, uint32_t cyl_blocks, uint32_t block_bytes);
 
+/* Cylinders for a size picked in whole MB, given the current and largest possible
+   extent. The MB figure is rounded, so the current figure means "leave it alone" and
+   the largest means "fill the gap". */
+uint32_t rdb_resize_cyls(uint32_t mb, uint32_t cur_cyls, uint32_t max_cyls,
+                         uint32_t cyl_blocks, uint32_t block_bytes);
+
 /* pb_Flags bit definitions (PartitionBlock) */
 #define RDB_PBFF_BOOTABLE 1u   /* bit 0: partition is bootable */
 #define RDB_PBFF_NOMOUNT  2u   /* bit 1: OS must NOT auto-mount this partition */

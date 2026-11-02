@@ -269,8 +269,9 @@ class Suite {
       const before = await this.row(0);
       await this.clickMain(GID.RESIZE);
       const w = await e.waitWin('Resize partition');
-      await e.typeInto(w, 2, '1');
-      await e.key(0x44);
+      await sleep(1500);                 // gadgets take a moment to render on a 68000
+      await e.shot(`${this.dir}/shots/resize.png`);
+      await e.typeInto(w, 2, '1');       // no Return: clicking Ok must still take the number
       await sleep(400);
       await e.click(w, 10);
       await e.waitFor('destructive-change confirmation',
@@ -284,6 +285,16 @@ class Suite {
       await this.clickMain(GID.NEW);
       await this.answer('Edit Partition', ED.OK);
       eq(await this.nparts(), 3, 'partitions');
+    });
+    await this.step('Resize: Ok with the size untouched changes nothing', async () => {
+      const before = await this.rows();  // 1008-block cylinders: 1.97 MB shows as 1, which is 3 cylinders
+      await this.selectPart(1);
+      await this.clickMain(GID.RESIZE);
+      const w = await e.waitWin('Resize partition');
+      await sleep(400);
+      await e.clickClose(w, 10);
+      await this.idle();
+      eq(JSON.stringify(await this.rows()), JSON.stringify(before), 'table');
     });
     await this.step('Save: writes a valid RDB, verified from the host', async () => {
       await this.save();

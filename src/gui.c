@@ -1502,10 +1502,31 @@ static void gui_split_preview(char *o, int n, uint32_t span,
 /* Null-terminated decimal, for the Split stepper's number display. */
 static void numstr(char *o, int v) { int ln = u2s(o, (ULONG)v); o[ln] = 0; }
 
-/* Resize the selected partition: Size (MB) + anchor (Move End / Move Start)
-   -> a new cylinder range, applied via rdb_resize_cyl. Confirms only when the
-   change is destructive (shrink, or any Start-edge move). Returns 1 if applied
-   (caller need not act — the dialog refreshes the view itself), else 0. */
+/* Group frames for the Resize dialog: what it is now, what it becomes, the caveat. */
+#define RS_W 360
+static void resize_chrome(struct Window *dw)
+{
+    struct RastPort *rp = dw->RPort;
+    int x = g_leftb + 4, w = RS_W - 8;
+    DrawBevelBox(rp, x, g_topb + 3,  w, 31, GT_VisualInfo, (ULONG)g_vi, TAG_END);
+    DrawBevelBox(rp, x, g_topb + 36, w, 54, GT_VisualInfo, (ULONG)g_vi, TAG_END);
+    DrawBevelBox(rp, x, g_topb + 92, w, 17, GT_VisualInfo, (ULONG)g_vi, TAG_END);
+}
+
+/* "cyl 5 to 8 (4 cyls)": whole MB rounds too much to show an extent exactly. */
+static void resize_extent(char *buf, uint32_t lo, uint32_t hi)
+{
+    int p = 0;
+    s_cat(buf, &p, "cyl "); p += u2s(buf + p, lo);
+    s_cat(buf, &p, " to "); p += u2s(buf + p, hi);
+    s_cat(buf, &p, " ("); p += u2s(buf + p, hi - lo + 1);
+    s_cat(buf, &p, " cyls)"); buf[p] = 0;
+}
+
+/* Resize the selected partition: Size (MB) + which edge moves -> a new cylinder
+   range, applied via rdb_resize_cyl. Confirms only when the change is destructive
+   (shrink, or any Start-edge move). Returns 1 if applied (caller need not act: the
+   dialog refreshes the view itself), else 0. */
 static int gui_resize_dialog(int index)
 {
     struct Window *dw;
@@ -1513,34 +1534,30 @@ static int gui_resize_dialog(int index)
     struct NewGadget ng;
     RdbPartition *pt;
     int dt = g_topb, dl = g_leftb;
-    int done = 0, applied = 0, anchor = 0;          /* 0 = Move End, 1 = Move Start */
-    uint32_t oldLow, oldHigh, cylBlocks, blockBytes;
+    int done = 0, applied = 0, anchor = 0;          /* 0 = End edge moves, 1 = Start edge */
+    uint32_t oldLow, oldHigh, curCyls, cylBlocks, blockBytes;
     uint32_t gapAfter, gapBefore, maxCyls, maxMB, curMB, n;
     static const char *anchorLabels[3];
-    static char maxBuf[24], readBuf[56];
+    static char maxBuf[24], readBuf[40], nowBuf[40];
 
     if (!g_have_model || index < 0 || index >= g_model.num_parts) return 0;
     pt = &g_model.parts[index];
     oldLow = pt->low_cyl; oldHigh = pt->high_cyl;
+    curCyls = oldHigh - oldLow + 1;
     cylBlocks = g_model.cyl_blocks; blockBytes = g_model.block_bytes;
     gapAfter  = rdb_gap_end_after(&g_model, index);     /* exclusive */
     gapBefore = rdb_gap_start_before(&g_model, index);  /* inclusive */
 
-    /* current size + the max for the default (Move End) anchor */
-    curMB  = rdb_cyls_to_mb(oldHigh - oldLow + 1, cylBlocks, blockBytes);
+    /* current size + the max for the default (End edge) anchor */
+    curMB  = rdb_cyls_to_mb(curCyls, cylBlocks, blockBytes);
     if (curMB < 1) curMB = 1;
-    maxCyls = gapAfter - oldLow;                        /* Move End: low fixed */
-    maxMB   = rdb_cyls_to_mb(maxCyls, cylBlocks, blockBytes);
-    if (maxMB < 1) maxMB = 1;
-    if (curMB > maxMB) curMB = maxMB;
+    maxCyls = gapAfter - oldLow;
     n = curMB;
 
-    anchorLabels[0] = "Move: End edge";
-    anchorLabels[1] = "Move: Start edge";
+    anchorLabels[0] = "End edge";
+    anchorLabels[1] = "Start edge";
     anchorLabels[2] = 0;
-
-    { int p = 0; s_cat(maxBuf, &p, "max "); p += u2s(maxBuf + p, maxMB);
-      s_cat(maxBuf, &p, " MB"); maxBuf[p] = 0; }
+    resize_extent(nowBuf, oldLow, oldHigh);
 
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wincompatible-pointer-types"
@@ -1549,44 +1566,48 @@ static int gui_resize_dialog(int index)
     if (!g) return 0;
     ng.ng_TextAttr = &g_font; ng.ng_VisualInfo = g_vi; ng.ng_Flags = 0;
 
-    /* anchor cycle */
-    ng.ng_LeftEdge = dl + 100; ng.ng_TopEdge = dt + 6; ng.ng_Width = 230; ng.ng_Height = 14;
-    ng.ng_GadgetText = (UBYTE *)"Anchor"; ng.ng_GadgetID = 1;
+    /* What it is now */
+    ng.ng_LeftEdge = dl + 104; ng.ng_TopEdge = dt + 6; ng.ng_Width = 244; ng.ng_Height = 12;
+    ng.ng_GadgetText = (UBYTE *)"Partition"; ng.ng_GadgetID = 0;
+    g = CreateGadget(TEXT_KIND, g, &ng, GTTX_Text, (ULONG)pt->name, TAG_END);
+    ng.ng_TopEdge = dt + 19; ng.ng_GadgetText = (UBYTE *)"Now";
+    g = CreateGadget(TEXT_KIND, g, &ng, GTTX_Text, (ULONG)nowBuf, TAG_END);
+
+    /* What it becomes */
+    ng.ng_TopEdge = dt + 40; ng.ng_Width = 130; ng.ng_Height = 14;
+    ng.ng_GadgetText = (UBYTE *)"Move"; ng.ng_GadgetID = 1;
     g = CreateGadget(CYCLE_KIND, g, &ng, GTCY_Labels, (ULONG)anchorLabels, GTCY_Active, 0, TAG_END);
     gAnchor = g;
 
-    /* size (MB) */
-    ng.ng_LeftEdge = dl + 100; ng.ng_TopEdge = dt + 26; ng.ng_Width = 90; ng.ng_Height = 14;
+    ng.ng_TopEdge = dt + 56; ng.ng_Width = 80;
     ng.ng_GadgetText = (UBYTE *)"Size (MB)"; ng.ng_GadgetID = 2;
     g = CreateGadget(INTEGER_KIND, g, &ng, GTIN_Number, (ULONG)n, GTIN_MaxChars, 7, TAG_END);
     gSize = g;
 
-    /* max hint */
-    ng.ng_LeftEdge = dl + 200; ng.ng_Width = 130; ng.ng_GadgetText = 0; ng.ng_GadgetID = 0;
-    g = CreateGadget(TEXT_KIND, g, &ng, GTTX_Text, (ULONG)maxBuf, TAG_END);
+    ng.ng_LeftEdge = dl + 192; ng.ng_Width = 156; ng.ng_GadgetText = 0; ng.ng_GadgetID = 0;
+    g = CreateGadget(TEXT_KIND, g, &ng, GTTX_Text, (ULONG)"", TAG_END);
     gMaxHint = g;
 
-    /* live cyl readout (filled by RZ_RECOMPUTE below) */
-    ng.ng_LeftEdge = dl + 10; ng.ng_TopEdge = dt + 46; ng.ng_Width = 320; ng.ng_Height = 12;
-    ng.ng_GadgetText = 0; ng.ng_GadgetID = 0;
+    ng.ng_LeftEdge = dl + 104; ng.ng_TopEdge = dt + 73; ng.ng_Width = 244; ng.ng_Height = 12;
+    ng.ng_GadgetText = (UBYTE *)"New";
     g = CreateGadget(TEXT_KIND, g, &ng, GTTX_Text, (ULONG)"", TAG_END);
     gRead = g;
 
-    /* persistent caveat */
-    ng.ng_LeftEdge = dl + 10; ng.ng_TopEdge = dt + 62; ng.ng_Width = 360; ng.ng_Height = 12;
+    /* The caveat */
+    ng.ng_LeftEdge = dl + 12; ng.ng_TopEdge = dt + 95; ng.ng_Width = RS_W - 24;
+    ng.ng_GadgetText = 0;
     g = CreateGadget(TEXT_KIND, g, &ng, GTTX_Text,
-                     (ULONG)"NOTE: Resizing partitions implies data loss.", TAG_END);
+                     (ULONG)"Resizing needs a reformat: data is lost.", TAG_END);
 
-    /* Ok / Cancel (Cancel right-aligned, equal padding to Ok) */
-    ng.ng_LeftEdge = dl + 10; ng.ng_TopEdge = dt + 80; ng.ng_Width = 70; ng.ng_Height = 14;
+    ng.ng_LeftEdge = dl + 4; ng.ng_TopEdge = dt + 112; ng.ng_Width = 90; ng.ng_Height = 14;
     ng.ng_GadgetText = (UBYTE *)"Ok"; ng.ng_GadgetID = 10;
     g = CreateGadget(BUTTON_KIND, g, &ng, TAG_END);
-    ng.ng_LeftEdge = dl + 300; ng.ng_GadgetText = (UBYTE *)"Cancel"; ng.ng_GadgetID = 11;
+    ng.ng_LeftEdge = dl + RS_W - 94; ng.ng_GadgetText = (UBYTE *)"Cancel"; ng.ng_GadgetID = 11;
     g = CreateGadget(BUTTON_KIND, g, &ng, TAG_END);
     if (!g) { FreeGadgets(dglist); return 0; }
 
-    {   int dwW = dl + 380 + g_scr->WBorRight;
-        int dwH = dt + 102 + g_scr->WBorBottom;
+    {   int dwW = dl + RS_W + g_scr->WBorRight;
+        int dwH = dt + 130 + g_scr->WBorBottom;
         int dwL = 0, dwT = 0;
         dlg_center(dwW, dwH, &dwL, &dwT);
         dw = dlg_open("Resize partition", dwL, dwT, dwW, dwH,
@@ -1594,33 +1615,27 @@ static int gui_resize_dialog(int index)
     }
     if (!dw) { FreeGadgets(dglist); return 0; }
     GT_RefreshWindow(dw, 0);
+    resize_chrome(dw);
 
-    /* helper to recompute max + clamp n + refresh the readout for the current anchor */
+    /* Recompute max, clamp n and refresh the readouts for the current anchor. */
 #define RZ_RECOMPUTE() do {                                                       \
         if (anchor == 0) maxCyls = gapAfter - oldLow;                             \
         else             maxCyls = oldHigh - gapBefore + 1;                       \
         maxMB = rdb_cyls_to_mb(maxCyls, cylBlocks, blockBytes);                   \
         if (maxMB < 1) maxMB = 1;                                                 \
-        if (n < 1) n = 1;                                                        \
+        if (n < 1) n = 1;                                                         \
         if (n > maxMB) n = maxMB;                                                 \
         { int p = 0; s_cat(maxBuf, &p, "max "); p += u2s(maxBuf + p, maxMB);      \
           s_cat(maxBuf, &p, " MB"); maxBuf[p] = 0; }                              \
         GT_SetGadgetAttrs(gMaxHint, dw, 0, GTTX_Text, (ULONG)maxBuf, TAG_END);    \
         GT_SetGadgetAttrs(gSize, dw, 0, GTIN_Number, (ULONG)n, TAG_END);          \
-        { uint32_t cyls = rdb_mb_to_cyls(n, cylBlocks, blockBytes);              \
-          uint32_t nl, nh; int p = 0;                                            \
-          if (cyls < 1) cyls = 1;                                                 \
-          if (cyls > maxCyls) cyls = maxCyls; /* ceil(mb) can overshoot the gap */\
-          if (anchor == 0) { nl = oldLow;  nh = oldLow + cyls - 1; }              \
-          else             { nh = oldHigh; nl = oldHigh - cyls + 1; }            \
-          s_cat(readBuf, &p, "-> cyls "); p += u2s(readBuf + p, nl);             \
-          s_cat(readBuf, &p, ".."); p += u2s(readBuf + p, nh);                   \
-          s_cat(readBuf, &p, "  ("); p += u2s(readBuf + p, n);                   \
-          s_cat(readBuf, &p, " MB)"); readBuf[p] = 0; }                          \
+        { uint32_t cyls = rdb_resize_cyls(n, curCyls, maxCyls, cylBlocks, blockBytes); \
+          if (anchor == 0) resize_extent(readBuf, oldLow, oldLow + cyls - 1);     \
+          else             resize_extent(readBuf, oldHigh - cyls + 1, oldHigh); } \
         GT_SetGadgetAttrs(gRead, dw, 0, GTTX_Text, (ULONG)readBuf, TAG_END);      \
     } while (0)
 
-    RZ_RECOMPUTE();                      /* fill the initial readout */
+    RZ_RECOMPUTE();                      /* fill the initial readouts */
     ActivateGadget(gSize, dw, 0);
 
     while (!done) {
@@ -1632,17 +1647,20 @@ static int gui_resize_dialog(int index)
             UWORD code = im->Code;
             GT_ReplyIMsg(im);
             if (cl == IDCMP_CLOSEWINDOW) { done = 1; }
-            else if (cl == IDCMP_REFRESHWINDOW) { dlg_refresh(dw); }
+            else if (cl == IDCMP_REFRESHWINDOW) {
+                GT_BeginRefresh(dw); resize_chrome(dw); GT_EndRefresh(dw, TRUE);
+            }
             else if (cl == IDCMP_GADGETUP) {
                 if (ig == gAnchor) { anchor = (int)code; RZ_RECOMPUTE(); }
                 else if (ig == gSize) {
                     n = (uint32_t)((struct StringInfo *)gSize->SpecialInfo)->LongInt;
                     RZ_RECOMPUTE();
                 } else if (ig->GadgetID == 10) {                 /* Ok */
-                    uint32_t cyls = rdb_mb_to_cyls(n, cylBlocks, blockBytes);
-                    uint32_t nl, nh; int destructive, go = 1;
-                    if (cyls < 1) cyls = 1;
-                    if (cyls > maxCyls) cyls = maxCyls;  /* ceil(mb) can overshoot the gap */
+                    uint32_t cyls, nl, nh; int destructive, go = 1;
+                    /* A click leaves a typed number without a GADGETUP: read it here. */
+                    n = (uint32_t)((struct StringInfo *)gSize->SpecialInfo)->LongInt;
+                    RZ_RECOMPUTE();
+                    cyls = rdb_resize_cyls(n, curCyls, maxCyls, cylBlocks, blockBytes);
                     if (anchor == 0) { nl = oldLow;  nh = oldLow + cyls - 1; }
                     else             { nh = oldHigh; nl = oldHigh - cyls + 1; }
                     if (nl == oldLow && nh == oldHigh) { done = 1; break; }   /* no change */

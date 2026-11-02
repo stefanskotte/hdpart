@@ -82,6 +82,21 @@ uint32_t rdb_cyls_to_mb(uint32_t cyls, uint32_t cyl_blocks, uint32_t block_bytes
     return total_blocks / blocks_per_mb;
 }
 
+uint32_t rdb_resize_cyls(uint32_t mb, uint32_t cur_cyls, uint32_t max_cyls,
+                         uint32_t cyl_blocks, uint32_t block_bytes)
+{
+    uint32_t cur_mb = rdb_cyls_to_mb(cur_cyls, cyl_blocks, block_bytes);
+    uint32_t max_mb = rdb_cyls_to_mb(max_cyls, cyl_blocks, block_bytes);
+    uint32_t c;
+    if (cur_mb < 1) cur_mb = 1;
+    if (max_mb < 1) max_mb = 1;
+    if (mb == cur_mb) return cur_cyls;
+    if (mb >= max_mb) return max_cyls;
+    c = rdb_mb_to_cyls(mb, cyl_blocks, block_bytes);
+    if (c < 1) c = 1;
+    return (c > max_cyls) ? max_cyls : c;
+}
+
 void rdb_init_model(RdbModel *m, uint32_t cyl, uint32_t heads, uint32_t sectors)
 {
     memset(m, 0, sizeof(*m));

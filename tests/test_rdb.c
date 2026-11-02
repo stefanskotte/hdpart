@@ -484,6 +484,19 @@ static void test_gap_helpers(void)
     CHECK(rdb_gap_end_after(&m, 99)   == 996);   /* invalid index -> full-disk sentinel */
 }
 
+/* The Resize dialog works in whole MB, which rounds. Its numbers must not move the
+   partition on their own. 1008-block cylinders: 4 cyls is 1.97 MB, shown as 1. */
+static void test_resize_cyls(void)
+{
+    CHECK(rdb_resize_cyls(1, 4, 4, 1008, 512) == 4);      /* unchanged size is a no-op */
+    CHECK(rdb_resize_cyls(1, 4, 40, 1008, 512) == 4);     /* still a no-op with room to grow */
+    CHECK(rdb_resize_cyls(19, 40, 40, 1008, 512) == 40);  /* showing max keeps every cylinder */
+    CHECK(rdb_resize_cyls(19, 4, 40, 1008, 512) == 40);   /* growing to max fills the gap */
+    CHECK(rdb_resize_cyls(10, 4, 40, 1008, 512) == rdb_mb_to_cyls(10, 1008, 512));
+    CHECK(rdb_resize_cyls(2, 40, 40, 1008, 512) == rdb_mb_to_cyls(2, 1008, 512));  /* shrink */
+    CHECK(rdb_resize_cyls(1, 2, 2, 16, 512) == 2);        /* under 1 MB still shows as 1 */
+}
+
 static void test_used_percent(void)
 {
     FILE *f = tmpfile();
@@ -583,6 +596,7 @@ int main(int argc, char **argv)
     test_split_range();
     test_short_table_size();
     test_used_percent();
+    test_resize_cyls();
     if (g_fail) { printf("%d CHECK(s) FAILED\n", g_fail); return 1; }
     printf("ALL TESTS PASSED\n");
     return 0;
