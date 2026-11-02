@@ -191,6 +191,7 @@ static int add_unique(DiscDisk out[], int *count, int max,
     out[idx].size_mb      = 0;
     out[idx].status       = DST_UNKNOWN;
     out[idx].partitionable = 0;
+    out[idx].used_pct     = -1;
     out[idx].label[0]     = 0;
     for (n = 0; n < DISC_DRIVER_LEN - 1 && driver[n]; n++)
         out[idx].driver[n] = driver[n];
@@ -222,14 +223,17 @@ static void probe_one(DiscDisk *d)
                 d->label[n] = 0;
             }
         }
-        /* Classify with the lightweight RDB presence check — discovery only needs
-           "has an RDB?", not the partition table or the embedded handler, so this
-           avoids reading the (potentially ~120-block) embedded filesystem on every
-           probed unit. The full table + FS load happens later on unit-select. */
-        if (rdb_present(dev_block_io, h) == RDB_OK) {
-            if (d->status != DST_MOUNTED) d->status = DST_RDB;
-        } else {
-            if (d->status != DST_MOUNTED) d->status = DST_BLANK;
+        /* Discovery only needs "has an RDB, and how full is it?", not the embedded
+           handler, so this avoids reading a ~120-block filesystem on every unit.
+           The full table + FS load happens later on unit-select. */
+        { uint32_t pct = 0;
+          if (rdb_used_percent(dev_block_io, h, &pct) == RDB_OK) {
+              d->used_pct = (int)pct;
+              if (d->status != DST_MOUNTED) d->status = DST_RDB;
+          } else {
+              d->used_pct = -1;
+              if (d->status != DST_MOUNTED) d->status = DST_BLANK;
+          }
         }
     } else {
         if (d->status == DST_UNKNOWN) d->status = DST_NOMEDIA;

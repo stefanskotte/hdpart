@@ -21,6 +21,7 @@ typedef struct {
     uint32_t   size_mb;                   /* from geometry, 0 if unknown */
     DiskStatus status;
     int        partitionable;             /* 1 if this can hold an RDB (for the GUI picker) */
+    int        used_pct;                  /* partitioned share 0..100, -1 if no RDB */
     char       label[DISC_LABEL_LEN];     /* model string / DOS name for display */
 } DiscDisk;
 

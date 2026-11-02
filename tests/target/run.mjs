@@ -115,7 +115,28 @@ class Suite {
     throw new Error(`no ${labelsSym} entry containing "${want}"`);
   }
   pickDriver(name) { return this.pickCycle(GID.DEVICE, 'g_drv_idx', 'g_drvlabels', name); }
-  pickUnit(text) { return this.pickCycle(GID.UNIT, 'g_cur_unitidx', 'g_unitlabels', text); }
+  // Click row `i` of a hand-drawn list (ListGeom: x y w h rowh vis top count).
+  async clickRow(sym, i) {
+    const e = this.e, w = await this.main(), b = await e.mem(e.addr(sym), 16);
+    const x = b.readInt16BE(0), y = b.readInt16BE(2), width = b.readInt16BE(4), rowh = b.readInt16BE(8), top = b.readInt16BE(12);
+    await e.clickAt((await e.i16(w + 4)) + x + (width >> 1), (await e.i16(w + 6)) + y + (i - top) * rowh + (rowh >> 1));
+  }
+  async unitRow(text) {
+    const e = this.e, n = await e.g32('g_nunits');
+    for (let i = 0; i < n; i++) if ((await e.gstr('g_unittext', i * 24, 24)).includes(text)) return i;
+    throw new Error(`no unit containing "${text}"`);
+  }
+  async pickUnit(text) {
+    const row = await this.unitRow(text);
+    if (((await this.e.g32('g_cur_unitidx')) | 0) !== row) await this.clickRow('g_ulist', row);
+    await this.e.waitFor('unit shown', async () => ((await this.e.g32('g_cur_unitidx')) | 0) === row);
+    await this.idle();
+  }
+  // A listed unit other than the current one.
+  async otherUnitRow() {
+    const cur = (await this.e.g32('g_cur_unitidx')) | 0;
+    return cur === 0 ? 1 : 0;
+  }
 
   async scanTo(unit) {
     await this.pickDriver('uaehf.device');
@@ -127,13 +148,12 @@ class Suite {
   // Select partition i by clicking its slice of the disk-map bar.
   async selectPart(i) {
     const e = this.e, w = await this.main();
-    const m = e.addr('g_model'), cyl = await e.u32(m);
-    const r = (await this.row(i)).trim().split(/\s+/);
-    const nums = r.filter((x) => /^\d+$/.test(x)).map(Number);
+    const cyl = await e.u32(e.addr('g_model'));
+    const nums = (await this.row(i)).trim().split(/\s+/).filter((x) => /^\d+$/.test(x)).map(Number);
     const [low, high] = nums.slice(-2);
-    const topb = await e.u16(e.addr('g_topb')), leftb = await e.u16(e.addr('g_leftb'));
-    const x = 16 + leftb + Math.floor(((low + high + 1) / 2 * 550) / cyl);
-    await e.clickAt((await e.i16(w + 4)) + x, (await e.i16(w + 6)) + 92 + topb + 8);
+    const bar = await e.mem(e.addr('g_bar'), 8);
+    const x = bar.readInt16BE(0) + Math.floor(((low + high + 1) / 2 * bar.readInt16BE(4)) / cyl);
+    await e.clickAt((await e.i16(w + 4)) + x, (await e.i16(w + 6)) + bar.readInt16BE(2) + (bar.readInt16BE(6) >> 1));
     await e.waitFor(`partition ${i} selected`, async () => (await this.sel()) === i);
   }
 
@@ -232,8 +252,12 @@ class Suite {
       eq(r.length, 2, 'partitions');
       ok(r[0].includes('DH0') && r[1].includes('DH1'), `rows ${r}`);
     });
-    await this.step('Disk bar: clicking a slice selects that partition', async () => {
+    await this.step('Disk map and table: clicking selects that partition', async () => {
       await this.selectPart(1); await this.selectPart(0);
+      await this.clickRow('g_plist', 1);
+      await e.waitFor('table row selected', async () => (await this.sel()) === 1);
+      await this.clickRow('g_plist', 0);
+      await e.waitFor('table row selected', async () => (await this.sel()) === 0);
     });
     await this.step('Resize: shrink with confirmation', async () => {
       const before = await this.row(0);
@@ -274,8 +298,8 @@ class Suite {
       await this.answer('Delete Partition', PROCEED);
       eq(await this.dirty(), 1, 'dirty');
       const unit = await e.g32('g_cur_unitidx'), drv = await e.g32('g_drv_idx');
-      for (const [gid, title] of [[GID.UNIT, 'Unit'], [GID.DEVICE, 'Driver'], [GID.SCAN, 'Scan'], [GID.DRIVER, 'Load Driver'], [GID.REFRESH, 'Refresh']]) {
-        await this.clickMain(gid);
+      for (const [gid, title] of [[0, 'Unit'], [GID.DEVICE, 'Driver'], [GID.SCAN, 'Scan'], [GID.DRIVER, 'Load Driver'], [GID.REFRESH, 'Refresh']]) {
+        if (gid) await this.clickMain(gid); else await this.clickRow('g_ulist', await this.otherUnitRow());
         await this.answer(title, CANCEL);
         eq(await this.dirty(), 1, `${title}: still dirty`);
         eq(await this.nparts(), 2, `${title}: edits kept`);
@@ -286,11 +310,11 @@ class Suite {
     });
     await this.step('Unsaved edits: Unit + Proceed discards and switches', async () => {
       const unit = await e.g32('g_cur_unitidx');
-      await this.clickMain(GID.UNIT);
+      await this.clickRow('g_ulist', await this.otherUnitRow());
       await this.answer('Unit', PROCEED);
       await e.waitFor('unit change', async () => (await e.g32('g_cur_unitidx')) !== unit);
       eq(await this.dirty(), 0, 'dirty');
-      await this.pickUnit('(8 MB)');
+      await this.pickUnit(' 8 MB');
       eq(await this.nparts(), 3, 'saved table reloaded');
     });
     await this.step('Filesystems: Add from file detects PFS\\3 and its version', async () => {
@@ -366,9 +390,9 @@ class Suite {
       ok(partInfo(this.diskA, r, r.parts[1]).hasLabel('PFSTWO'), 'new label on disk');
     });
     await this.step('Filesystems: Copy from disk imports the embedded handler', async () => {
-      const label = await e.cstr(await e.u32(e.addr('g_unitlabels') + (await e.g32('g_cur_unitidx')) * 4), 24);
+      const label = await e.gstr('g_unittext', (await e.g32('g_cur_unitidx')) * 24, 24);
       const srcUnit = Number(label.match(/Unit (\d+)/)[1]);
-      await this.pickUnit('(16 MB)');
+      await this.pickUnit(' 16 MB');
       await this.clickMain(GID.FS);
       const w = await e.waitWin('Filesystems');
       const before = await e.g32('g_fs_npool');
@@ -388,6 +412,24 @@ class Suite {
       await e.click(w, FSD.REMOVE);
       await e.waitFor('removed', async () => (await e.g32('g_fs_npool')) === before);
       await this.answer('Filesystems', FSD.DONE);
+      await this.refreshIfDirty();
+    });
+    await this.step('Partition table: scrolls when more partitions than rows', async () => {
+      await this.clickMain(GID.SPLIT);
+      const w = await e.waitWin('Split remaining');
+      for (let i = 0; i < 4; i++) { await e.click(w, 3); await sleep(150); }   // 4 -> 8
+      await e.clickClose(w, 10);
+      eq(await this.nparts(), 8, 'partitions');
+      const m = await this.main(), g = await e.mem(e.addr('g_plist'), 16);
+      await e.clickAt((await e.i16(m + 4)) + g.readInt16BE(0) + g.readInt16BE(4) + 10, (await e.i16(m + 6)) + g.readInt16BE(2) - 13 + 28);
+      await e.waitFor('table scrolled', async () => (await e.mem(e.addr('g_plist') + 12, 2)).readInt16BE(0) > 0);
+      const top = (await e.mem(e.addr('g_plist') + 12, 2)).readInt16BE(0);
+      await this.clickRow('g_plist', top + 1);
+      await e.waitFor('scrolled row selected', async () => (await this.sel()) === top + 1);
+      await this.idle();
+      const edit = await e.gadget(await this.main(), GID.EDIT);
+      ok(!(edit.flags & 0x100), 'Edit enabled once a row is selected');
+      await e.shot(`${this.dir}/shots/scrolled.png`);
       await this.refreshIfDirty();
     });
     await this.step('Driver load: a file that is not a device is refused', async () => {
@@ -424,7 +466,7 @@ class Suite {
       await e.go();
     });
     await this.step('Reboot: table and embedded filesystem are read back', async () => {
-      await this.scanTo('(8 MB)');
+      await this.scanTo(' 8 MB');
       eq(await this.nparts(), 3, 'partitions');
       ok((await this.row(1)).includes('PFS\\3'), 'row shows PFS');
       eq(await e.g32('g_fs_npool'), 1, 'pool from RDB');
@@ -459,19 +501,20 @@ class Suite {
 
   async boot() {
     const e = this.e;
-    await this.step('Boot: HDPart starts on its own screen', async () => {
+    await this.step('Boot: HDPart opens a window on the Workbench screen', async () => {
       await e.locate();
       await e.waitFor('main window', async () => (await e.g32('g_win')) && (await e.g32('g_nunits')) === 0, 60000);
       await e.waitFor('picker ready', async () => (await this.status()).includes('Select a driver'), 30000);
       const w = await this.main();
       eq(await e.cstr(await e.u32(w + 32), 30), `HDPart ${ADFVER}`, 'window title');
+      ok(await e.g32('g_pub'), 'on the Workbench public screen');
       const execVer = await e.u16((await e.u32(4)) + 20);
       eq(execVer, this.ks.major, 'exec version');
       if (this.ks.major < 39) eq(await e.g32('g_newlook'), 0, 'classic menus below KS3.0');
       await e.shot(`${this.dir}/shots/start.png`);
     });
     await this.step('Scan: finds both test disks', async () => {
-      await this.scanTo('(8 MB)');
+      await this.scanTo(' 8 MB');
       eq(await this.nparts(), 0, 'blank disk has an empty table');
       eq(await this.dirty(), 0, 'dirty');
     });

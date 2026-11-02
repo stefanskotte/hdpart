@@ -1,4 +1,5 @@
-/* HDPart GadTools GUI (read-only display in Plan 3a). */
+/* HDPart GUI: GadTools gadgets plus hand-drawn disk map, unit list, partition
+   table and details panel, in a window on the Workbench screen. */
 #include <exec/types.h>
 #include <exec/lists.h>
 #include <exec/nodes.h>
@@ -6,6 +7,7 @@
 #include <intuition/intuition.h>
 #include <intuition/screens.h>
 #include <libraries/gadtools.h>
+#include <intuition/gadgetclass.h>
 #include <graphics/gfxbase.h>
 #include <proto/exec.h>
 #include <inline/alib.h>
@@ -37,7 +39,7 @@ extern struct DosLibrary *DOSBase;   /* opened in startup.c (for AddPart) */
 enum { GID_DEVICE = 1, GID_SCAN, GID_DRIVER, GID_PARTS, GID_NEW, GID_DELETE,
        GID_EDIT, GID_INIT, GID_SAVE, GID_STATUS, GID_UNIT, GID_SPLIT, GID_REFRESH,
        GID_RESIZE, GID_FORMAT, GID_FS };
-/* GID_DEVICE is the Driver cycle; GID_UNIT is the Unit cycle. */
+/* GID_UNIT and GID_PARTS are the scrollers of the Units list and partition table. */
 
 /* Module state for one GUI session. */
 static struct Screen  *g_scr;        /* screen we render on (pub or own) */
@@ -45,7 +47,7 @@ static struct Screen  *g_pub;        /* locked pubscreen, or NULL */
 static struct Window  *g_win;
 static APTR            g_vi;          /* VisualInfo */
 static struct Gadget  *g_glist;      /* gadtools context list */
-static struct Gadget  *g_gad[17];    /* gadget pointers by a small index */
+static struct Gadget  *g_gad[17];    /* gadget pointers by GID_* */
 static struct TextAttr g_font = { (STRPTR)"topaz.font", 8, 0, 0 };
 static struct TextFont *g_sfont = 0;  /* explicit topaz 8 for our own screen (NULL if unavailable) */
 static struct Menu    *g_menu = 0;   /* menu strip attached to g_win */
@@ -54,8 +56,8 @@ static struct Menu    *g_menu = 0;   /* menu strip attached to g_win */
 static DiscDisk g_disks[DISC_MAX];
 static int      g_ndisks;
 static const char *g_drvlabels[DISC_MAX + 2];   /* Driver cycle: prompt + names */
-static const char *g_unitlabels[DISC_MAX + 2];  /* Unit cycle: placeholder or u<n> size */
-static char     g_unittext[DISC_MAX][24];        /* storage for unit-cycle labels */
+static char     g_unittext[DISC_MAX][24];        /* "Unit <n> <size> MB", one per listed unit */
+static const char *g_unit_empty = "";            /* shown in the Units list when it has no units */
 static RdbModel g_model;
 static int      g_have_model;
 static int      g_dirty;            /* unsaved edits in g_model */
@@ -63,10 +65,11 @@ static DeviceInfo g_geo;            /* geometry of the selected device */
 static char     g_cur_driver[40];   /* selected device driver/unit (for Save) */
 static uint32_t g_cur_unit;
 static int      g_sel_part = -1;    /* selected partition index, or -1 */
-static int      g_cur_unitidx = -1; /* Unit cycle index currently shown (-1 = none): Refresh re-probes it */
+static int      g_cur_unitidx = -1; /* Units list row currently shown (-1 = none): Refresh re-probes it */
 static int      g_drv_idx;          /* Driver cycle index currently shown: restored if a change is declined */
-static int      g_unitmap[DISC_MAX + 1]; /* Unit cycle index -> g_disks index (-1 = none) */
-static int      g_nunits;           /* number of real disk entries in the Unit cycle */
+static int      g_unitmap[DISC_MAX + 1]; /* Units list row -> g_disks index (-1 = none) */
+static int      g_nunits;           /* number of rows in the Units list */
+static int      g_no_rdb;           /* current disk had no RDB when read */
 static char     g_target_driver[40];/* driver the Scan button will probe ("" = none) */
 static WORD     g_topb, g_leftb;     /* window border offsets (title bar / left edge);
                                         gadget coords are relative to the window's
@@ -76,11 +79,41 @@ static WORD     g_topb, g_leftb;     /* window border offsets (title bar / left 
 static RdbFileSys g_fs_pool[RDB_MAX_FS];
 static int        g_fs_npool;
 
-/* Exec list of partition rows for the listview. */
-static struct List g_partlist;
-static struct Node g_partnodes[RDB_MAX_PARTS];
-/* 80 bytes: worst legal row (31-char name + 3x10-digit fields + labels + NUL)
-   is 67 bytes; 80 leaves headroom and prevents overflow for any legal RDB. */
+/* Layout, in pixels relative to the window's inner top-left (add g_leftb/g_topb).
+   Left column: driver and units. Right column: map, table, details, actions. */
+#define WIN_W      604
+#define WIN_H      204
+#define LEFT_X     8
+#define LEFT_W     156
+#define RIGHT_X    172
+#define RIGHT_W    424
+#define SCROLL_W   16
+#define UNITS_Y    52
+#define UNITS_H    130
+#define UNIT_ROW_H 21
+#define UNIT_ROWS  6
+#define MAP_Y      2
+#define MAP_H      36
+#define TABLE_Y    42
+#define TABLE_H    56
+#define PART_ROW_H 10
+#define PART_ROWS  4
+#define DETAIL_Y   102
+#define DETAIL_H   64
+#define ACTION_Y   170
+#define FOOTER_Y   186
+
+/* A hand-drawn list: GadTools cannot highlight a row on V37. Window-relative. */
+typedef struct { WORD x, y, w, h, rowh, vis, top, count; } ListGeom;
+static ListGeom g_plist, g_ulist;
+static struct { WORD x, y, w, h; } g_bar;
+
+/* Screen pens, read from DrawInfo so a customised Workbench palette still works. */
+static struct DrawInfo *g_dri;
+static int g_pen_bg, g_pen_text, g_pen_shine, g_pen_fill, g_pen_seltext;
+
+/* Partition table rows: fixed char columns, Name@0 Type@12 Start@24 End@32 Size@40.
+   80 bytes is headroom for any legal RDB. */
 static char        g_partrows[RDB_MAX_PARTS][80];
 static char        g_statusbuf[80];
 
@@ -188,14 +221,20 @@ static void gui_init_picker(void);            /* no-probe startup picker */
 static void gui_select_driver(int drvIdx);    /* Driver cycle: pick a scan target (resets) */
 static void gui_select_unit(int unitIdx);     /* Unit cycle: show that disk's partitions */
 static void gui_driver_picked(int drvIdx);    /* Driver cycle clicked: confirm, then select */
-static void gui_unit_picked(int unitIdx);     /* Unit cycle clicked: confirm, then select */
+static void gui_unit_picked(int unitIdx);     /* Units row clicked: confirm, then select */
 static void gui_scan_selected(void);          /* probe the target driver (Scan button) */
 static void gui_refresh_current(void);        /* re-probe the currently shown device+unit */
 static int  gui_resize_dialog(int index);     /* grow/shrink the selected partition */
 static void gui_format(int index);            /* format selected partition into empty volume */
 static void gui_draw_chrome(void);        /* BevelBox group frames + captions */
 void gui_draw_bar(void);
-static void gui_draw_partheader(void);    /* column headings above the listview */
+static void gui_draw_table(void);         /* partition table rows */
+static void gui_draw_units(void);         /* Units list rows + meters */
+static void gui_draw_details(void);       /* details of the selected partition */
+static void gui_list_changed(ListGeom *l, int gid);
+static void gui_list_scrolled(ListGeom *l, int top);
+static int  gui_list_hit(const ListGeom *l, int mx, int my);
+static void gui_load_pens(void);
 static void gui_draw_easter(void);        /* the bottom-right pi glyph */
 static int  gui_hit_easter(int mx, int my);
 static void gui_set_selection(int idx);   /* select partition `idx` (or -1) + redraw */
@@ -205,15 +244,12 @@ static int  gui_part_at_x(int mx, int my);/* partition under a window-relative p
 static int streq(const char *a, const char *b)
 { int i; for (i = 0; a[i] && a[i] == b[i]; i++) ; return a[i] == 0 && b[i] == 0; }
 
-/* Set the status-line text. */
+/* Set the status-line text. The footer holds 33 characters. */
+#define STATUS_CHARS 33
 static void gui_status(const char *s)
 {
-    /* "Status: " is baked into the text (not a GadTools label) so the line's
-       left edge aligns deterministically with the bevel content column. */
-    static const char pre[] = "Status: ";
-    int p = 0, i = 0;
-    while (pre[p]) { g_statusbuf[p] = pre[p]; p++; }
-    while (s[i] && p < (int)sizeof(g_statusbuf) - 1) { g_statusbuf[p++] = s[i++]; }
+    int p = 0;
+    while (s[p] && p < STATUS_CHARS) { g_statusbuf[p] = s[p]; p++; }
     g_statusbuf[p] = 0;
     if (g_win && g_gad[GID_STATUS])
         GT_SetGadgetAttrs(g_gad[GID_STATUS], g_win, 0, GTTX_Text, (ULONG)g_statusbuf, TAG_END);
@@ -263,54 +299,48 @@ static void gui_update_buttons(void)
     gui_menu_enable(MN_PART,    IP_FORMAT,  hasSel);
 }
 
-/* Rebuild the partition listview + status text + bar from g_model. */
+/* Rebuild the partition rows, status text, map, table and details from g_model. */
 static void gui_refresh_parts(void)
 {
-    int i;
-    NewList(&g_partlist);
+    int i, count = 0;
     if (g_have_model) {
         for (i = 0; i < g_model.num_parts && i < RDB_MAX_PARTS; i++) {
             RdbPartition *pt = &g_model.parts[i];
             char *row = g_partrows[i];
-            int p = 0;
-            int k;
-            /* col 0 is a selection marker ('>' = selected) so the choice STICKS
-               in the list on every OS version — GadTools GTLV_Selected highlight
-               is V39+ only, a no-op on the V37 baseline. Fixed char columns so
-               the heading (gui_draw_partheader) lines up:
-               mark@0 #@2 Name@6 Type@18 Start@30 End@38 Size@46. */
-            row[p++] = (i == g_sel_part) ? '>' : ' ';
-            row[p++] = ' ';
-            p += u2s(row + p, (ULONG)(i + 1));         s_pad(row, &p, 6);
+            int p = 0, k;
             for (k = 0; pt->name[k] && k < 11; k++) row[p++] = pt->name[k];
-            s_pad(row, &p, 18);
+            s_pad(row, &p, 12);
             { char tb[16]; fstype_label(tb, pt->dos_type); s_cat(row, &p, tb); }
-            s_pad(row, &p, 30);
-            p += u2s(row + p, pt->low_cyl);            s_pad(row, &p, 38);
-            p += u2s(row + p, pt->high_cyl);           s_pad(row, &p, 46);
+            s_pad(row, &p, 24);
+            p += u2s(row + p, pt->low_cyl);            s_pad(row, &p, 32);
+            p += u2s(row + p, pt->high_cyl);           s_pad(row, &p, 40);
             { ULONG cyls = pt->high_cyl - pt->low_cyl + 1;
               ULONG mb = disc_blocks_to_mb(cyls * g_model.cyl_blocks, g_model.block_bytes);
-              p += u2s(row + p, mb); s_cat(row, &p, "MB"); }
+              p += u2s(row + p, mb); s_cat(row, &p, " MB"); }
             row[p] = 0;
-            g_partnodes[i].ln_Name = row;
-            AddTail(&g_partlist, &g_partnodes[i]);
+            count++;
         }
-        { int p = 0; s_cat(g_statusbuf, &p, g_dirty ? "Modified  " : "RDB OK  ");
+        { int p = 0;
+          s_cat(g_statusbuf, &p, g_dirty ? "Modified, " : g_no_rdb ? "Blank disk, " : "");
           p += u2s(g_statusbuf + p, (ULONG)g_model.num_parts);
-          s_cat(g_statusbuf, &p, " parts  ");
+          s_cat(g_statusbuf, &p, " parts, ");
           p += u2s(g_statusbuf + p, g_model.cylinders); s_cat(g_statusbuf, &p, " cyl");
           g_statusbuf[p] = 0; }
     } else {
-        int p = 0; s_cat(g_statusbuf, &p, "No RDB on this disk"); g_statusbuf[p] = 0;
+        int p = 0; s_cat(g_statusbuf, &p, "No disk selected"); g_statusbuf[p] = 0;
     }
-    if (g_win && g_gad[GID_PARTS])
-        GT_SetGadgetAttrs(g_gad[GID_PARTS], g_win, 0,
-                          GTLV_Labels, (ULONG)&g_partlist,
-                          GTLV_Selected, (ULONG)(g_sel_part >= 0 ? (ULONG)g_sel_part : ~0UL),
-                          TAG_END);
+    /* Keep the selection on screen. */
+    g_plist.count = (WORD)count;
+    if (g_sel_part >= 0) {
+        if (g_sel_part < g_plist.top) g_plist.top = (WORD)g_sel_part;
+        if (g_sel_part >= g_plist.top + g_plist.vis) g_plist.top = (WORD)(g_sel_part - g_plist.vis + 1);
+    }
     if (g_win && g_gad[GID_STATUS])
         GT_SetGadgetAttrs(g_gad[GID_STATUS], g_win, 0, GTTX_Text, (ULONG)g_statusbuf, TAG_END);
+    gui_list_changed(&g_plist, GID_PARTS);
     gui_draw_bar();
+    gui_draw_units();
+    gui_draw_details();
 }
 
 /* Screen-top menu strip. nm_CommKey letters are the right-Amiga shortcuts.
@@ -356,76 +386,75 @@ static struct Gadget *build_gadgets(void)
 #pragma GCC diagnostic pop
     if (!g) return 0;
 
-    /* Row 1 — Disk panel: Driver cycle + Load button */
-    ng.ng_TextAttr   = &g_font;
-    ng.ng_VisualInfo = g_vi;
-    ng.ng_LeftEdge = 76 + g_leftb; ng.ng_TopEdge = 18 + g_topb; ng.ng_Width = 400; ng.ng_Height = 14;
-    ng.ng_GadgetText = (UBYTE *)"Driver:"; ng.ng_GadgetID = GID_DEVICE; ng.ng_Flags = 0;
-    g_drvlabels[0] = "Select or load a driver"; g_drvlabels[1] = 0;
+    ng.ng_TextAttr = &g_font; ng.ng_VisualInfo = g_vi; ng.ng_Flags = 0;
+
+    /* Left column: driver cycle, Scan + Load. */
+    ng.ng_LeftEdge = LEFT_X + g_leftb; ng.ng_TopEdge = 11 + g_topb; ng.ng_Width = LEFT_W; ng.ng_Height = 13;
+    ng.ng_GadgetText = 0; ng.ng_GadgetID = GID_DEVICE;
+    g_drvlabels[0] = "Select a driver"; g_drvlabels[1] = 0;
     g = CreateGadget(CYCLE_KIND, g, &ng, GTCY_Labels, (ULONG)g_drvlabels, TAG_END);
     g_gad[GID_DEVICE] = g;
 
-    ng.ng_LeftEdge = 484 + g_leftb; ng.ng_TopEdge = 18 + g_topb; ng.ng_Width = 82; ng.ng_Height = 14;
+    ng.ng_TopEdge = 26 + g_topb; ng.ng_Width = 76;
+    ng.ng_GadgetText = (UBYTE *)"Scan"; ng.ng_GadgetID = GID_SCAN;   /* no underscore: Scan has no shortcut */
+    g = CreateGadget(BUTTON_KIND, g, &ng, TAG_END);
+    g_gad[GID_SCAN] = g;
+
+    ng.ng_LeftEdge = LEFT_X + LEFT_W - 76 + g_leftb;
     ng.ng_GadgetText = (UBYTE *)"_Load..."; ng.ng_GadgetID = GID_DRIVER;
     /* Always enabled: gui_pick_file falls back to a typed-path dialog when
        asl.library is absent (e.g. booted from the bare HDPart floppy). */
     g = CreateGadget(BUTTON_KIND, g, &ng, GT_Underscore, (ULONG)'_', TAG_END);
     g_gad[GID_DRIVER] = g;
 
-    /* Row 2 — Disk panel: Unit cycle + Scan button (normal weight, single height) */
-    ng.ng_LeftEdge = 76 + g_leftb; ng.ng_TopEdge = 36 + g_topb; ng.ng_Width = 400; ng.ng_Height = 14;
-    ng.ng_GadgetText = (UBYTE *)"Unit:"; ng.ng_GadgetID = GID_UNIT;
-    g_unitlabels[0] = "(press Scan)"; g_unitlabels[1] = 0;
-    g = CreateGadget(CYCLE_KIND, g, &ng, GTCY_Labels, (ULONG)g_unitlabels, GA_Disabled, TRUE, TAG_END);
+    /* Scrollers beside the two hand-drawn lists. */
+    ng.ng_LeftEdge = LEFT_X + LEFT_W - SCROLL_W - 2 + g_leftb; ng.ng_TopEdge = UNITS_Y + 2 + g_topb;
+    ng.ng_Width = SCROLL_W; ng.ng_Height = UNITS_H - 4;
+    ng.ng_GadgetText = 0; ng.ng_GadgetID = GID_UNIT;
+    g = CreateGadget(SCROLLER_KIND, g, &ng, GTSC_Top, 0, GTSC_Total, 0, GTSC_Visible, UNIT_ROWS,
+                     GTSC_Arrows, 8, PGA_Freedom, LORIENT_VERT, GA_RelVerify, TRUE, GA_Immediate, TRUE, TAG_END);
     g_gad[GID_UNIT] = g;
 
-    ng.ng_LeftEdge = 484 + g_leftb; ng.ng_TopEdge = 36 + g_topb; ng.ng_Width = 82; ng.ng_Height = 14;
-    ng.ng_GadgetText = (UBYTE *)"Scan"; ng.ng_GadgetID = GID_SCAN;   /* no underscore: Scan has no shortcut */
-    g = CreateGadget(BUTTON_KIND, g, &ng, TAG_END);
-    g_gad[GID_SCAN] = g;
-
-    /* Row 3 — Disk panel: Filesystems button (enabled only when g_have_model) */
-    ng.ng_LeftEdge = 484 + g_leftb; ng.ng_TopEdge = 54 + g_topb; ng.ng_Width = 82; ng.ng_Height = 14;
-    ng.ng_GadgetText = (UBYTE *)"File_sys..."; ng.ng_GadgetID = GID_FS;
-    g = CreateGadget(BUTTON_KIND, g, &ng, GA_Disabled, TRUE, GT_Underscore, (ULONG)'_', TAG_END);
-    g_gad[GID_FS] = g;
-
-    /* Partition listview (inside Partitions panel, under bar+header; y shifted +18) */
-    ng.ng_LeftEdge = 16 + g_leftb; ng.ng_TopEdge = 124 + g_topb; ng.ng_Width = 550; ng.ng_Height = 66;
-    ng.ng_GadgetText = 0; ng.ng_GadgetID = GID_PARTS;
-    g = CreateGadget(LISTVIEW_KIND, g, &ng, GTLV_Labels, 0, GTLV_ShowSelected, 0, TAG_END);
+    ng.ng_LeftEdge = RIGHT_X + RIGHT_W - SCROLL_W - 2 + g_leftb; ng.ng_TopEdge = TABLE_Y + 2 + g_topb;
+    ng.ng_Width = SCROLL_W; ng.ng_Height = TABLE_H - 4; ng.ng_GadgetID = GID_PARTS;
+    g = CreateGadget(SCROLLER_KIND, g, &ng, GTSC_Top, 0, GTSC_Total, 0, GTSC_Visible, PART_ROWS,
+                     GTSC_Arrows, 8, PGA_Freedom, LORIENT_VERT, GA_RelVerify, TRUE, GA_Immediate, TRUE, TAG_END);
     g_gad[GID_PARTS] = g;
 
-    /* Partition-action toolbar (one row under the list) */
+    /* Partition actions. */
     {
-        static const struct { int id; const char *txt; int x; int w; } pbtn[] = {
-            { GID_NEW,    "_New",     16,  56 }, { GID_EDIT,   "_Edit...", 78,  72 },
-            { GID_DELETE, "_Delete", 156,  72 }, { GID_SPLIT,  "Spli_t...",234, 74 },
-            { GID_RESIZE, "_Resize...",314, 88 }, { GID_FORMAT, "F_ormat...",408, 92 }
+        static const struct { int id; const char *txt; int w; } pbtn[] = {
+            { GID_NEW, "_New", 44 }, { GID_EDIT, "_Edit...", 66 }, { GID_DELETE, "_Delete", 58 },
+            { GID_SPLIT, "Spli_t...", 74 }, { GID_RESIZE, "_Resize...", 80 }, { GID_FORMAT, "F_ormat...", 80 }
         };
-        int k;
+        int k, x = RIGHT_X;
         for (k = 0; k < 6; k++) {
-            ng.ng_LeftEdge = pbtn[k].x + g_leftb; ng.ng_TopEdge = 192 + g_topb;
-            ng.ng_Width = pbtn[k].w; ng.ng_Height = 14;
+            ng.ng_LeftEdge = x + g_leftb; ng.ng_TopEdge = ACTION_Y + g_topb;
+            ng.ng_Width = pbtn[k].w; ng.ng_Height = 13;
             ng.ng_GadgetText = (UBYTE *)pbtn[k].txt; ng.ng_GadgetID = pbtn[k].id;
             g = CreateGadget(BUTTON_KIND, g, &ng, GA_Disabled, TRUE, GT_Underscore, (ULONG)'_', TAG_END);
             g_gad[pbtn[k].id] = g;
+            x += pbtn[k].w + 4;
         }
     }
 
-    /* Footer: status text (left, aligned with bevel content column) + Refresh + Save (right).
-       No GadTools label — "Status: " is baked into the text by gui_status(). */
-    ng.ng_LeftEdge = 16 + g_leftb; ng.ng_TopEdge = 214 + g_topb; ng.ng_Width = 374; ng.ng_Height = 12;
+    /* Footer: Filesystems under the units; status, Refresh and Save under the table. */
+    ng.ng_LeftEdge = LEFT_X + g_leftb; ng.ng_TopEdge = FOOTER_Y + g_topb; ng.ng_Width = LEFT_W; ng.ng_Height = 13;
+    ng.ng_GadgetText = (UBYTE *)"Files_ystems..."; ng.ng_GadgetID = GID_FS;
+    g = CreateGadget(BUTTON_KIND, g, &ng, GA_Disabled, TRUE, GT_Underscore, (ULONG)'_', TAG_END);
+    g_gad[GID_FS] = g;
+
+    ng.ng_LeftEdge = RIGHT_X + g_leftb; ng.ng_Width = RIGHT_W - 164;
     ng.ng_GadgetText = 0; ng.ng_GadgetID = GID_STATUS;
-    g = CreateGadget(TEXT_KIND, g, &ng, GTTX_Text, (ULONG)"Status: no disk selected", TAG_END);
+    g = CreateGadget(TEXT_KIND, g, &ng, GTTX_Text, (ULONG)"No disk selected", TAG_END);
     g_gad[GID_STATUS] = g;
 
-    ng.ng_LeftEdge = 396 + g_leftb; ng.ng_TopEdge = 212 + g_topb; ng.ng_Width = 82; ng.ng_Height = 14;
+    ng.ng_LeftEdge = RIGHT_X + RIGHT_W - 160 + g_leftb; ng.ng_Width = 76;
     ng.ng_GadgetText = (UBYTE *)"Re_fresh"; ng.ng_GadgetID = GID_REFRESH;
     g = CreateGadget(BUTTON_KIND, g, &ng, GA_Disabled, TRUE, GT_Underscore, (ULONG)'_', TAG_END);
     g_gad[GID_REFRESH] = g;
 
-    ng.ng_LeftEdge = 484 + g_leftb; ng.ng_TopEdge = 212 + g_topb; ng.ng_Width = 82; ng.ng_Height = 14;
+    ng.ng_LeftEdge = RIGHT_X + RIGHT_W - 80 + g_leftb; ng.ng_Width = 80;
     ng.ng_GadgetText = (UBYTE *)"_Save"; ng.ng_GadgetID = GID_SAVE;
     g = CreateGadget(BUTTON_KIND, g, &ng, GA_Disabled, TRUE, GT_Underscore, (ULONG)'_', TAG_END);
     g_gad[GID_SAVE] = g;
@@ -439,7 +468,7 @@ static void gui_draw_text(struct Window *w, const char *body, int x, int y)
     struct RastPort *rp = w->RPort;
     const char *line = body, *p = body;
     int ly = y + 7;                 /* first baseline */
-    SetAPen(rp, 1);
+    SetAPen(rp, g_pen_text);
     for (;;) {
         if (*p == '\n' || *p == 0) {
             Move(rp, x, ly);
@@ -470,13 +499,15 @@ static struct Window *g_dlgwin = 0;
 static struct Window *dlg_open(const char *title, int L, int T, int w, int h,
                                ULONG idcmp, struct Gadget *glist)
 {
-    return (g_dlgwin = OpenWindowTags(0,
+    g_dlgwin = OpenWindowTags(0,
         WA_Left, L, WA_Top, T, WA_Width, w, WA_Height, h,
         WA_Title, (ULONG)title, WA_Gadgets, (ULONG)glist,
         WA_IDCMP, IDCMP_CLOSEWINDOW | IDCMP_REFRESHWINDOW | idcmp,
         WA_Flags, WFLG_DRAGBAR | WFLG_DEPTHGADGET | WFLG_ACTIVATE | WFLG_SMART_REFRESH,
         g_pub ? WA_PubScreen : WA_CustomScreen, (ULONG)g_scr,
-        TAG_END));
+        TAG_END);
+    if (g_dlgwin && g_sfont) SetFont(g_dlgwin->RPort, g_sfont);
+    return g_dlgwin;
 }
 static void dlg_refresh(struct Window *w) { GT_BeginRefresh(w); GT_EndRefresh(w, TRUE); }
 static void dlg_close(struct Window *w, struct Gadget *glist)
@@ -1564,9 +1595,10 @@ static void gui_format(int index)
             p = 0;
             s_cat(msg, &p, "Formatted ");
             s_cat(msg, &p, pt->name);
-            s_cat(msg, &p, ": as an empty volume.");
+            s_cat(msg, &p, ":");
             msg[p] = 0;
             gui_status(msg);
+            gui_draw_details();
             break;
         case FMT_ERR_NO_HANDLER:
             gui_msg("Format", "No filesystem handler for this type.\nLoad it in Filesys... first, then format.");
@@ -1834,65 +1866,17 @@ int gui_run(void)
     AslBase = OpenLibrary("asl.library", 37);
     if (!AslBase) (void)asl_open_from_drawer("PROGDIR:Libs");
 
-    /* Render on the Workbench screen ONLY if its font is the 8-point topaz our
-       fixed-pixel layout is designed for. On a bare ADF boot Intuition opens a
-       Workbench screen with no prefs loaded (topaz 9): the window title, the
-       menu bar, and our directly-drawn text (captions/header/bar, which inherit
-       the screen font) would all render oversized vs the topaz-8 gadgets. In
-       that case drop the pubscreen and open our own screen forced to topaz 8.
-       SA_Font (explicit topaz 8) is used rather than SA_SysFont 0 — the latter
-       selects the system DefaultFont, which on a bare boot IS topaz 9. If topaz 8
-       can't be opened at all (not in ROM, no diskfont/FONTS:), fall back to
-       SA_SysFont 0 so the screen still opens (just larger). */
+    /* Render on the Workbench screen, with our own topaz 8 for gadgets and drawn
+       text, so a fixed-pixel layout survives any screen font: only the title bar
+       and menus follow the screen font, and g_topb allows for that. A bare floppy
+       boot still has a Workbench screen (LockPubScreen opens it). A machine with
+       none at all gets a basic hi-res screen. SA_Font rather than SA_SysFont 0,
+       which means the system DefaultFont: topaz 9 on a bare boot. */
     g_sfont = OpenFont(&g_font);   /* topaz 8; NULL -> not available on this boot */
     g_pub = LockPubScreen(0);
-    if (g_pub && g_pub->Font && g_pub->Font->ta_YSize == 8 &&
-        streq((const char *)g_pub->Font->ta_Name, "topaz.font")) {
-        /* (1) The Workbench screen is already topaz 8 — render there (window on WB). */
+    if (g_pub) {
         g_scr = g_pub;
-    } else if (g_pub) {
-        /* (2) Bare-boot Workbench screen is topaz 9. Open our own topaz-8 screen
-           but CLONE the WB screen's display mode, depth, palette and pens so it
-           looks like the system screen, not a flat default one:
-             - SA_DisplayID: same resolution (a bare custom screen defaults to
-               LORES 320, too narrow for the 580px window).
-             - SA_Pens (cloned): sets DRIF_NEWLOOK so GadTools renders the full 3D
-               look — without it gadgets/bevels come out flat with the harsh
-               default palette.
-             - matching depth + copied colours.
-           Screen font: SA_Font (explicit topaz 8) when available, else SA_SysFont 0. */
-        struct DrawInfo *dri = GetScreenDrawInfo(g_pub);
-        ULONG modeid = (ULONG)GetVPModeID(&g_pub->ViewPort);
-        int   depth  = (dri ? (int)dri->dri_Depth : 2);
-        int   i, np = 0, ncol;
-        static UWORD clonepens[NUMDRIPENS + 1];
-        static UWORD clonepal[256];
-        if (depth < 1) depth = 1;
-        if (depth > 8) depth = 8;
-        ncol = 1 << depth;
-        for (i = 0; i < ncol; i++)
-            clonepal[i] = (UWORD)GetRGB4(g_pub->ViewPort.ColorMap, i);
-        if (dri && dri->dri_Pens) {
-            int n = (int)dri->dri_NumPens;
-            if (n > NUMDRIPENS) n = NUMDRIPENS;
-            for (; np < n; np++) clonepens[np] = dri->dri_Pens[np];
-        }
-        clonepens[np] = (UWORD)~0;
-        if (dri) FreeScreenDrawInfo(g_pub, dri);
-        if (modeid == (ULONG)INVALID_ID) modeid = HIRES_KEY;
-        UnlockPubScreen(0, g_pub); g_pub = 0;
-        g_scr = OpenScreenTags(0, SA_DisplayID, modeid, SA_Depth, depth,
-                               SA_Pens, (ULONG)clonepens,
-                               SA_Title, (ULONG)"HDPart",
-                               (g_sfont ? SA_Font : SA_SysFont),
-                               (g_sfont ? (ULONG)&g_font : 0),
-                               SA_Type, CUSTOMSCREEN, TAG_END);
-        if (g_scr)
-            for (i = 0; i < ncol; i++)
-                SetRGB4(&g_scr->ViewPort, i, (clonepal[i] >> 8) & 0xF,
-                        (clonepal[i] >> 4) & 0xF, clonepal[i] & 0xF);
     } else {
-        /* (3) No Workbench screen at all — basic own topaz-8 hi-res screen. */
         g_scr = OpenScreenTags(0, SA_DisplayID, HIRES_KEY, SA_Depth, 2,
                                SA_Title, (ULONG)"HDPart",
                                (g_sfont ? SA_Font : SA_SysFont),
@@ -1907,6 +1891,17 @@ int gui_run(void)
     g_topb  = g_scr->WBorTop + g_scr->Font->ta_YSize + 1;
     g_leftb = g_scr->WBorLeft;
 
+    gui_load_pens();
+
+    g_bar.x = RIGHT_X + 2 + g_leftb; g_bar.y = MAP_Y + 2 + g_topb;
+    g_bar.w = RIGHT_W - 4;           g_bar.h = MAP_H - 4;
+    g_ulist.x = LEFT_X + 2 + g_leftb; g_ulist.y = UNITS_Y + 2 + g_topb;
+    g_ulist.w = LEFT_W - SCROLL_W - 5; g_ulist.h = UNITS_H - 4;
+    g_ulist.rowh = UNIT_ROW_H; g_ulist.vis = UNIT_ROWS;
+    g_plist.x = RIGHT_X + 2 + g_leftb; g_plist.y = TABLE_Y + 15 + g_topb;
+    g_plist.w = RIGHT_W - SCROLL_W - 5; g_plist.h = PART_ROWS * PART_ROW_H;
+    g_plist.rowh = PART_ROW_H; g_plist.vis = PART_ROWS;
+
     g_vi = GetVisualInfo(g_scr, TAG_END);
     if (!g_vi) goto cleanup_scr;
 
@@ -1915,12 +1910,13 @@ int gui_run(void)
     g_newlook = menus_use_newlook();   /* needed by WA_NewLookMenus, just below */
 
     g_win = OpenWindowTags(0,
-        WA_Left, 40, WA_Top, 16,
-        WA_Width,  g_leftb + 580 + g_scr->WBorRight,
-        WA_Height, g_topb + 232 + g_scr->WBorBottom,
+        WA_Left, (g_scr->Width - (g_leftb + WIN_W + g_scr->WBorRight)) / 2,
+        WA_Top,  g_scr->BarHeight + 4,
+        WA_Width,  g_leftb + WIN_W + g_scr->WBorRight,
+        WA_Height, g_topb + WIN_H + g_scr->WBorBottom,
         WA_Title, (ULONG)"HDPart 0.10.1",
         WA_Gadgets, (ULONG)g_glist,
-        WA_IDCMP, IDCMP_CLOSEWINDOW | IDCMP_REFRESHWINDOW | IDCMP_MOUSEBUTTONS | IDCMP_MENUPICK | IDCMP_VANILLAKEY | CYCLEIDCMP | BUTTONIDCMP | LISTVIEWIDCMP,
+        WA_IDCMP, IDCMP_CLOSEWINDOW | IDCMP_REFRESHWINDOW | IDCMP_MOUSEBUTTONS | IDCMP_MENUPICK | IDCMP_VANILLAKEY | CYCLEIDCMP | BUTTONIDCMP | ARROWIDCMP,
         WA_Flags, WFLG_DRAGBAR | WFLG_DEPTHGADGET | WFLG_CLOSEGADGET |
                   WFLG_ACTIVATE | WFLG_SMART_REFRESH,
         /* V39 tag, documented as ignored by V37 and earlier, so it is safe to
@@ -1929,6 +1925,8 @@ int gui_run(void)
         g_pub ? WA_PubScreen : WA_CustomScreen, (ULONG)g_scr,
         TAG_END);
     if (!g_win) goto cleanup_gad;
+
+    if (g_sfont) SetFont(g_win->RPort, g_sfont);
 
     if (!build_menus()) goto cleanup_win;   /* new cleanup label, Step 6 */
 
@@ -1962,14 +1960,23 @@ int gui_run(void)
                 case IDCMP_MOUSEBUTTONS:
                     if (code == SELECTDOWN) {           /* click on the disk-map bar selects */
                         int idx = gui_part_at_x((int)mx, (int)my);
+                        int row;
                         if (idx >= 0) gui_set_selection(idx);
+                        else if ((row = gui_list_hit(&g_plist, (int)mx, (int)my)) >= 0) gui_set_selection(row);
+                        else if ((row = gui_list_hit(&g_ulist, (int)mx, (int)my)) >= 0) gui_unit_picked(row);
                         else if (gui_hit_easter((int)mx, (int)my))
                             gui_request("HDPart", "You watched too many movies.", 0, "I know");
                     }
                     break;
+                case IDCMP_GADGETDOWN:
+                case IDCMP_MOUSEMOVE:
+                    if (gad->GadgetID == GID_PARTS) gui_list_scrolled(&g_plist, (int)code);
+                    else if (gad->GadgetID == GID_UNIT) gui_list_scrolled(&g_ulist, (int)code);
+                    break;
                 case IDCMP_GADGETUP:
                     if (gad->GadgetID == GID_DEVICE) gui_driver_picked((int)code);
-                    else if (gad->GadgetID == GID_UNIT) gui_unit_picked((int)code);
+                    else if (gad->GadgetID == GID_UNIT) gui_list_scrolled(&g_ulist, (int)code);
+                    else if (gad->GadgetID == GID_PARTS) gui_list_scrolled(&g_plist, (int)code);
                     else if (gad->GadgetID == GID_SCAN) gui_scan_selected();
                     else if (gad->GadgetID == GID_REFRESH) gui_refresh_current();
                     else if (gad->GadgetID == GID_RESIZE) {
@@ -1982,7 +1989,6 @@ int gui_run(void)
                     }
                     else if (gad->GadgetID == GID_FS) gui_filesystems();
                     else if (gad->GadgetID == GID_DRIVER) gui_load_driver();
-                    else if (gad->GadgetID == GID_PARTS) gui_set_selection((int)code);
                     else if (gad->GadgetID == GID_SAVE) gui_save();
                     else if (gad->GadgetID == GID_SPLIT) gui_split();
                     else if (gad->GadgetID == GID_DELETE) gui_delete();
@@ -2077,6 +2083,7 @@ cleanup_gad:
     FreeGadgets(g_glist); g_glist = 0;
     FreeVisualInfo(g_vi); g_vi = 0;   /* reached by fall-through from cleanup_gad */
 cleanup_scr:
+    if (g_dri) { FreeScreenDrawInfo(g_scr, g_dri); g_dri = 0; }
     if (!g_pub && g_scr) CloseScreen(g_scr);
     if (g_pub) UnlockPubScreen(0, g_pub);
     g_scr = 0; g_pub = 0;
@@ -2096,22 +2103,22 @@ static int gui_build_drivers(void)
 {
     const char *cand[DISC_MAX];
     int nc = disc_candidate_drivers(cand, DISC_MAX), n = 0, j;
-    g_drvlabels[n++] = "Select or load a driver";
+    g_drvlabels[n++] = "Select a driver";
     for (j = 0; j < nc && n < DISC_MAX + 1; j++) g_drvlabels[n++] = cand[j];
     g_drvlabels[n] = 0;
     return n;
 }
 
-/* Set the Unit cycle to a single placeholder with no real units (used on every
-   driver change so a stale unit/size can never linger). */
+/* Empty the Units list (on every driver change, so no stale unit can linger). */
 static void gui_clear_units(const char *text)
 {
     g_nunits = 0;
-    g_unitlabels[0] = text; g_unitmap[0] = -1; g_unitlabels[1] = 0;
+    g_unit_empty = text;
+    g_unitmap[0] = -1;
 }
 
-/* Build the Unit cycle from the disks in g_disks[] that belong to the target
-   driver. Returns the number of real units; sets a placeholder when none. */
+/* Fill the Units list from the disks in g_disks[] on the target driver. Returns
+   the number of units; `emptyText` is shown when there are none. */
 static int gui_build_units(const char *emptyText)
 {
     int i, n = 0, j, k;
@@ -2122,49 +2129,43 @@ static int gui_build_units(const char *emptyText)
         if (!d->partitionable || !streq(d->driver, g_target_driver)) continue;
         sel[n++] = i;
     }
-    /* Sort by unit number ascending (selection sort; n <= 32) so the Unit cycle
-       reads 0,1,2,... rather than discovery order. */
+    /* Sort by unit number ascending (selection sort; n <= 32). */
     for (j = 0; j < n - 1; j++) {
         k = j;
         for (i = j + 1; i < n; i++)
             if (g_disks[sel[i]].unit < g_disks[sel[k]].unit) k = i;
         if (k != j) { int tmp = sel[j]; sel[j] = sel[k]; sel[k] = tmp; }
     }
-    /* Build labels in sorted order. */
     for (j = 0; j < n; j++) {
         DiscDisk *d = &g_disks[sel[j]];
         char *t = g_unittext[j];
         int p = 0;
         s_cat(t, &p, "Unit ");
         p += u2s(t + p, (ULONG)d->unit);
-        s_cat(t, &p, " (");
+        s_pad(t, &p, 7);
         p += u2s(t + p, (ULONG)d->size_mb);
-        s_cat(t, &p, " MB)");
+        s_cat(t, &p, " MB");
         t[p] = 0;
         g_unitmap[j] = sel[j];
-        g_unitlabels[j] = t;
     }
     g_nunits = n;
-    if (n == 0) { g_unitlabels[0] = emptyText; g_unitmap[0] = -1; g_unitlabels[1] = 0; }
-    else g_unitlabels[n] = 0;
+    g_unit_empty = emptyText;
+    if (n == 0) g_unitmap[0] = -1;
     return n;
 }
 
-/* Push the Unit cycle labels to the gadget; disabled when there are no real
-   units (only a placeholder). */
-static void gui_set_unit_cycle(int active)
+/* Redraw the Units list after its contents changed. */
+static void gui_set_units(void)
 {
-    if (g_win && g_gad[GID_UNIT])
-        GT_SetGadgetAttrs(g_gad[GID_UNIT], g_win, 0,
-                          GTCY_Labels, (ULONG)g_unitlabels,
-                          GTCY_Active, (ULONG)active,
-                          GA_Disabled, (ULONG)(g_nunits == 0),
-                          TAG_END);
+    g_ulist.count = (WORD)g_nunits;
+    if (g_ulist.top + g_ulist.vis > g_ulist.count)
+        g_ulist.top = (WORD)((g_ulist.count > g_ulist.vis) ? g_ulist.count - g_ulist.vis : 0);
+    gui_list_changed(&g_ulist, GID_UNIT);
 }
 
 /* Driver cycle handler. ANY driver change fully resets state — model, edit
-   flags, partition selection, current disk, AND the Unit cycle (back to its
-   placeholder at index 0) — so nothing from the previous driver lingers. */
+   flags, partition selection, current disk, AND the Units list — so nothing from
+   the previous driver lingers. */
 static void gui_select_driver(int idx)
 {
     g_drv_idx = (idx > 0) ? idx : 0;
@@ -2174,7 +2175,7 @@ static void gui_select_driver(int idx)
     if (idx <= 0) {                               /* the prompt */
         g_target_driver[0] = 0;
         gui_clear_units("(no driver)");
-        gui_set_unit_cycle(0);
+        gui_set_units();
         gui_refresh_parts(); gui_update_buttons();
         gui_status("Select a driver, then Scan.");
         return;
@@ -2183,17 +2184,18 @@ static void gui_select_driver(int idx)
       for (k = 0; k < 39 && nm[k]; k++) g_target_driver[k] = nm[k];
       g_target_driver[k] = 0; }
     gui_clear_units("(press Scan)");
-    gui_set_unit_cycle(0);
+    gui_set_units();
     gui_refresh_parts(); gui_update_buttons();
     gui_status("Press Scan to query driver.");
 }
 
-/* Unit cycle handler: show the selected disk's partitions (reads its RDB). */
+/* Show a listed unit's partitions (reads its RDB). */
 static void gui_select_unit(int uidx)
 {
     DeviceHandle *h; DiscDisk *d; int k;
 
-    g_have_model = 0; g_dirty = 0; g_sel_part = -1; g_geo.has_media = 0;
+    g_have_model = 0; g_dirty = 0; g_sel_part = -1; g_geo.has_media = 0; g_no_rdb = 0;
+    g_plist.top = 0;
     g_cur_driver[0] = 0;
 
     if (uidx < 0 || uidx >= g_nunits || g_unitmap[uidx] < 0) {
@@ -2219,6 +2221,7 @@ static void gui_select_unit(int uidx)
                g_dirty stays 0 — nothing is written until the user Saves. */
             rdb_init_model(&g_model, g_geo.cylinders, g_geo.heads, g_geo.sectors);
             g_have_model = 1;
+            g_no_rdb = 1;
         }
         dev_close(h);
     }
@@ -2235,12 +2238,11 @@ static void gui_driver_picked(int idx)
     GT_SetGadgetAttrs(g_gad[GID_DEVICE], g_win, 0, GTCY_Active, (ULONG)g_drv_idx, TAG_END);
 }
 
-/* The user clicked the Unit cycle; see gui_driver_picked. */
+/* The user clicked a row of the Units list. */
 static void gui_unit_picked(int uidx)
 {
     if (uidx == g_cur_unitidx) return;
-    if (gui_discard_ok("Unit")) { gui_select_unit(uidx); return; }
-    gui_set_unit_cycle(g_cur_unitidx >= 0 ? g_cur_unitidx : 0);
+    if (gui_discard_ok("Unit")) gui_select_unit(uidx);
 }
 
 /* Refresh button: re-read the currently shown device+unit from disk (geometry +
@@ -2258,7 +2260,7 @@ static void gui_refresh_current(void)
     gui_select_unit(g_cur_unitidx);   /* re-opens the device, re-reads geometry + RDB */
 }
 
-/* Scan button: probe the target driver's units, fill the Unit cycle with the
+/* Scan button: probe the target driver's units, fill the Units list with the
    disks found, and auto-select the first (showing its partitions). */
 static void gui_scan_selected(void)
 {
@@ -2269,23 +2271,20 @@ static void gui_scan_selected(void)
     gui_status("Scanning...");
     discover_probe_driver(g_disks, &g_ndisks, DISC_MAX, g_target_driver);
     real = gui_build_units("(no disk found)");
-    gui_set_unit_cycle(0);
+    gui_set_units();
 
     if (real > 0) {
         gui_select_unit(0);
     } else {
-        char m[64]; int p = 0, q = 0; const char *a = "No disk found on ";
         g_have_model = 0; g_sel_part = -1; g_geo.has_media = 0; g_cur_driver[0] = 0;
         g_cur_unitidx = -1;
         gui_refresh_parts(); gui_update_buttons();
-        while (a[p]) { m[p] = a[p]; p++; }
-        while (g_target_driver[q] && p < 62) m[p++] = g_target_driver[q++];
-        m[p] = 0; gui_status(m);
+        gui_status("No disk found.");
     }
 }
 
 /* No-probe startup: build the Driver cycle, select the prompt (which clears the
-   Unit cycle and shows guidance). Touches no hardware. */
+   Units list and shows guidance). Touches no hardware. */
 static void gui_init_picker(void)
 {
     g_ndisks = 0;
@@ -2833,126 +2832,306 @@ static void gui_load_driver(void)
     gui_status("Driver loaded - press Scan.");
 }
 
-/* The disk-map bar rectangle (window-relative). Shared by draw + hit-test. */
-static void gui_bar_rect(int *bx, int *by, int *bw, int *bh)
+/* ----- Hand-drawn parts of the main window --------------------------------- */
+
+static void gui_load_pens(void)
 {
-    *bx = 16 + g_leftb; *by = 92 + g_topb; *bw = 550; *bh = 16;
+    g_pen_bg = 0; g_pen_text = 1; g_pen_shine = 2; g_pen_fill = 3; g_pen_seltext = 1;
+    g_dri = GetScreenDrawInfo(g_scr);
+    if (g_dri && g_dri->dri_Pens) {
+        g_pen_bg    = g_dri->dri_Pens[BACKGROUNDPEN];
+        g_pen_text  = g_dri->dri_Pens[TEXTPEN];
+        g_pen_shine = g_dri->dri_Pens[SHINEPEN];
+        g_pen_fill  = g_dri->dri_Pens[FILLPEN];
+        g_pen_seltext = g_dri->dri_Pens[FILLTEXTPEN];
+    }
+    /* White on blue is the design on a stock screen; a customised palette keeps
+       the system's own selected-text pen if white would not read. */
+    if (pens_readable(g_scr, g_pen_shine, g_pen_fill)) g_pen_seltext = g_pen_shine;
 }
 
-/* Return the partition index whose bar segment contains (mx,my), or -1. */
+static void gui_text(int x, int y, const char *s, int pen)
+{
+    struct RastPort *rp = g_win->RPort;
+    int n = 0;
+    while (s[n]) n++;
+    SetAPen(rp, pen);
+    SetDrMd(rp, JAM1);
+    Move(rp, x, y + 6);
+    Text(rp, (CONST_STRPTR)s, (LONG)n);
+}
+
+static void gui_box(int x, int y, int w, int h, int pen)
+{
+    SetAPen(g_win->RPort, pen);
+    RectFill(g_win->RPort, x, y, x + w - 1, y + h - 1);
+}
+
+/* Fill patterns distinguish filesystem families in only 4 colours. Line patterns,
+   not area patterns, so nothing has to live in chip memory. */
+enum { FILL_DOS, FILL_PFS, FILL_SFS, FILL_OTHER, FILL_FREE };
+
+static void gui_pattern(int x, int y, int w, int h, int kind)
+{
+    struct RastPort *rp = g_win->RPort;
+    int r;
+    if (w <= 0 || h <= 0) return;
+    if (kind == FILL_DOS) { gui_box(x, y, w, h, g_pen_fill); return; }
+    SetDrMd(rp, JAM2);
+    SetAPen(rp, (kind == FILL_PFS || kind == FILL_SFS) ? g_pen_shine : g_pen_text);
+    SetBPen(rp, (kind == FILL_PFS) ? g_pen_fill : g_pen_bg);
+    for (r = 0; r < h; r++) {
+        UWORD p;
+        switch (kind) {
+            case FILL_PFS:   p = (r & 1) ? 0xAAAA : 0x5555; break;
+            case FILL_SFS:   p = 0x3333; break;
+            case FILL_OTHER: p = (r & 3) ? 0x0000 : 0xFFFF; break;
+            default:         p = (r & 1) ? 0x0000 : 0x8888; break;
+        }
+        rp->LinePtrn = p; rp->Flags |= FRST_DOT; rp->linpatcnt = 15;
+        Move(rp, x, y + r);
+        Draw(rp, x + w - 1, y + r);
+    }
+    rp->LinePtrn = 0xFFFF; rp->Flags |= FRST_DOT; rp->linpatcnt = 15;
+    SetDrMd(rp, JAM1);
+    SetBPen(rp, g_pen_bg);
+}
+
+static int fs_fill_kind(uint32_t t)
+{
+    switch (t & 0xFFFFFF00u) {
+        case 0x444F5300u: return FILL_DOS;
+        case 0x50465300u:
+        case 0x50445300u: return FILL_PFS;
+        case 0x53465300u: return FILL_SFS;
+        default:          return FILL_OTHER;
+    }
+}
+
+/* Short "name, size" label on a map slice, when the slice is wide enough. */
+static void gui_slice_label(int x, int w, const char *top, const char *bot)
+{
+    int a = 0, b = 0, lw;
+    while (top[a]) a++;
+    while (bot[b]) b++;
+    lw = ((a > b) ? a : b) * 8;
+    if (lw + 10 > w) return;
+    gui_box(x + 3, g_bar.y + 4, lw + 4, 24, g_pen_shine);
+    gui_text(x + 5, g_bar.y + 5, top, g_pen_text);
+    gui_text(x + 5, g_bar.y + 16, bot, g_pen_text);
+}
+
+/* Return the partition index whose map slice contains (mx,my), or -1. */
 static int gui_part_at_x(int mx, int my)
 {
-    int bx, by, bw, bh, i;
+    int i;
     if (!g_have_model || g_model.cylinders == 0) return -1;
-    gui_bar_rect(&bx, &by, &bw, &bh);
-    if (mx < bx || mx >= bx + bw || my < by || my >= by + bh) return -1;
+    if (mx < g_bar.x || mx >= g_bar.x + g_bar.w || my < g_bar.y || my >= g_bar.y + g_bar.h) return -1;
     for (i = 0; i < g_model.num_parts && i < RDB_MAX_PARTS; i++) {
         RdbPartition *pt = &g_model.parts[i];
-        int x0 = bx + (int)((pt->low_cyl      * (ULONG)bw) / g_model.cylinders);
-        int x1 = bx + (int)(((pt->high_cyl+1) * (ULONG)bw) / g_model.cylinders);
+        int x0 = g_bar.x + (int)((pt->low_cyl      * (ULONG)g_bar.w) / g_model.cylinders);
+        int x1 = g_bar.x + (int)(((pt->high_cyl+1) * (ULONG)g_bar.w) / g_model.cylinders);
         if (x1 <= x0) x1 = x0 + 1;
         if (mx >= x0 && mx < x1) return i;
     }
     return -1;
 }
 
-/* Select partition `idx` (or -1 = none): syncs the listview highlight, redraws
-   the bar (with a selection outline), and updates the action buttons. */
+/* Select partition `idx` (or -1 = none): updates the map, table and details. */
 static void gui_set_selection(int idx)
 {
     g_sel_part = idx;
-    /* Re-render the rows so the '>' marker moves to the new selection (sticky on
-       V37). gui_refresh_parts also re-applies GTLV_Selected (V39 highlight) and
-       redraws the disk-map bar outline. */
     gui_refresh_parts();
     gui_update_buttons();
 }
 
-/* Draw the two BevelBox group frames + their captions. Not gadgets, so must be
-   redrawn on every window refresh (like gui_draw_bar). Coordinates are window-
-   relative and match the gadget layout in build_gadgets(). */
+/* Row under a window-relative point, or -1. Rows past the end are not rows. */
+static int gui_list_hit(const ListGeom *l, int mx, int my)
+{
+    int row;
+    if (mx < l->x || mx >= l->x + l->w || my < l->y || my >= l->y + l->vis * l->rowh) return -1;
+    row = l->top + (my - l->y) / l->rowh;
+    return (row < l->count) ? row : -1;
+}
+
+static void gui_list_draw(const ListGeom *l)
+{
+    if (l == &g_plist) gui_draw_table(); else gui_draw_units();
+}
+
+/* The list's contents or position changed: resync its scroller and redraw. */
+static void gui_list_changed(ListGeom *l, int gid)
+{
+    if (l->top + l->vis > l->count) l->top = (WORD)((l->count > l->vis) ? l->count - l->vis : 0);
+    if (g_win && g_gad[gid])
+        GT_SetGadgetAttrs(g_gad[gid], g_win, 0, GTSC_Top, (ULONG)l->top,
+                          GTSC_Total, (ULONG)l->count, GTSC_Visible, (ULONG)l->vis, TAG_END);
+    gui_list_draw(l);
+}
+
+/* The user moved a scroller. It already shows the new position. */
+static void gui_list_scrolled(ListGeom *l, int top)
+{
+    if (top == l->top) return;
+    l->top = (WORD)top;
+    gui_list_draw(l);
+}
+
+static void gui_draw_table(void)
+{
+    int i;
+    if (!g_win) return;
+    gui_box(g_plist.x, g_plist.y, g_plist.w, g_plist.h, g_pen_bg);
+    for (i = g_plist.top; i < g_plist.count && i < g_plist.top + g_plist.vis; i++) {
+        int y = g_plist.y + (i - g_plist.top) * g_plist.rowh, sel = (i == g_sel_part);
+        if (sel) gui_box(g_plist.x, y, g_plist.w, g_plist.rowh, g_pen_fill);
+        gui_text(g_plist.x + 4, y + 1, g_partrows[i], sel ? g_pen_seltext : g_pen_text);
+    }
+}
+
+/* Partitioned share of a listed unit. The shown unit's comes from the live model,
+   so the meter follows edits; the others from the last Scan. */
+static int gui_unit_percent(int row)
+{
+    if (row == g_cur_unitidx && g_have_model) {
+        uint32_t span = (g_model.hi_cyl >= g_model.lo_cyl) ? g_model.hi_cyl - g_model.lo_cyl + 1u : 0u, used = 0;
+        int i;
+        for (i = 0; i < g_model.num_parts; i++)
+            used += g_model.parts[i].high_cyl - g_model.parts[i].low_cyl + 1u;
+        if (!span) return 0;
+        return (int)((span > 40000000u) ? used / (span / 100u) : (used * 100u) / span);
+    }
+    return g_disks[g_unitmap[row]].used_pct;
+}
+
+static void gui_draw_units(void)
+{
+    int i;
+    if (!g_win) return;
+    gui_box(g_ulist.x, g_ulist.y, g_ulist.w, g_ulist.h, g_pen_bg);
+    if (g_nunits == 0) {
+        gui_text(g_ulist.x + 4, g_ulist.y + 4, g_unit_empty, g_pen_text);
+        return;
+    }
+    for (i = g_ulist.top; i < g_nunits && i < g_ulist.top + g_ulist.vis; i++) {
+        int y = g_ulist.y + (i - g_ulist.top) * g_ulist.rowh, sel = (i == g_cur_unitidx);
+        int pct = gui_unit_percent(i), mx = g_ulist.x + 4, mw = g_ulist.w - 8;
+        if (sel) gui_box(g_ulist.x, y, g_ulist.w, g_ulist.rowh, g_pen_fill);
+        gui_text(mx, y + 2, g_unittext[i], sel ? g_pen_seltext : g_pen_text);
+        DrawBevelBox(g_win->RPort, mx, y + 12, mw, 7, GT_VisualInfo, (ULONG)g_vi, GTBB_Recessed, TRUE, TAG_END);
+        gui_box(mx + 2, y + 13, mw - 4, 5, g_pen_shine);
+        if (pct > 0) gui_box(mx + 2, y + 13, ((mw - 4) * pct) / 100, 5, sel ? g_pen_text : g_pen_fill);
+    }
+}
+
+static void gui_detail_row(int y, const char *label, const char *value)
+{
+    gui_text(RIGHT_X + 6 + g_leftb, y, label, g_pen_text);
+    gui_text(RIGHT_X + 110 + g_leftb, y, value, g_pen_text);
+}
+
+static void gui_draw_details(void)
+{
+    static char buf[48];
+    int x = RIGHT_X + 3 + g_leftb, y = DETAIL_Y + g_topb, w = RIGHT_W - 6, p;
+    if (!g_win) return;
+    gui_box(x, y + 2, w, DETAIL_H - 4, g_pen_bg);
+    if (!g_have_model || g_sel_part < 0 || g_sel_part >= g_model.num_parts) {
+        gui_text(x + 3, y + 4, "No partition selected", g_pen_text);
+        return;
+    }
+    {
+        const RdbPartition *pt = &g_model.parts[g_sel_part];
+        int i;
+        gui_text(x + 3, y + 4, pt->name, g_pen_text);
+        gui_box(x + 2, y + 14, w - 4, 1, g_pen_text);
+
+        p = 0; { char tb[16]; fstype_label(tb, pt->dos_type); s_cat(buf, &p, tb); }
+        for (i = 0; i < g_fs_npool; i++)
+            if (g_fs_pool[i].dos_type == pt->dos_type) {
+                s_cat(buf, &p, " ");
+                p += fs_ver_str(buf + p, g_fs_pool[i].version);
+                s_cat(buf, &p, " (embedded)");
+                break;
+            }
+        buf[p] = 0;
+        gui_detail_row(y + 17, "Filesystem", buf);
+
+        p = 0; p += u2s(buf + p, pt->low_cyl); s_cat(buf, &p, " to "); p += u2s(buf + p, pt->high_cyl);
+        s_cat(buf, &p, pt->bootable ? ", bootable" : ", not bootable");
+        buf[p] = 0;
+        gui_detail_row(y + 28, "Cylinders", buf);
+
+        { char live[8];
+          if (safety_partition_mounted(g_cur_driver, g_cur_unit, pt->low_cyl, pt->high_cyl, live)) {
+              p = 0; s_cat(buf, &p, live); s_cat(buf, &p, ":"); buf[p] = 0;
+              gui_detail_row(y + 39, "Mounted", buf);
+          } else {
+              gui_detail_row(y + 39, "Mounted", "No");
+          } }
+
+        p = u32_to_hex(buf, pt->maxtransfer);
+        /* See docs/reference/amiga-disk-size-maxtransfer-mask.md: scsi.device is the
+           onboard IDE driver on A600/A1200/A4000, where more than 0x1FE00 corrupts data. */
+        if (pt->maxtransfer > 0x1FE00u && streq(g_cur_driver, "scsi.device"))
+            s_cat(buf, &p, "  ! check for IDE");
+        buf[p] = 0;
+        gui_detail_row(y + 50, "MaxTransfer", buf);
+    }
+}
+
+/* Static parts of the window: labels and frames. Redrawn on IDCMP_REFRESHWINDOW. */
 static void gui_draw_chrome(void)
 {
     struct RastPort *rp;
     if (!g_win) return;
     rp = g_win->RPort;
-    /* Disk panel */
-    DrawBevelBox(rp, 6 + g_leftb, 4 + g_topb, 568, 68, GT_VisualInfo, (ULONG)g_vi, TAG_END);
-    SetAPen(rp, 1); SetBPen(rp, 0);
-    Move(rp, 16 + g_leftb, 4 + g_topb + 8); Text(rp, (CONST_STRPTR)" Disk ", 6);
-    /* Partitions panel (shifted +18 from row-3 addition) */
-    DrawBevelBox(rp, 6 + g_leftb, 76 + g_topb, 568, 132, GT_VisualInfo, (ULONG)g_vi, TAG_END);
-    Move(rp, 16 + g_leftb, 76 + g_topb + 8); Text(rp, (CONST_STRPTR)" Partitions ", 12);
+    gui_text(LEFT_X + g_leftb, 1 + g_topb, "Driver", g_pen_text);
+    gui_text(LEFT_X + g_leftb, 42 + g_topb, "Units", g_pen_text);
+    DrawBevelBox(rp, LEFT_X + g_leftb, UNITS_Y + g_topb, LEFT_W, UNITS_H, GT_VisualInfo, (ULONG)g_vi, GTBB_Recessed, TRUE, TAG_END);
+    DrawBevelBox(rp, RIGHT_X + g_leftb, MAP_Y + g_topb, RIGHT_W, MAP_H, GT_VisualInfo, (ULONG)g_vi, GTBB_Recessed, TRUE, TAG_END);
+    DrawBevelBox(rp, RIGHT_X + g_leftb, TABLE_Y + g_topb, RIGHT_W, TABLE_H, GT_VisualInfo, (ULONG)g_vi, GTBB_Recessed, TRUE, TAG_END);
+    DrawBevelBox(rp, RIGHT_X + g_leftb, DETAIL_Y + g_topb, RIGHT_W, DETAIL_H, GT_VisualInfo, (ULONG)g_vi, TAG_END);
+    gui_text(RIGHT_X + 6 + g_leftb, TABLE_Y + 3 + g_topb, "Name        Type        Start   End     Size", g_pen_text);
+    gui_box(RIGHT_X + 3 + g_leftb, TABLE_Y + 13 + g_topb, RIGHT_W - SCROLL_W - 7, 1, g_pen_text);
+    gui_draw_table();
+    gui_draw_units();
+    gui_draw_details();
 }
 
 void gui_draw_bar(void)
 {
-    struct RastPort *rp;
-    int bx, by, bw, bh, i;
+    static char lbl[12];
+    int i;
     if (!g_win) return;
-    rp = g_win->RPort;
-    gui_bar_rect(&bx, &by, &bw, &bh);
-
-    /* frame + unused background */
-    SetAPen(rp, 1); RectFill(rp, bx, by, bx + bw - 1, by + bh - 1);
-    SetAPen(rp, 2); Move(rp, bx, by); Draw(rp, bx + bw - 1, by);
-    Draw(rp, bx + bw - 1, by + bh - 1); Draw(rp, bx, by + bh - 1); Draw(rp, bx, by);
-
-    gui_draw_partheader();   /* column headings, shown even for an empty list */
-    gui_draw_easter();       /* tiny pi in the corner, always present */
-
+    gui_box(g_bar.x, g_bar.y, g_bar.w, g_bar.h, g_pen_bg);
+    gui_draw_easter();
     if (!g_have_model || g_model.cylinders == 0) return;
 
-    /* each partition drawn proportional to its cylinder span; the selected one
-       gets a contrasting outline so selection is clearly visible on the map. */
+    /* Free cylinders first, then each partition drawn over them, to scale. */
+    gui_pattern(g_bar.x + (int)((g_model.lo_cyl * (ULONG)g_bar.w) / g_model.cylinders), g_bar.y,
+                g_bar.w - (int)((g_model.lo_cyl * (ULONG)g_bar.w) / g_model.cylinders), g_bar.h, FILL_FREE);
     for (i = 0; i < g_model.num_parts && i < RDB_MAX_PARTS; i++) {
         RdbPartition *pt = &g_model.parts[i];
-        int x0 = bx + (int)((pt->low_cyl  * (ULONG)bw) / g_model.cylinders);
-        int x1 = bx + (int)(((pt->high_cyl + 1) * (ULONG)bw) / g_model.cylinders);
+        int x0 = g_bar.x + (int)((pt->low_cyl  * (ULONG)g_bar.w) / g_model.cylinders);
+        int x1 = g_bar.x + (int)(((pt->high_cyl + 1) * (ULONG)g_bar.w) / g_model.cylinders);
+        int p = 0;
         if (x1 <= x0) x1 = x0 + 1;
-        if (x1 > bx + bw - 1) x1 = bx + bw - 1;
-        SetAPen(rp, (UBYTE)(3 - (i & 1)));   /* alternate pens 3/2 */
-        RectFill(rp, x0, by + 1, x1 - 1, by + bh - 2);
-        if (i == g_sel_part) {
-            SetAPen(rp, 1);                  /* black selection outline */
-            Move(rp, x0, by + 1); Draw(rp, x1 - 1, by + 1);
-            Draw(rp, x1 - 1, by + bh - 2); Draw(rp, x0, by + bh - 2); Draw(rp, x0, by + 1);
+        if (x1 > g_bar.x + g_bar.w) x1 = g_bar.x + g_bar.w;
+        gui_pattern(x0, g_bar.y, x1 - x0, g_bar.h, fs_fill_kind(pt->dos_type));
+        p += u2s(lbl + p, disc_blocks_to_mb((pt->high_cyl - pt->low_cyl + 1) * g_model.cyl_blocks, g_model.block_bytes));
+        s_cat(lbl, &p, " MB"); lbl[p] = 0;
+        gui_slice_label(x0, x1 - x0, pt->name, lbl);
+        if (x1 - x0 > 1) {            /* a 1-pixel gap keeps neighbours apart */
+            gui_box(x1 - 1, g_bar.y, 1, g_bar.h, g_pen_bg);
         }
-        /* 1-based partition number centered on the segment (matches the list's
-           # column); drawn only when the slice is wide enough to fit the digits. */
-        { char num[6]; int nl = u2s(num, (ULONG)(i + 1));
-          int tw = nl * 8, segw = x1 - x0;
-          if (segw >= tw + 2) {
-              SetAPen(rp, 1);                /* black: contrasts pens 2/3 */
-              Move(rp, x0 + (segw - tw) / 2, by + 11);
-              Text(rp, (CONST_STRPTR)num, (LONG)nl);
-          } }
+        if (i == g_sel_part) {
+            gui_box(x0, g_bar.y, x1 - x0, 2, g_pen_text);
+            gui_box(x0, g_bar.y + g_bar.h - 2, x1 - x0, 2, g_pen_text);
+            gui_box(x0, g_bar.y, 2, g_bar.h, g_pen_text);
+            gui_box(x1 - 2, g_bar.y, 2, g_bar.h, g_pen_text);
+        }
     }
-}
-
-/* Column headings drawn just above the listview, aligned to the row columns
-   built in gui_refresh_parts. Manual text (like the bar), so it is redrawn
-   whenever the bar is. The left inset (+4) approximates GadTools' listview text
-   origin; nudge it if the columns look a pixel or two off against the rows. */
-static void gui_draw_partheader(void)
-{
-    struct RastPort *rp;
-    static char hdr[56];
-    int p = 0, lx, ly;
-    if (!g_win) return;
-    rp = g_win->RPort;
-    s_pad(hdr, &p, 2);                            /* blank selection-marker column */
-    s_cat(hdr, &p, "#");     s_pad(hdr, &p, 6);
-    s_cat(hdr, &p, "Name");  s_pad(hdr, &p, 18);
-    s_cat(hdr, &p, "Type");  s_pad(hdr, &p, 30);
-    s_cat(hdr, &p, "Start"); s_pad(hdr, &p, 38);
-    s_cat(hdr, &p, "End");   s_pad(hdr, &p, 46);
-    s_cat(hdr, &p, "Size");  hdr[p] = 0;
-    lx = 16 + g_leftb + 4;               /* match the listview's text inset */
-    ly = 120 + g_topb - 2;               /* baseline just above the listview */
-    SetAPen(rp, 1);
-    Move(rp, lx, ly);
-    Text(rp, (CONST_STRPTR)hdr, (LONG)p);
 }
 
 /* A tiny hand-drawn pi glyph in the bottom-right corner (no Topaz glyph for it).
@@ -2960,19 +3139,17 @@ static void gui_draw_partheader(void)
 static void gui_draw_easter(void)
 {
     struct RastPort *rp;
-    int px = 571 + g_leftb, py = 227 + g_topb;   /* bottom-right corner, right of the Save button */
+    int px = WIN_W - 6 + g_leftb, py = WIN_H - 7 + g_topb;
     if (!g_win) return;
     rp = g_win->RPort;
-    SetAPen(rp, 1);
+    SetAPen(rp, g_pen_text);
     Move(rp, px,     py);     Draw(rp, px + 5, py);       /* top bar (half height) */
     Move(rp, px + 1, py);     Draw(rp, px + 1, py + 4);   /* left leg */
     Move(rp, px + 4, py);     Draw(rp, px + 4, py + 4);   /* right leg */
 }
 
-/* True if (mx,my) is in the bottom-right corner where the pi glyph lives. Only
-   non-gadget clicks reach this (GadTools eats gadget clicks), so the generous
-   rect won't conflict with the Save button to its left. */
+/* True if (mx,my) is in the bottom-right corner where the pi glyph lives. */
 static int gui_hit_easter(int mx, int my)
 {
-    return mx >= 568 + g_leftb && my >= 223 + g_topb;   /* clear of the Save button (ends x=566) */
+    return mx >= WIN_W - 7 + g_leftb && my >= WIN_H - 8 + g_topb;
 }

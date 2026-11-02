@@ -178,6 +178,11 @@ int rdb_parse(RdbModel *m, BlockIO io, void *ctx);
    avoids reading the (potentially ~120-block) embedded handler on every probe. */
 int rdb_present(BlockIO io, void *ctx);
 
+/* Partitioned share of a disk, in percent of its partitionable cylinders (0..100),
+   for the Units list. Walks only the PART chain, so it does not read an embedded
+   handler. Returns RDB_OK with *pct set, RDB_ERR_NO_RDB, or RDB_ERR_IO. */
+int rdb_used_percent(BlockIO io, void *ctx, uint32_t *pct);
+
 /* Release all heap owned by the model (each fs[].seg_data) and zero num_fs.
    Safe to call repeatedly and on a zero-initialized model. */
 void rdb_model_free(RdbModel *m);

@@ -46,8 +46,8 @@ to check that they mount.
 
 ## Coverage
 
-Boot and own screen, Scan, New, Edit (name, filesystem), Delete, Split, the disk bar,
-Resize, Save (RDB validated on the host, embedded handler byte-exact, out-of-memory
+Boot on the Workbench screen, Scan, the Units list, New, Edit (name, filesystem), Delete,
+Split, selecting from the disk map and table, table scrolling, Resize, Save (RDB validated on the host, embedded handler byte-exact, out-of-memory
 injected at the allocation), Refresh, unsaved-edit prompts on Unit, Driver, Scan, Load
 and Refresh, Filesystems (Add, refused file, Remove, assign, Copy from disk), Format
 (fresh PFS, fresh FFS, reformat mounted, labels on disk), refused driver file, menu

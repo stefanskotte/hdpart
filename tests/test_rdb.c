@@ -481,6 +481,32 @@ static void test_gap_helpers(void)
     CHECK(rdb_gap_end_after(&m, 99)   == 996);   /* invalid index -> full-disk sentinel */
 }
 
+static void test_used_percent(void)
+{
+    FILE *f = tmpfile();
+    static uint8_t z[RDB_BLOCK_BYTES];
+    FileCtx c;
+    RdbModel m;
+    uint32_t i, pct = 999;
+    CHECK(f != NULL);
+    if (!f) return;
+    for (i = 0; i < 64u * 4u * 32u; i++) fwrite(z, 1, RDB_BLOCK_BYTES, f);
+    c.f = f;
+    CHECK(rdb_used_percent(file_io, &c, &pct) == RDB_ERR_NO_RDB);
+    rdb_init_model(&m, 64, 4, 32);
+    CHECK(rdb_serialize(&m, file_io, &c) == RDB_OK);
+    CHECK(rdb_used_percent(file_io, &c, &pct) == RDB_OK);
+    CHECK(pct == 0);
+    /* half of the partitionable range, in two partitions */
+    { uint32_t span = m.hi_cyl - m.lo_cyl + 1u, q = span / 4u;
+      CHECK(rdb_add_partition_cyl(&m, "A", m.lo_cyl, m.lo_cyl + q - 1u, RDB_DOSTYPE_FFS_INTL) == 0);
+      CHECK(rdb_add_partition_cyl(&m, "B", m.lo_cyl + q, m.lo_cyl + 2u * q - 1u, RDB_DOSTYPE_FFS_INTL) == 1);
+      CHECK(rdb_serialize(&m, file_io, &c) == RDB_OK);
+      CHECK(rdb_used_percent(file_io, &c, &pct) == RDB_OK);
+      CHECK(pct == (2u * q * 100u) / span); }
+    fclose(f);
+}
+
 int main(int argc, char **argv)
 {
     if (argc >= 2 && strcmp(argv[1], "--emit") == 0) {
@@ -553,6 +579,7 @@ int main(int argc, char **argv)
     test_split_equal();
     test_split_range();
     test_short_table_size();
+    test_used_percent();
     if (g_fail) { printf("%d CHECK(s) FAILED\n", g_fail); return 1; }
     printf("ALL TESTS PASSED\n");
     return 0;

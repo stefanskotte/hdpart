@@ -834,6 +834,32 @@ int rdb_present(BlockIO io, void *ctx)
     return (r == 1) ? RDB_OK : (r < 0 ? RDB_ERR_IO : RDB_ERR_NO_RDB);
 }
 
+int rdb_used_percent(BlockIO io, void *ctx, uint32_t *pct)
+{
+    uint8_t blk[RDB_BLOCK_BYTES];
+    uint32_t lo, hi, part, used = 0, span;
+    int guard = 0;
+    int r = find_rdsk_block(io, ctx, blk);
+    if (r < 0) return RDB_ERR_IO;
+    if (r == 0) return RDB_ERR_NO_RDB;
+    lo   = be_get32(blk + RDB_o_LoCylinder);
+    hi   = be_get32(blk + RDB_o_HiCylinder);
+    part = be_get32(blk + RDB_o_PartitionList);
+    while (part != NULLPTR && part != 0 && ++guard <= RDB_MAX_PARTS) {
+        if (io(ctx, part, blk, 0)) return RDB_ERR_IO;
+        if (be_get32(blk + PART_o_ID) != ID_PART ||
+            !rdb_checksum_ok(blk, be_get32(blk + PART_o_SummedLongs))) break;
+        { uint32_t a = env_get(blk, DE_LowCyl), b = env_get(blk, DE_HighCyl);
+          if (b >= a) used += b - a + 1u; }
+        part = be_get32(blk + PART_o_Next);
+    }
+    span = (hi >= lo) ? hi - lo + 1u : 0u;
+    /* Divide first when large: used*100 could overflow, and no 64-bit math here. */
+    *pct = !span ? 0u : (span > 40000000u) ? used / (span / 100u) : (used * 100u) / span;
+    if (*pct > 100u) *pct = 100u;
+    return RDB_OK;
+}
+
 int rdb_parse(RdbModel *m, BlockIO io, void *ctx)
 {
     uint8_t blk[RDB_BLOCK_BYTES];
