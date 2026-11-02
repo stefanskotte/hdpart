@@ -64,6 +64,7 @@ static char     g_cur_driver[40];   /* selected device driver/unit (for Save) */
 static uint32_t g_cur_unit;
 static int      g_sel_part = -1;    /* selected partition index, or -1 */
 static int      g_cur_unitidx = -1; /* Unit cycle index currently shown (-1 = none): Refresh re-probes it */
+static int      g_drv_idx;          /* Driver cycle index currently shown: restored if a change is declined */
 static int      g_unitmap[DISC_MAX + 1]; /* Unit cycle index -> g_disks index (-1 = none) */
 static int      g_nunits;           /* number of real disk entries in the Unit cycle */
 static char     g_target_driver[40];/* driver the Scan button will probe ("" = none) */
@@ -186,6 +187,8 @@ static void gui_split(void);                  /* quick split-into-N-equal dialog
 static void gui_init_picker(void);            /* no-probe startup picker */
 static void gui_select_driver(int drvIdx);    /* Driver cycle: pick a scan target (resets) */
 static void gui_select_unit(int unitIdx);     /* Unit cycle: show that disk's partitions */
+static void gui_driver_picked(int drvIdx);    /* Driver cycle clicked: confirm, then select */
+static void gui_unit_picked(int unitIdx);     /* Unit cycle clicked: confirm, then select */
 static void gui_scan_selected(void);          /* probe the target driver (Scan button) */
 static void gui_refresh_current(void);        /* re-probe the currently shown device+unit */
 static int  gui_resize_dialog(int index);     /* grow/shrink the selected partition */
@@ -554,6 +557,13 @@ static int gui_request(const char *title, const char *body, int twoButtons,
 static int  gui_confirm(const char *title, const char *body) { return gui_request(title, body, 1, 0); }
 static void gui_msg(const char *title, const char *body)      { (void)gui_request(title, body, 0, 0); }
 
+/* Switching driver or disk replaces g_model, so ask before dropping unsaved
+   edits. Returns 1 if there is nothing to lose or the user agreed. */
+static int gui_discard_ok(const char *title)
+{
+    return !g_dirty || gui_confirm(title, "Discard unsaved changes to this disk?");
+}
+
 /* Fallback for when asl.library is unavailable (e.g. booting the bare HDPart
    floppy, which carries no LIBS:asl.library): a one-field modal dialog to type
    a full file path. Pre-fills `init` (a starting drawer); returns 1 with the
@@ -763,6 +773,41 @@ static void gui_load_asl(void)
 
 static char g_msgbuf[120];
 
+/* Stage the pool filesystems a partition references into g_model.fs[], ready to
+   serialize. Deep-copies so pool and model never alias seg_data. All-or-nothing:
+   every copy is allocated before g_model.fs[] is touched, so running out of
+   memory returns 0 with the model intact rather than writing an RDB that is
+   missing a handler its partitions need. */
+static int gui_stage_fs(void)
+{
+    uint8_t *seg[RDB_MAX_FS];
+    int src[RDB_MAX_FS];
+    int n = 0, pi, qi;
+
+    for (pi = 0; pi < g_fs_npool && n < RDB_MAX_FS; pi++) {
+        uint32_t len = g_fs_pool[pi].seg_len, z;
+        int used = 0;
+        for (qi = 0; qi < g_model.num_parts; qi++)
+            if (g_model.parts[qi].dos_type == g_fs_pool[pi].dos_type) { used = 1; break; }
+        if (!used) continue;
+        seg[n] = (uint8_t *)rdb_seg_alloc(len ? len : 1);
+        if (!seg[n]) {
+            while (n > 0) rdb_seg_free(seg[--n]);
+            return 0;
+        }
+        for (z = 0; z < len; z++) seg[n][z] = g_fs_pool[pi].seg_data[z];
+        src[n++] = pi;
+    }
+
+    rdb_model_free(&g_model);   /* clear stale fs[] staging; parts[] untouched */
+    for (qi = 0; qi < n; qi++) {
+        g_model.fs[qi] = g_fs_pool[src[qi]];
+        g_model.fs[qi].seg_data = seg[qi];
+    }
+    g_model.num_fs = n;
+    return 1;
+}
+
 static int gui_save(void)
 {
     DeviceHandle *h;
@@ -807,26 +852,13 @@ static int gui_save(void)
     g_msgbuf[p] = 0;
     if (!gui_confirm("Save", g_msgbuf)) return 0;
 
+    if (!gui_stage_fs()) {
+        gui_msg("Save", "Not enough memory for the embedded\nfilesystem(s). Nothing was written.");
+        return 0;
+    }
+
     h = dev_open(g_cur_driver, g_cur_unit);
     if (!h) { gui_msg("Save", "Could not open the device."); return 0; }
-
-    /* Stage pool FS referenced by a partition into g_model.fs[] for serialization.
-       Deep-copy (rdb_seg_alloc+memcpy) so pool and model never alias seg_data. */
-    { int pi, qi;
-      rdb_model_free(&g_model);   /* clear stale fs[] staging; parts[] untouched */
-      for (pi = 0; pi < g_fs_npool && g_model.num_fs < RDB_MAX_FS; pi++) {
-          int used = 0;
-          for (qi = 0; qi < g_model.num_parts; qi++)
-              if (g_model.parts[qi].dos_type == g_fs_pool[pi].dos_type) { used = 1; break; }
-          if (!used) continue;
-          { RdbFileSys *d = &g_model.fs[g_model.num_fs];
-            *d = g_fs_pool[pi];
-            d->seg_data = (uint8_t *)rdb_seg_alloc(g_fs_pool[pi].seg_len ? g_fs_pool[pi].seg_len : 1);
-            if (!d->seg_data) continue;
-            { uint32_t z; for (z = 0; z < g_fs_pool[pi].seg_len; z++) d->seg_data[z] = g_fs_pool[pi].seg_data[z]; }
-            g_model.num_fs++; }
-      }
-    }
 
     serr = rdb_serialize(&g_model, dev_block_io, h);
     if (serr == RDB_OK) {
@@ -1936,8 +1968,8 @@ int gui_run(void)
                     }
                     break;
                 case IDCMP_GADGETUP:
-                    if (gad->GadgetID == GID_DEVICE) gui_select_driver((int)code);
-                    else if (gad->GadgetID == GID_UNIT) gui_select_unit((int)code);
+                    if (gad->GadgetID == GID_DEVICE) gui_driver_picked((int)code);
+                    else if (gad->GadgetID == GID_UNIT) gui_unit_picked((int)code);
                     else if (gad->GadgetID == GID_SCAN) gui_scan_selected();
                     else if (gad->GadgetID == GID_REFRESH) gui_refresh_current();
                     else if (gad->GadgetID == GID_RESIZE) {
@@ -2135,6 +2167,7 @@ static void gui_set_unit_cycle(int active)
    placeholder at index 0) — so nothing from the previous driver lingers. */
 static void gui_select_driver(int idx)
 {
+    g_drv_idx = (idx > 0) ? idx : 0;
     g_have_model = 0; g_dirty = 0; g_sel_part = -1; g_geo.has_media = 0;
     g_cur_driver[0] = 0; g_cur_unit = 0; g_cur_unitidx = -1;
 
@@ -2192,6 +2225,24 @@ static void gui_select_unit(int uidx)
     gui_refresh_parts(); gui_update_buttons();
 }
 
+/* The user clicked the Driver cycle. A cycle gadget has already moved on by the
+   time we hear about it, so declining has to put it back. Same index = a cycle
+   with a single entry, where the click changes nothing. */
+static void gui_driver_picked(int idx)
+{
+    if (idx == g_drv_idx) return;
+    if (gui_discard_ok("Driver")) { gui_select_driver(idx); return; }
+    GT_SetGadgetAttrs(g_gad[GID_DEVICE], g_win, 0, GTCY_Active, (ULONG)g_drv_idx, TAG_END);
+}
+
+/* The user clicked the Unit cycle; see gui_driver_picked. */
+static void gui_unit_picked(int uidx)
+{
+    if (uidx == g_cur_unitidx) return;
+    if (gui_discard_ok("Unit")) { gui_select_unit(uidx); return; }
+    gui_set_unit_cycle(g_cur_unitidx >= 0 ? g_cur_unitidx : 0);
+}
+
 /* Refresh button: re-read the currently shown device+unit from disk (geometry +
    RDB), so the user can confirm the view matches what is actually stored (e.g.
    after a Save). Re-reading discards any unsaved in-memory edits, so confirm
@@ -2213,6 +2264,7 @@ static void gui_scan_selected(void)
 {
     int real;
     if (!g_target_driver[0]) return;
+    if (!gui_discard_ok("Scan")) return;
 
     gui_status("Scanning...");
     discover_probe_driver(g_disks, &g_ndisks, DISC_MAX, g_target_driver);
@@ -2759,6 +2811,7 @@ static void gui_load_driver(void)
     static char name[DRV_NAME_LEN];
     int rc, i, n, sel = -1;
 
+    if (!gui_discard_ok("Load Driver")) return;
     if (!gui_pick_file("Select a device driver", "DEVS:", path, sizeof(path)))
         return;                                   /* cancelled */
 
