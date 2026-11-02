@@ -3253,6 +3253,11 @@ void gui_draw_bar(void)
     /* Free cylinders first, then each partition drawn over them, to scale. */
     gui_pattern(g_bar.x + (int)((g_model.lo_cyl * (ULONG)g_bar.w) / g_model.cylinders), g_bar.y,
                 g_bar.w - (int)((g_model.lo_cyl * (ULONG)g_bar.w) / g_model.cylinders), g_bar.h, FILL_FREE);
+    {   /* Cylinders below lo_cyl hold the RDB: say so, or it reads as a drawing fault. */
+        int rw = (int)((g_model.lo_cyl * (ULONG)g_bar.w) / g_model.cylinders);
+        if (rw >= 26)
+            gui_text(g_bar.x + (rw - 24) / 2, g_bar.y + (g_bar.h - 8) / 2, "RDB", g_pen_text);
+    }
     for (i = 0; i < g_model.num_parts && i < RDB_MAX_PARTS; i++) {
         RdbPartition *pt = &g_model.parts[i];
         int x0 = g_bar.x + (int)((pt->low_cyl  * (ULONG)g_bar.w) / g_model.cylinders);
