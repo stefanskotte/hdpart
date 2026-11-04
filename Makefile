@@ -89,18 +89,21 @@ install-fsuae:
 #                       existing Workbench and double-click HDPart; it is also
 #                       bootable (auto-runs HDPart on its own screen). Needs
 #                       amitools' xdftool (pip3 install amitools).
-# ADFVER: keep in sync with the window title in src/gui.c ("HDPart 0.11.2").
-ADFVER = 0.11.2
+# ADFVER: keep in sync with the window title in src/gui.c ("HDPart 0.12").
+ADFVER = 0.12
 ADF    = out/HDPart-$(ADFVER).adf
 
-adf: $(OUT).exe tools/HDPart.info tools/Disk.info
+adf: $(OUT).exe tools/HDPart.info tools/Disk.info tools/system-configuration
 	@command -v xdftool >/dev/null 2>&1 || { echo "ERROR: xdftool not found - install amitools (pip3 install amitools)"; exit 1; }
 	@mkdir -p out
 	@printf 'HDPart\n' > out/.adf-startup-sequence
+	@# Without this file a floppy boot gets topaz 9 as the system font.
 	@xdftool -f $(ADF) create + format "HDPart" ofs + boot install \
 	    + makedir s \
+	    + makedir devs \
 	    + write $(OUT).exe HDPart \
 	    + write out/.adf-startup-sequence s/startup-sequence \
+	    + write tools/system-configuration devs/system-configuration \
 	    + write tools/HDPart.info HDPart.info \
 	    + write tools/Disk.info Disk.info
 	@rm -f out/.adf-startup-sequence
@@ -121,6 +124,19 @@ adf: $(OUT).exe tools/HDPart.info tools/Disk.info
 #                       Needs WinUAE, mcp-winuae-emu and ROMs: see tests/target/README.md.
 target-test: $(OUT).exe
 	@node tests/target/run.mjs $(KS)
+
+# `make target-quick`   the emulated-IDE tests behind Quick setup (see tests/target/README.md).
+#                       QUICK picks what to run, e.g. QUICK="used ks31a1200"; default is everything.
+VOLCHECK = out/volcheck
+
+$(VOLCHECK): tests/target/guest/volcheck.s
+	$(info Assembling $<)
+	@m68k-amiga-elf-as -m68000 -o obj/volcheck.o $<
+	@m68k-amiga-elf-ld -e start --emit-relocs -o out/volcheck.elf obj/volcheck.o
+	@elf2hunk out/volcheck.elf $@
+
+target-quick: $(OUT).exe $(VOLCHECK)
+	@node tests/target/quick.mjs $(QUICK)
 
 clean:
 	$(info Cleaning...)

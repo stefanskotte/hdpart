@@ -71,6 +71,7 @@ typedef struct {
     RdbPartition parts[RDB_MAX_PARTS];
     RdbFileSys   fs[RDB_MAX_FS];
     int          num_fs;
+    uint8_t      setup_pending;  /* 0 none, else 0x80|mask: Quick setup marker in the RDSK block */
 } RdbModel;
 
 #define RDB_RESERVED_CYLS 2u          /* cylinders reserved for RDB metadata */

@@ -19,6 +19,7 @@
 #include <libraries/asl.h>
 #include <proto/asl.h>
 #include <dos/dos.h>              /* SHARED_LOCK, BPTR (asl.library LIBS: fallback) */
+#include <dos/dosextens.h>        /* struct Process, FileLock, ACTION_FLUSH: Quick setup */
 #include <proto/dos.h>
 #include "gui.h"
 #include "discover.h"
@@ -28,6 +29,7 @@
 #include "format.h"
 #include "safety.h"
 #include "fsload.h"
+#include "quick.h"
 
 extern struct IntuitionBase *IntuitionBase;   /* opened in main.c */
 struct Library *GadToolsBase = 0;
@@ -38,7 +40,7 @@ extern struct DosLibrary *DOSBase;   /* opened in startup.c (for AddPart) */
 /* Gadget IDs */
 enum { GID_DEVICE = 1, GID_SCAN, GID_DRIVER, GID_PARTS, GID_NEW, GID_DELETE,
        GID_EDIT, GID_INIT, GID_SAVE, GID_STATUS, GID_UNIT, GID_SPLIT, GID_REFRESH,
-       GID_RESIZE, GID_FORMAT, GID_FS };
+       GID_RESIZE, GID_FORMAT, GID_FS, GID_QUICK };
 /* GID_UNIT and GID_PARTS are the scrollers of the Units list and partition table. */
 
 /* Module state for one GUI session. */
@@ -47,7 +49,7 @@ static struct Screen  *g_pub;        /* locked pubscreen, or NULL */
 static struct Window  *g_win;
 static APTR            g_vi;          /* VisualInfo */
 static struct Gadget  *g_glist;      /* gadtools context list */
-static struct Gadget  *g_gad[17];    /* gadget pointers by GID_* */
+static struct Gadget  *g_gad[18];    /* gadget pointers by GID_* */
 static struct TextAttr g_font = { (STRPTR)"topaz.font", 8, 0, 0 };
 static struct TextFont *g_sfont = 0;  /* explicit topaz 8 for our own screen (NULL if unavailable) */
 static struct Menu    *g_menu = 0;   /* menu strip attached to g_win */
@@ -102,6 +104,10 @@ static int        g_fs_npool;
 #define DETAIL_H   64
 #define ACTION_Y   170
 #define FOOTER_Y   186
+/* The Quick setup panel, inside the details box. */
+#define QP_BTN_W   140
+#define QP_BTN_H   18
+#define QP_BTN_Y   19
 
 /* A hand-drawn list: GadTools cannot highlight a row on V37. Window-relative. */
 typedef struct { WORD x, y, w, h, rowh, vis, top, count; } ListGeom;
@@ -116,6 +122,15 @@ static int g_pen_bg, g_pen_text, g_pen_shine, g_pen_fill, g_pen_seltext;
    80 bytes is headroom for any legal RDB. */
 static char        g_partrows[RDB_MAX_PARTS][80];
 static char        g_statusbuf[80];
+/* safety_is_internal_ide() at startup, for the on-target test to read. -1 until then. */
+int                 g_qs_is_ide = -1;
+/* Quick setup, for the on-target test too: the screen open (0 = closed) and the reason
+   for the refusal on it (0 = none). Volatile so they survive being written only. */
+static volatile int g_qs_screen;
+static volatile int g_qs_resume_checks;   /* times gui_quick_resume_check has run: once, at startup */
+static volatile int g_qs_check_stop;      /* what stopped it: see gui_quick_resume_check. 0: the popup was shown */
+static volatile int g_qs_refusal;
+static int          g_qs_panel_gone;   /* a driver was picked: no Quick setup panel this session */
 
 static int u2s(char *o, ULONG v)   /* write decimal, return length */
 {
@@ -220,14 +235,20 @@ static void gui_split(void);                  /* quick split-into-N-equal dialog
 static void gui_init_picker(void);            /* no-probe startup picker */
 static void gui_select_driver(int drvIdx);    /* Driver cycle: pick a scan target (resets) */
 static void gui_select_unit(int unitIdx);     /* Unit cycle: show that disk's partitions */
+static int  gui_build_drivers(void);
+static int  gui_build_units(const char *emptyText);
+static void gui_set_units(void);
 static void gui_driver_picked(int drvIdx);    /* Driver cycle clicked: confirm, then select */
 static void gui_unit_picked(int unitIdx);     /* Units row clicked: confirm, then select */
 static void gui_scan_selected(void);          /* probe the target driver (Scan button) */
 static void gui_refresh_current(void);        /* re-probe the currently shown device+unit */
 static int  gui_resize_dialog(int index);     /* grow/shrink the selected partition */
 static void gui_format(int index);            /* format selected partition into empty volume */
+static void gui_quick_setup(void);            /* the Quick setup wizard */
+static void gui_quick_hide(void);             /* a driver was picked: the panel goes for good */
 static void gui_draw_chrome(void);        /* BevelBox group frames + captions */
 void gui_draw_bar(void);
+static void gui_map_draw(struct RastPort *rp, const RdbModel *m, int x, int y, int w, int h, int sel, int rdb_label, const uint32_t *vols);
 static void gui_draw_table(void);         /* partition table rows */
 static void gui_draw_units(void);         /* Units list rows + meters */
 static void gui_draw_details(void);       /* details of the selected partition */
@@ -258,7 +279,7 @@ static void gui_status(const char *s)
 /* FULLMENUNUM indices (menu,item) for enable/disable + dispatch readability. */
 enum { MN_PROJECT=0, MN_DISK=1, MN_PART=2 };
 enum { IT_ABOUT=0, IT_ASL=1, IT_SAVE=3, IT_QUIT=5 };     /* Project items */
-enum { ID_SCAN=0, ID_LOAD=1, ID_REFRESH=3, ID_INIT=4, ID_FS=5 };  /* Disk items   */
+enum { ID_SCAN=0, ID_LOAD=1, ID_REFRESH=3, ID_INIT=4, ID_FS=5, ID_QUICK=6 };  /* Disk items   */
 enum { IP_NEW=0, IP_EDIT=1, IP_DELETE=2, IP_SPLIT=4, IP_RESIZE=5, IP_FORMAT=6 }; /* Partition items */
 
 /* Enable/disable one menu item (menu,item) on the attached strip. */
@@ -360,6 +381,7 @@ static struct NewMenu g_newmenu[] = {
     {  NM_ITEM, "Refresh",      "F", 0, 0, 0 },
     {  NM_ITEM, "Init Disk...", "I", 0, 0, 0 },
     {  NM_ITEM, "Filesystems...", "Y", 0, 0, 0 },
+    {  NM_ITEM, "Quick setup...", 0, 0, 0, 0 },
     { NM_TITLE, "Partition",     0,  0, 0, 0 },
     {  NM_ITEM, "New",          "N", 0, 0, 0 },
     {  NM_ITEM, "Edit...",      "E", 0, 0, 0 },
@@ -375,7 +397,7 @@ static struct Gadget *build_gadgets(void)
     struct NewGadget ng;
     struct Gadget *g;
     int i;
-    for (i = 0; i < 17; i++) g_gad[i] = 0;
+    for (i = 0; i < 18; i++) g_gad[i] = 0;
 
     /* CreateContext's inline macro (LP1) declares the input register as
        'volatile t1' which in GCC 14+ triggers -Wincompatible-pointer-types
@@ -459,6 +481,13 @@ static struct Gadget *build_gadgets(void)
     g = CreateGadget(BUTTON_KIND, g, &ng, GA_Disabled, TRUE, GT_Underscore, (ULONG)'_', TAG_END);
     g_gad[GID_SAVE] = g;
 
+    /* Last in the chain: gui_quick_hide takes it off the end, leaving g_glist whole. */
+    ng.ng_LeftEdge = RIGHT_X + (RIGHT_W - QP_BTN_W) / 2 + g_leftb; ng.ng_TopEdge = DETAIL_Y + QP_BTN_Y + g_topb;
+    ng.ng_Width = QP_BTN_W; ng.ng_Height = QP_BTN_H;
+    ng.ng_GadgetText = (UBYTE *)"Quick setup..."; ng.ng_GadgetID = GID_QUICK;
+    g = CreateGadget(BUTTON_KIND, g, &ng, TAG_END);
+    g_gad[GID_QUICK] = g;
+
     return g;
 }
 
@@ -496,18 +525,23 @@ static void dlg_center(int w, int h, int *left, int *top)
    live window or NULL — a nested dialog just falls back to the main window. */
 static struct Window *g_dlgwin = 0;
 
-static struct Window *dlg_open(const char *title, int L, int T, int w, int h,
-                               ULONG idcmp, struct Gadget *glist)
+static __attribute__((noinline)) struct Window *dlg_open_flags(const char *title, int L, int T, int w, int h,
+                                     ULONG idcmp, struct Gadget *glist, ULONG flags)
 {
     g_dlgwin = OpenWindowTags(0,
         WA_Left, L, WA_Top, T, WA_Width, w, WA_Height, h,
         WA_Title, (ULONG)title, WA_Gadgets, (ULONG)glist,
         WA_IDCMP, IDCMP_CLOSEWINDOW | IDCMP_REFRESHWINDOW | idcmp,
-        WA_Flags, WFLG_DRAGBAR | WFLG_DEPTHGADGET | WFLG_ACTIVATE | WFLG_SMART_REFRESH,
+        WA_Flags, WFLG_DRAGBAR | WFLG_ACTIVATE | WFLG_SMART_REFRESH | flags,
         g_pub ? WA_PubScreen : WA_CustomScreen, (ULONG)g_scr,
         TAG_END);
     if (g_dlgwin && g_sfont) SetFont(g_dlgwin->RPort, g_sfont);
     return g_dlgwin;
+}
+static __attribute__((noinline)) struct Window *dlg_open(const char *title, int L, int T, int w, int h,
+                               ULONG idcmp, struct Gadget *glist)
+{
+    return dlg_open_flags(title, L, T, w, h, idcmp, glist, WFLG_DEPTHGADGET);
 }
 static void dlg_refresh(struct Window *w) { GT_BeginRefresh(w); GT_EndRefresh(w, TRUE); }
 static void dlg_close(struct Window *w, struct Gadget *glist)
@@ -839,12 +873,45 @@ static int gui_stage_fs(void)
     return 1;
 }
 
+/* The table read back by qs_write_verified. Static: keep off the stack. */
+static RdbModel g_wv_chk;
+
+enum { WV_OK = 0, WV_NO_DEVICE, WV_NO_SPACE, WV_WRITE_FAILED, WV_MISMATCH };
+
+/* Write a table to one disk and read it back: the part of Save the Quick setup wizard shares.
+   Touches the model's setup_pending not at all: each caller decides that for itself. The read
+   table stays in g_wv_chk. `written`, if given, is called between the write and the read-back. */
+static int qs_write_verified(const char *driver, ULONG unit, RdbModel *m, void (*written)(void))
+{
+    DeviceHandle *h = dev_open(driver, unit);
+    int serr, rc = WV_WRITE_FAILED;
+
+    if (!h) return WV_NO_DEVICE;
+    serr = rdb_serialize(m, dev_block_io, h);
+    if (serr == RDB_OK) {
+        if (written) written();
+        rc = WV_MISMATCH;
+        /* read back and verify the partition count + first/last cylinders */
+        if (rdb_parse(&g_wv_chk, dev_block_io, h) == RDB_OK &&
+            g_wv_chk.num_parts == m->num_parts) {
+            int i; rc = WV_OK;
+            for (i = 0; i < g_wv_chk.num_parts; i++)
+                if (g_wv_chk.parts[i].low_cyl  != m->parts[i].low_cyl ||
+                    g_wv_chk.parts[i].high_cyl != m->parts[i].high_cyl) { rc = WV_MISMATCH; break; }
+        }
+        rdb_model_free(&g_wv_chk);
+    } else if (serr == RDB_ERR_NO_RDB_SPACE) rc = WV_NO_SPACE;
+    dev_close(h);
+    return rc;
+}
+
 static int gui_save(void)
 {
-    DeviceHandle *h;
-    static RdbModel chk;          /* static: keep off the stack */
-    int ok = 0, serr = RDB_OK, p = 0;
+    int ok, wv, p = 0;
 
+    /* A save from the normal UI always drops the Quick setup marker, even if
+       this save then fails: the user is editing by hand now. */
+    g_model.setup_pending = 0;
     if (!g_have_model) return 0;
     if (rdb_validate(&g_model) != RDB_OK) { gui_msg("Save", "Partition layout is invalid."); return 0; }
 
@@ -888,25 +955,12 @@ static int gui_save(void)
         return 0;
     }
 
-    h = dev_open(g_cur_driver, g_cur_unit);
-    if (!h) { gui_msg("Save", "Could not open the device."); return 0; }
-
-    serr = rdb_serialize(&g_model, dev_block_io, h);
-    if (serr == RDB_OK) {
-        /* read back and verify the partition count + first/last cylinders */
-        if (rdb_parse(&chk, dev_block_io, h) == RDB_OK &&
-            chk.num_parts == g_model.num_parts) {
-            int i; ok = 1;
-            for (i = 0; i < chk.num_parts; i++)
-                if (chk.parts[i].low_cyl  != g_model.parts[i].low_cyl ||
-                    chk.parts[i].high_cyl != g_model.parts[i].high_cyl) { ok = 0; break; }
-        }
-        rdb_model_free(&chk);
-    }
-    dev_close(h);
+    wv = qs_write_verified(g_cur_driver, g_cur_unit, &g_model, 0);
+    if (wv == WV_NO_DEVICE) { gui_msg("Save", "Could not open the device."); return 0; }
+    ok = wv == WV_OK;
 
     if (ok) { g_dirty = 0; gui_msg("Save", "Saved and verified."); }
-    else if (serr == RDB_ERR_NO_RDB_SPACE)
+    else if (wv == WV_NO_SPACE)
         gui_msg("Save", "Embedded filesystem(s) don't fit the reserved RDB area.\nRemove one or use a smaller handler. Nothing was written.");
     else gui_msg("Save", "WRITE FAILED or verify mismatch.\nThe disk RDB may be inconsistent.");
     gui_refresh_parts();
@@ -1998,9 +2052,1584 @@ static int build_menus(void)
     return 1;
 }
 
+/* ---------- Quick setup ----------------------------------------------------- */
+
+/* Why the wizard stops at the card screen. Each says what happened and what to do, with
+   no technical words. '#' in the text is replaced by the digit of the name in question. */
+enum { QS_R_NONE = 0, QS_R_NO_PORT, QS_R_UNPROVEN, QS_R_NO_CARD, QS_R_TWO_DRIVES, QS_R_UNREADABLE,
+       QS_R_BOOTED, QS_R_BOOT_UNKNOWN, QS_R_NAME_TAKEN, QS_R_TOO_SMALL };
+static const char *const kQsRefusals[] = {
+    "",
+    "Quick setup found no IDE port with a card on it.\n"
+    "Either this Amiga has no built-in IDE port, like\n"
+    "the A500, or no card answered on it.\n"
+    "Nothing was changed.\n\n"
+    "On an A600, A1200 or A4000, turn the Amiga off,\n"
+    "check that the card sits firmly in its adapter,\n"
+    "then try again.",
+    "Quick setup can't confirm this setup. The disks\n"
+    "here could not be proven to be on the built-in\n"
+    "IDE port, the only place it is made for. SCSI\n"
+    "machines such as the A3000 and IDE drivers\n"
+    "loaded from disk end up here.\n"
+    "Nothing was changed.\n\n"
+    "You can do it by hand in the main window: pick\n"
+    "a driver there and press Scan.",
+    "No card was found on the IDE port.\n"
+    "Nothing was changed.\n\n"
+    "Turn the Amiga off, check that the card sits\n"
+    "firmly in its adapter, then try again.",
+    "More than one drive was found on the IDE port.\n"
+    "Quick setup works with one card only, so that it\n"
+    "can't erase the wrong one.\n"
+    "Nothing was changed.\n\n"
+    "Remove the other drive and try again, or set up\n"
+    "your drives by hand in the main window.",
+    "The card could not be read.\n"
+    "Nothing was changed.\n\n"
+    "Check that it sits firmly in its adapter and\n"
+    "try again, or try another card.",
+    "This Amiga started from this card, and a card\n"
+    "can't be erased while it is running the Amiga.\n"
+    "Nothing was changed.\n\n"
+    "Start from your HDPart floppy instead, then run\n"
+    "Quick setup again.",
+    "Quick setup can't tell which disk this Amiga\n"
+    "started from, so it can't be sure this card is\n"
+    "safe to erase.\n"
+    "Nothing was changed.\n\n"
+    "Start from your HDPart floppy and try again, or\n"
+    "do it by hand in the main window.",
+    "Another disk is already using the name DH#:, and\n"
+    "this card will need it.\n"
+    "Nothing was changed.\n\n"
+    "Remove that disk, restart and try again, or do\n"
+    "it by hand in the main window.",
+    "This card is too small for Quick setup, which\n"
+    "needs at least 128 MB.\n"
+    "Nothing was changed.\n\n"
+    "Use a bigger card, or set this one up by hand in\n"
+    "the main window."
+};
+
+#define QS_DRIVER     "scsi.device"
+#define QS_VALUE_CHARS 46               /* what fits in a row of the card screen */
+
+static DeviceInfo g_qs_geo;             /* the card's geometry and model */
+static DiscDisk   g_qs_card;            /* the card that was found */
+static RdbModel   g_qs_model;           /* the card's table as it stands, static: keep off the stack */
+static RdbModel   g_qs_layout;          /* a trial of the new one */
+static ULONG      g_qs_block[128];      /* longs: word-aligned for any driver */
+static char       g_qs_said[420];       /* the refusal on screen */
+static char       g_qs_found[48], g_qs_size[48], g_qs_holds[QS_VALUE_CHARS + 2];
+static int        g_qs_taken;           /* the digit of the DH name held by another disk */
+
+/* Is a drive on this unit? A unit that does not open or fails the question is not there:
+   scsi.device can answer for a unit no drive is behind. One that answers with no capacity
+   is no card either, and can't be erased by mistake. Any stated capacity counts, whatever
+   the other figures say: qs_find_card repairs those, and a real drive must not go unseen. */
+static int qs_probe_unit(ULONG unit, DeviceInfo *info)
+{
+    DeviceHandle *h;
+    int i, found = 0;
+    for (i = 0; i < (int)sizeof(*info); i++) ((UBYTE *)info)[i] = 0;
+    h = dev_open(QS_DRIVER, unit);
+    if (!h) return 0;
+    if (dev_unit_ready(h) && dev_geometry(h, info) == 0 && info->total_blocks) {
+        found = 1;
+        (void)dev_inquiry_model(h, info->model);
+    }
+    dev_close(h);
+    return found;
+}
+
+/* Case-insensitive ASCII equality of DOS names. */
+static int qs_name_eq(const char *a, const char *b)
+{
+    int i;
+    for (i = 0; a[i] && b[i]; i++) {
+        char ca = a[i], cb = b[i];
+        if (ca >= 'a' && ca <= 'z') ca = (char)(ca - 32);
+        if (cb >= 'a' && cb <= 'z') cb = (char)(cb - 32);
+        if (ca != cb) return 0;
+    }
+    return a[i] == b[i];
+}
+
+/* Is this name held by anything but the card? mine[] holds the names safety_classify read
+   from a node's FileSysStartupMsg as being on the card. A node it could not read is not
+   among them, so a holder that can't be established counts as another disk. */
+static int qs_name_elsewhere(const char *name, char mine[][8], int nmine)
+{
+    struct DosList *dl;
+    int i, there;
+    dl = LockDosList(LDF_DEVICES | LDF_READ);
+    there = FindDosEntry(dl, (CONST_STRPTR)name, LDF_DEVICES | LDF_READ) != 0;
+    UnLockDosList(LDF_DEVICES | LDF_READ);
+    if (!there) return 0;
+    for (i = 0; i < nmine; i++) if (qs_name_eq(name, mine[i])) return 0;
+    return 1;
+}
+
+/* A size as a card's label gives it: decimal GB from 2000 MB up, otherwise MB. */
+static int qs_size_str(char *o, ULONG mb)
+{
+    int n;
+    if (mb < 2000) { n = u2s(o, mb); o[n++] = ' '; o[n++] = 'M'; o[n++] = 'B'; }
+    else { n = u2s(o, (mb * 1049u + 500000u) / 1000000u); o[n++] = ' '; o[n++] = 'G'; o[n++] = 'B'; }
+    o[n] = 0;
+    return n;
+}
+
+/* The volume name in an Amiga partition's root block, or "" if it holds none. The name is
+   only for showing, so any doubt just leaves it out. */
+/* Read a partition's root block into g_qs_block. 1 if it reads and is valid. */
+static int qs_read_root(DeviceHandle *h, const RdbPartition *pt, uint32_t cyl_blocks)
+{
+    uint32_t blocks, root;
+    if (!cyl_blocks || pt->low_cyl > 8388608u / cyl_blocks) return 0;   /* a foreign table: must not overflow */
+    blocks = (pt->high_cyl - pt->low_cyl + 1) * cyl_blocks;
+    root = pt->low_cyl * cyl_blocks + (blocks + 1) / 2;
+    if ((pt->dos_type & 0xFFFFFF00u) != 0x444F5300u || root >= 8388608u) return 0;   /* offsets are 32-bit */
+    if (dev_read_block(h, root, (UBYTE *)g_qs_block) != 0) return 0;
+    return g_qs_block[0] == 2 && g_qs_block[127] == 1 && rdb_checksum_ok((const UBYTE *)g_qs_block, 128);
+}
+
+static void qs_volume_name(DeviceHandle *h, const RdbPartition *pt, char *out, int outsz)
+{
+    const UBYTE *b = (const UBYTE *)g_qs_block;
+    int n = 0, i;
+    out[0] = 0;
+    if (!qs_read_root(h, pt, g_qs_model.cyl_blocks)) return;
+    if (b[432] <= 30)
+        for (i = 0; i < b[432] && n < outsz - 1; i++)
+            if (b[433 + i] >= 32 && b[433 + i] < 127) out[n++] = (char)b[433 + i];
+    out[n] = 0;
+}
+
+/* Fill "Now holds" from the card. Returns 0, or QS_R_UNREADABLE. */
+static int qs_read_holds(DeviceHandle *h)
+{
+    int p = 0, rc, i;
+    rc = rdb_parse(&g_qs_model, dev_block_io, h);
+    if (rc == RDB_ERR_IO) return QS_R_UNREADABLE;
+    if (rc != RDB_OK) {
+        /* The table search looks in these blocks, so a blank card is zero here. */
+        int blk, zero = 1;
+        for (blk = 0; blk < 16 && zero; blk++) {
+            if (dev_read_block(h, (ULONG)blk, (UBYTE *)g_qs_block) != 0) return QS_R_UNREADABLE;
+            for (i = 0; i < 128; i++) if (g_qs_block[i]) { zero = 0; break; }
+        }
+        s_cat(g_qs_holds, &p, zero ? "Empty" : "Not an Amiga disk");
+    } else if (g_qs_model.num_parts == 0) {
+        s_cat(g_qs_holds, &p, "Empty");
+    } else {
+        for (i = 0; i < g_qs_model.num_parts; i++) {
+            const RdbPartition *pt = &g_qs_model.parts[i];
+            char vol[32]; int len, k, room;
+            int left = g_qs_model.num_parts - i - 1;
+            qs_volume_name(h, pt, vol, sizeof(vol));
+            for (len = 0; pt->name[len]; len++) ;
+            if (vol[0]) { for (k = 0; vol[k]; k++) ; len += k + 1; }
+            /* Room for this entry, and for saying what is left after it. */
+            if (i > 0 && p + 2 + len + (left ? 11 : 0) > QS_VALUE_CHARS) {
+                s_cat(g_qs_holds, &p, " and ");
+                p += u2s(g_qs_holds + p, (ULONG)(left + 1));
+                s_cat(g_qs_holds, &p, " more");
+                break;
+            }
+            if (i > 0) s_cat(g_qs_holds, &p, ", ");
+            /* The first goes in whatever its length, cut to leave room for the rest. */
+            room = i ? QS_VALUE_CHARS : QS_VALUE_CHARS - 12;
+            for (k = 0; pt->name[k] && p < room; k++) g_qs_holds[p++] = pt->name[k];
+            if (vol[0]) {
+                g_qs_holds[p++] = ' ';
+                for (k = 0; vol[k] && p < room; k++) g_qs_holds[p++] = vol[k];
+            }
+        }
+    }
+    g_qs_holds[p] = 0;
+    return 0;
+}
+
+/* Find the one card this wizard may use and fill the card screen's rows. Touches nothing
+   on any disk. Returns 0 with the card in *out, or the QS_R_* reason it can't go on. */
+static int __attribute__((noinline)) qs_find_card(DiscDisk *out)
+{
+    static DeviceInfo other;
+    static char mine[8][8], names[8][8];
+    int a, b, n = 0, i, p, rc;
+    DeviceHandle *h;
+    uint32_t mb;
+
+    /* Asked now, not at startup: a patch or a loaded driver can land in between. */
+    if (!safety_is_internal_ide()) {
+        struct Node *nd;
+        Forbid();
+        nd = FindName(&SysBase->DeviceList, (CONST_STRPTR)QS_DRIVER);
+        Permit();
+        /* With no driver at all this may still be an A1200 whose card did not answer. */
+        return nd ? QS_R_UNPROVEN : QS_R_NO_PORT;
+    }
+
+    /* Units 0 and 1 are the IDE port's two positions. */
+    a = qs_probe_unit(0, &g_qs_geo);
+    b = qs_probe_unit(1, &other);
+    if (a && b) return QS_R_TWO_DRIVES;
+    if (!a && !b) return QS_R_NO_CARD;
+    if (b) g_qs_geo = other;
+
+    /* Partitions come from these figures, so they must add up to the drive's real size.
+       The driver addresses by byte offset, so any consistent figures do: proved by the
+       test "synth" in tests/target/quick.mjs. */
+    if (!quick_geometry_agrees(g_qs_geo.cylinders, g_qs_geo.heads, g_qs_geo.sectors, g_qs_geo.total_blocks)) {
+        uint32_t c, hd, sc;
+        disc_synth_chs(g_qs_geo.total_blocks, &c, &hd, &sc);
+        g_qs_geo.cylinders = c; g_qs_geo.heads = hd; g_qs_geo.sectors = sc;
+    }
+    /* Figures can agree and still overstate: no partition may end past the card. */
+    g_qs_geo.cylinders = quick_cap_cylinders(g_qs_geo.cylinders, g_qs_geo.heads, g_qs_geo.sectors, g_qs_geo.total_blocks);
+
+    for (i = 0; i < (int)sizeof(*out); i++) ((UBYTE *)out)[i] = 0;
+    for (i = 0; QS_DRIVER[i]; i++) out->driver[i] = QS_DRIVER[i];
+    out->unit = b ? 1 : 0;
+
+    /* A name nothing is mounted on comes back clear unless the boot device is unknown,
+       and then the card might be it, whatever the answer below says. */
+    if (safety_classify("no.device", 0xFFFFFFFFu, names, 8, &n) != DEV_CLEAR) return QS_R_BOOT_UNKNOWN;
+    if (safety_classify(out->driver, out->unit, mine, 8, &n) == DEV_BOOT) return QS_R_BOOTED;
+
+    /* A layout with every extra ticked needs DH0 to DH3. The card's own may be mounted. */
+    { static char dh[] = "DH0";
+      for (i = 0; i < 4; i++) {
+          dh[2] = (char)('0' + i);
+          if (qs_name_elsewhere(dh, mine, n)) { g_qs_taken = i; return QS_R_NAME_TAKEN; }
+      } }
+
+    h = dev_open(out->driver, out->unit);
+    if (!h) return QS_R_UNREADABLE;
+    { static DeviceInfo again; (void)dev_geometry(h, &again); }   /* tells the handle the block size */
+    rc = qs_read_holds(h);
+    rdb_model_free(&g_qs_model);     /* only parts[] is wanted: drop any embedded filesystem */
+    dev_close(h);
+    if (rc) return rc;
+
+    rdb_init_model(&g_qs_layout, g_qs_geo.cylinders, g_qs_geo.heads, g_qs_geo.sectors);
+    if (quick_layout(&g_qs_layout, QS_WORK | QS_GAMES | QS_DEMOS) != RDB_OK) return QS_R_TOO_SMALL;
+
+    p = 0;
+    if (g_qs_geo.model[0]) s_cat(g_qs_found, &p, g_qs_geo.model);
+    else s_cat(g_qs_found, &p, "Card on the IDE port");
+    g_qs_found[p] = 0;
+
+    mb = disc_blocks_to_mb(g_qs_geo.total_blocks, g_qs_geo.block_bytes);
+    p = qs_size_str(g_qs_size, mb);
+    if (g_qs_layout.hi_cyl + 1u < g_qs_layout.cylinders) {
+        s_cat(g_qs_size, &p, " (this Amiga can use ");
+        p += qs_size_str(g_qs_size + p,
+                         disc_blocks_to_mb((g_qs_layout.hi_cyl + 1u) * g_qs_layout.cyl_blocks, g_qs_geo.block_bytes));
+        s_cat(g_qs_size, &p, ")");
+    }
+    g_qs_size[p] = 0;
+
+    for (i = 0; i < DISC_LABEL_LEN - 1 && g_qs_found[i]; i++) out->label[i] = g_qs_found[i];
+    out->size_mb = mb;
+    out->partitionable = 1;
+    out->used_pct = -1;
+    return 0;
+}
+
+/* Layout of the card screen, in pixels from the window's inner top-left. */
+#define QS_W      488
+#define QS_INFO_Y 3
+#define QS_INFO_H 38
+#define QS_WARN_Y 45
+#define QS_WARN_H 14
+#define QS_BTN_Y  65
+#define QS_KEY_R  88                    /* labels end here */
+#define QS_VAL_X  96
+
+static void qs_text(struct RastPort *rp, int x, int y, const char *s)
+{
+    int n = 0;
+    while (s[n]) n++;
+    SetAPen(rp, g_pen_text);
+    SetDrMd(rp, JAM1);
+    Move(rp, x, y + 6);
+    Text(rp, (CONST_STRPTR)s, (LONG)n);
+}
+
+static void qs_row(struct RastPort *rp, int y, const char *key, const char *value)
+{
+    int n = 0;
+    while (key[n]) n++;
+    qs_text(rp, g_leftb + QS_KEY_R - n * 8, y, key);
+    qs_text(rp, g_leftb + QS_VAL_X, y, value);
+}
+
+static void qs_card_draw(struct Window *w)
+{
+    struct RastPort *rp = w->RPort;
+    int x = g_leftb + 4, bw = QS_W - 8, y = g_topb + QS_WARN_Y;
+    DrawBevelBox(rp, x, g_topb + QS_INFO_Y, bw, QS_INFO_H, GT_VisualInfo, (ULONG)g_vi, TAG_END);
+    qs_row(rp, g_topb + QS_INFO_Y + 4,  "Found", g_qs_found);
+    qs_row(rp, g_topb + QS_INFO_Y + 14, "Size", g_qs_size);
+    qs_row(rp, g_topb + QS_INFO_Y + 24, "Now holds", g_qs_holds);
+    SetAPen(rp, g_pen_text);
+    RectFill(rp, x, y, x + bw - 1, y + QS_WARN_H - 1);
+    SetAPen(rp, g_pen_shine);
+    RectFill(rp, x + 2, y + 1, x + bw - 3, y + QS_WARN_H - 2);
+    qs_text(rp, x + 8, y + 3, "Everything on this card will be erased.");
+}
+
+static const char kQsNoWindow[] = "Quick setup could not open its window, probably for\n"
+                                  "lack of memory. Nothing was changed. Close other\n"
+                                  "programs and try again.";
+
+/* Screen 2. Returns 1 for Continue, 0 for Cancel. */
+static int qs_card_screen(void)
+{
+    struct Window *dw;
+    struct Gadget *glist = 0, *g;
+    struct NewGadget ng;
+    int dwW = g_leftb + QS_W + g_scr->WBorRight, dwH = g_topb + QS_BTN_Y + 14 + 6 + g_scr->WBorBottom;
+    int dwL = 0, dwT = 0, done = 0, result = 0;
+
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wincompatible-pointer-types"
+    g = CreateContext(&glist);
+#pragma GCC diagnostic pop
+    if (!g) { gui_msg("Quick setup", kQsNoWindow); return 0; }
+    ng.ng_TextAttr = &g_font; ng.ng_VisualInfo = g_vi; ng.ng_Flags = 0;
+    ng.ng_TopEdge = g_topb + QS_BTN_Y; ng.ng_Width = 90; ng.ng_Height = 14;
+    ng.ng_LeftEdge = g_leftb + 4; ng.ng_GadgetText = (UBYTE *)"Continue"; ng.ng_GadgetID = 1;
+    g = CreateGadget(BUTTON_KIND, g, &ng, TAG_END);
+    ng.ng_LeftEdge = g_leftb + QS_W - 4 - 90; ng.ng_GadgetText = (UBYTE *)"Cancel"; ng.ng_GadgetID = 0;
+    g = CreateGadget(BUTTON_KIND, g, &ng, TAG_END);
+    if (!g) { FreeGadgets(glist); gui_msg("Quick setup", kQsNoWindow); return 0; }
+
+    dlg_center(dwW, dwH, &dwL, &dwT);
+    dw = dlg_open("Quick setup: your card", dwL, dwT, dwW, dwH, BUTTONIDCMP, glist);
+    if (!dw) { FreeGadgets(glist); gui_msg("Quick setup", kQsNoWindow); return 0; }
+    GT_RefreshWindow(dw, 0);
+    qs_card_draw(dw);
+
+    while (!done) {
+        struct IntuiMessage *im;
+        WaitPort(dw->UserPort);
+        /* The first answer stands: a later click in the same batch must not replace it. */
+        while (!done && (im = GT_GetIMsg(dw->UserPort)) != 0) {
+            ULONG cl = im->Class;
+            struct Gadget *ig = (struct Gadget *)im->IAddress;
+            GT_ReplyIMsg(im);
+            if (cl == IDCMP_CLOSEWINDOW) done = 1;
+            else if (cl == IDCMP_REFRESHWINDOW) { GT_BeginRefresh(dw); qs_card_draw(dw); GT_EndRefresh(dw, TRUE); }
+            else if (cl == IDCMP_GADGETUP) { result = ig->GadgetID == 1; done = 1; }
+        }
+    }
+    dlg_close(dw, glist);
+    return result;
+}
+
+/* Screens 3 and 4 share one width: the longest line is 62 characters of topaz 8. */
+#define QS2_W       520
+#define QS_CH_Q_Y   3                   /* the question and the ticks */
+#define QS_CH_Q_H   46
+#define QS_CH_MAP_Y 53                  /* the map's frame; the map sits 2 inside it */
+#define QS_CH_MAP_H 36
+#define QS_CH_MSG_Y 93
+#define QS_CH_MSG_H 14
+#define QS_CH_BTN_Y 113
+#define QS_CF_ROW_H 10
+#define QS_BTN_W    90
+
+enum { QS_ANS_CANCEL = 0, QS_ANS_NEXT = 1, QS_ANS_BACK = 2 };
+enum { QS_GID_WORK = 11, QS_GID_GAMES = 12, QS_GID_DEMOS = 13 };
+
+static uint32_t g_qs_mask;              /* the extras ticked: QS_WORK | QS_GAMES | QS_DEMOS */
+static char     g_qs_msg[72];           /* the line under the map */
+static char     g_qs_rows[4][60];       /* the last check's table, as drawn */
+static char     g_qs_warn[80];          /* and its warning */
+
+static const char kQsNoRoom[] = "These choices do not fit on this card. Take one away.";
+
+static void qs_clear(struct RastPort *rp, int x, int y, int w, int h)
+{
+    SetAPen(rp, g_pen_bg);
+    RectFill(rp, x, y, x + w - 1, y + h - 1);
+}
+
+/* Megabytes of the whole cylinders lo..hi of m, as the map and the table both say them. */
+static ULONG qs_part_mb(const RdbModel *m, const RdbPartition *pt)
+{
+    return disc_blocks_to_mb((pt->high_cyl - pt->low_cyl + 1) * m->cyl_blocks, m->block_bytes);
+}
+
+/* Lay the card out for `mask` and word the line under the map. Returns 1 when it fits.
+   A failed layout leaves no partitions, so no stale table is drawn or confirmed. */
+static int qs_relayout(RdbModel *m, uint32_t mask)
+{
+    int p = 0;
+    if (quick_layout(m, mask) != RDB_OK) {
+        m->num_parts = 0;
+        s_cat(g_qs_msg, &p, kQsNoRoom);
+        g_qs_msg[p] = 0;
+        return 0;
+    }
+    if (mask == 0) {
+        s_cat(g_qs_msg, &p, "Only System. The rest of the card stays unused.");
+    } else {
+        const RdbPartition *last = &m->parts[m->num_parts - 1];
+        ULONG spare = disc_blocks_to_mb((m->hi_cyl - last->high_cyl) * m->cyl_blocks, m->block_bytes);
+        if (spare > 0 && qs_part_mb(m, last) >= 2000) {   /* the 2 GB limit is what held them back */
+            s_cat(g_qs_msg, &p, "Each partition is limited to 2 GB, so ");
+            p += u2s(g_qs_msg + p, spare);
+            s_cat(g_qs_msg, &p, " MB stays unused.");
+        } else if (m->hi_cyl + 1 < m->cylinders) {        /* 62 characters is all the line holds */
+            s_cat(g_qs_msg, &p, "This Amiga can use the first 4 GB, shared evenly between them.");
+        } else {
+            s_cat(g_qs_msg, &p, "The rest of the card is shared evenly between your choices.");
+        }
+    }
+    g_qs_msg[p] = 0;
+    return 1;
+}
+
+static void qs_choose_draw(struct Window *w, const RdbModel *m)
+{
+    struct RastPort *rp = w->RPort;
+    int x = g_leftb + 4, bw = QS2_W - 8, y;
+    DrawBevelBox(rp, x, g_topb + QS_CH_Q_Y, bw, QS_CH_Q_H, GT_VisualInfo, (ULONG)g_vi, TAG_END);
+    qs_text(rp, x + 8, g_topb + QS_CH_Q_Y + 4, "What else do you want on the card?");
+    qs_text(rp, x + 8, g_topb + QS_CH_Q_Y + 15, "System is always included, and is what the Amiga starts from.");
+    y = g_topb + QS_CH_MAP_Y;
+    DrawBevelBox(rp, x, y, bw, QS_CH_MAP_H, GT_VisualInfo, (ULONG)g_vi, GTBB_Recessed, TRUE, TAG_END);
+    qs_clear(rp, x + 2, y + 2, bw - 4, QS_CH_MAP_H - 4);
+    if (m->num_parts > 0 && m->cylinders > 0)
+        gui_map_draw(rp, m, x + 2, y + 2, bw - 4, QS_CH_MAP_H - 4, -1, 0, &g_qs_mask);
+    y = g_topb + QS_CH_MSG_Y;
+    DrawBevelBox(rp, x, y, bw, QS_CH_MSG_H, GT_VisualInfo, (ULONG)g_vi, TAG_END);
+    qs_clear(rp, x + 2, y + 2, bw - 4, QS_CH_MSG_H - 4);
+    qs_text(rp, x + 8, y + 3, g_qs_msg);
+}
+
+/* Screen 3: which extras. m is laid out afresh for each choice and always matches the screen.
+   Returns QS_ANS_NEXT, QS_ANS_BACK or QS_ANS_CANCEL. */
+static int qs_choose(const DiscDisk *card, RdbModel *m, uint32_t *mask)
+{
+    static const char *const names[3] = { "Work", "Games", "Demos" };
+    struct Window *dw;
+    struct Gadget *glist = 0, *g, *cont = 0;
+    struct NewGadget ng;
+    int dwW = g_leftb + QS2_W + g_scr->WBorRight, dwH = g_topb + QS_CH_BTN_Y + 14 + 6 + g_scr->WBorBottom;
+    int dwL = 0, dwT = 0, done = 0, result = QS_ANS_CANCEL, fits, i;
+
+    (void)card;
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wincompatible-pointer-types"
+    g = CreateContext(&glist);
+#pragma GCC diagnostic pop
+    if (!g) { gui_msg("Quick setup", kQsNoWindow); return QS_ANS_CANCEL; }
+    ng.ng_TextAttr = &g_font; ng.ng_VisualInfo = g_vi;
+    ng.ng_Width = 26; ng.ng_Height = 11; ng.ng_Flags = PLACETEXT_RIGHT;
+    ng.ng_TopEdge = g_topb + QS_CH_Q_Y + 30;
+    for (i = 0; i < 3 && g; i++) {
+        ng.ng_LeftEdge = g_leftb + 16 + i * 140;
+        ng.ng_GadgetText = (UBYTE *)names[i]; ng.ng_GadgetID = (UWORD)(QS_GID_WORK + i);
+        g = CreateGadget(CHECKBOX_KIND, g, &ng, GTCB_Checked, (ULONG)((*mask & (1u << i)) ? TRUE : FALSE), TAG_END);
+    }
+    ng.ng_Flags = 0; ng.ng_Width = QS_BTN_W; ng.ng_Height = 14; ng.ng_TopEdge = g_topb + QS_CH_BTN_Y;
+    if (g) {
+        ng.ng_LeftEdge = g_leftb + 4; ng.ng_GadgetText = (UBYTE *)"Back"; ng.ng_GadgetID = QS_ANS_BACK;
+        g = CreateGadget(BUTTON_KIND, g, &ng, TAG_END);
+    }
+    if (g) {
+        ng.ng_LeftEdge = g_leftb + 4 + QS_BTN_W + 8; ng.ng_GadgetText = (UBYTE *)"Continue"; ng.ng_GadgetID = QS_ANS_NEXT;
+        g = CreateGadget(BUTTON_KIND, g, &ng, TAG_END);
+        cont = g;
+    }
+    if (g) {
+        ng.ng_LeftEdge = g_leftb + QS2_W - 4 - QS_BTN_W; ng.ng_GadgetText = (UBYTE *)"Cancel"; ng.ng_GadgetID = QS_ANS_CANCEL;
+        g = CreateGadget(BUTTON_KIND, g, &ng, TAG_END);
+    }
+    if (!g) { FreeGadgets(glist); gui_msg("Quick setup", kQsNoWindow); return QS_ANS_CANCEL; }
+
+    dlg_center(dwW, dwH, &dwL, &dwT);
+    dw = dlg_open("Quick setup: partitions", dwL, dwT, dwW, dwH, BUTTONIDCMP | CHECKBOXIDCMP, glist);
+    if (!dw) { FreeGadgets(glist); gui_msg("Quick setup", kQsNoWindow); return QS_ANS_CANCEL; }
+
+    g_qs_screen = 3;
+    fits = qs_relayout(m, *mask);
+    g_qs_mask = *mask;
+    if (!fits) GT_SetGadgetAttrs(cont, dw, 0, GA_Disabled, TRUE, TAG_END);
+    GT_RefreshWindow(dw, 0);
+    qs_choose_draw(dw, m);
+
+    while (!done) {
+        struct IntuiMessage *im;
+        WaitPort(dw->UserPort);
+        /* The first answer stands: a later click in the same batch must not replace it. */
+        while (!done && (im = GT_GetIMsg(dw->UserPort)) != 0) {
+            ULONG cl = im->Class;
+            struct Gadget *ig = (struct Gadget *)im->IAddress;
+            GT_ReplyIMsg(im);
+            if (cl == IDCMP_CLOSEWINDOW) done = 1;
+            else if (cl == IDCMP_REFRESHWINDOW) { GT_BeginRefresh(dw); qs_choose_draw(dw, m); GT_EndRefresh(dw, TRUE); }
+            else if (cl == IDCMP_GADGETUP) {
+                if (ig->GadgetID >= QS_GID_WORK && ig->GadgetID <= QS_GID_DEMOS) {
+                    uint32_t bit = 1u << (ig->GadgetID - QS_GID_WORK);
+                    int was = fits;
+                    if (ig->Flags & GFLG_SELECTED) *mask |= bit; else *mask &= ~bit;
+                    fits = qs_relayout(m, *mask);
+                    g_qs_mask = *mask;
+                    if (fits != was) GT_SetGadgetAttrs(cont, dw, 0, GA_Disabled, fits ? FALSE : TRUE, TAG_END);
+                    qs_choose_draw(dw, m);
+                } else if (ig->GadgetID == QS_ANS_NEXT && !fits) {
+                    /* Clicked before the tick queued ahead of it turned the gadget off:
+                       with nothing that fits there is nothing to go on with. */
+                } else {
+                    result = ig->GadgetID == QS_ANS_NEXT ? QS_ANS_NEXT : ig->GadgetID == QS_ANS_BACK ? QS_ANS_BACK : QS_ANS_CANCEL;
+                    done = 1;
+                }
+            }
+        }
+    }
+    dlg_close(dw, glist);
+    return result;
+}
+
+/* Pad a text row to a column: out gets s, then spaces up to `col` characters. */
+static void qs_pad(char *o, int *p, const char *s, int col)
+{
+    int start = *p;
+    s_cat(o, p, s);
+    while (*p - start < col) o[(*p)++] = ' ';
+}
+
+static void qs_confirm_draw(struct Window *w, int nrows, int tableH)
+{
+    struct RastPort *rp = w->RPort;
+    int x = g_leftb + 4, bw = QS2_W - 8, y = g_topb + 3 + tableH + 4, i;
+    DrawBevelBox(rp, x, g_topb + 3, bw, tableH, GT_VisualInfo, (ULONG)g_vi, GTBB_Recessed, TRUE, TAG_END);
+    for (i = 0; i < nrows; i++) qs_text(rp, x + 8, g_topb + 3 + 4 + i * QS_CF_ROW_H, g_qs_rows[i]);
+    SetAPen(rp, g_pen_text);
+    RectFill(rp, x, y, x + bw - 1, y + QS_WARN_H - 1);
+    SetAPen(rp, g_pen_shine);
+    RectFill(rp, x + 2, y + 1, x + bw - 3, y + QS_WARN_H - 2);
+    qs_text(rp, x + 8, y + 3, g_qs_warn);
+}
+
+/* Screen 4: the last check. Lists what would be made, from the same model screen 3 showed. */
+static int qs_confirm(const DiscDisk *card, const RdbModel *m, uint32_t mask)
+{
+    struct Window *dw;
+    struct Gadget *glist = 0, *g;
+    struct NewGadget ng;
+    int n = m->num_parts, tableH = n * QS_CF_ROW_H + 8, btnY = 3 + tableH + 4 + QS_WARN_H + 6;
+    int dwW = g_leftb + QS2_W + g_scr->WBorRight, dwH = g_topb + btnY + 14 + 6 + g_scr->WBorBottom;
+    int dwL = 0, dwT = 0, done = 0, result = QS_ANS_CANCEL, i, p;
+
+    if (n < 1 || n > 4) return QS_ANS_CANCEL;
+    for (i = 0; i < n; i++) {
+        const RdbPartition *pt = &m->parts[i];
+        const char *vol = quick_volume_name(mask, i);
+        char num[12];
+        int k, q = 0;
+        p = 0;
+        qs_pad(g_qs_rows[i], &p, pt->name, 3);
+        g_qs_rows[i][p++] = ':';
+        qs_pad(g_qs_rows[i], &p, "", 2);
+        qs_pad(g_qs_rows[i], &p, vol ? vol : "", 8);
+        q = u2s(num, qs_part_mb(m, pt));
+        for (k = q; k < 4; k++) g_qs_rows[i][p++] = ' ';       /* sizes line up on the right */
+        num[q] = 0;
+        s_cat(g_qs_rows[i], &p, num);
+        s_cat(g_qs_rows[i], &p, " MB");
+        if (pt->bootable) { s_cat(g_qs_rows[i], &p, "  starts the Amiga"); }
+        g_qs_rows[i][p] = 0;
+    }
+    for (i = n; i < 4; i++) g_qs_rows[i][0] = 0;
+    p = 0;
+    s_cat(g_qs_warn, &p, "Erases ");
+    for (i = 0; card->label[i] && i < 31; i++) g_qs_warn[p++] = card->label[i];
+    s_cat(g_qs_warn, &p, ". This cannot be undone.");
+    g_qs_warn[p] = 0;
+
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wincompatible-pointer-types"
+    g = CreateContext(&glist);
+#pragma GCC diagnostic pop
+    if (!g) { gui_msg("Quick setup", kQsNoWindow); return QS_ANS_CANCEL; }
+    ng.ng_TextAttr = &g_font; ng.ng_VisualInfo = g_vi; ng.ng_Flags = 0;
+    ng.ng_TopEdge = g_topb + btnY; ng.ng_Width = QS_BTN_W; ng.ng_Height = 14;
+    ng.ng_LeftEdge = g_leftb + 4; ng.ng_GadgetText = (UBYTE *)"Back"; ng.ng_GadgetID = QS_ANS_BACK;
+    g = CreateGadget(BUTTON_KIND, g, &ng, TAG_END);
+    if (g) {
+        ng.ng_LeftEdge = g_leftb + 4 + QS_BTN_W + 8; ng.ng_Width = 144;
+        ng.ng_GadgetText = (UBYTE *)"Erase and set up"; ng.ng_GadgetID = QS_ANS_NEXT;
+        g = CreateGadget(BUTTON_KIND, g, &ng, TAG_END);
+    }
+    if (g) {
+        ng.ng_LeftEdge = g_leftb + QS2_W - 4 - QS_BTN_W; ng.ng_Width = QS_BTN_W;
+        ng.ng_GadgetText = (UBYTE *)"Cancel"; ng.ng_GadgetID = QS_ANS_CANCEL;
+        g = CreateGadget(BUTTON_KIND, g, &ng, TAG_END);
+    }
+    if (!g) { FreeGadgets(glist); gui_msg("Quick setup", kQsNoWindow); return QS_ANS_CANCEL; }
+
+    dlg_center(dwW, dwH, &dwL, &dwT);
+    dw = dlg_open("Quick setup: ready?", dwL, dwT, dwW, dwH, BUTTONIDCMP, glist);
+    if (!dw) { FreeGadgets(glist); gui_msg("Quick setup", kQsNoWindow); return QS_ANS_CANCEL; }
+    g_qs_screen = 4;
+    GT_RefreshWindow(dw, 0);
+    qs_confirm_draw(dw, n, tableH);
+
+    while (!done) {
+        struct IntuiMessage *im;
+        WaitPort(dw->UserPort);
+        while (!done && (im = GT_GetIMsg(dw->UserPort)) != 0) {
+            ULONG cl = im->Class;
+            struct Gadget *ig = (struct Gadget *)im->IAddress;
+            GT_ReplyIMsg(im);
+            if (cl == IDCMP_CLOSEWINDOW) done = 1;
+            else if (cl == IDCMP_REFRESHWINDOW) { GT_BeginRefresh(dw); qs_confirm_draw(dw, n, tableH); GT_EndRefresh(dw, TRUE); }
+            else if (cl == IDCMP_GADGETUP) {
+                result = ig->GadgetID == QS_ANS_NEXT ? QS_ANS_NEXT : ig->GadgetID == QS_ANS_BACK ? QS_ANS_BACK : QS_ANS_CANCEL;
+                done = 1;
+            }
+        }
+    }
+    dlg_close(dw, glist);
+    return result;
+}
+
+/* Screens 5 and 6: the run. The first thing that writes to a card. */
+
+/* What stopped or failed, said on one box. Wizard words only. '%' stands for a volume's name. */
+static const char kQsLostTrack[] = "Quick setup lost track of your choices.\n"
+                                   "Nothing was changed.\n\n"
+                                   "Run Quick setup again.";
+static const char kQsChanged[] = "The card has changed since you confirmed it.\n"
+                                 "Nothing was changed.\n\n"
+                                 "Run Quick setup again, and check what it finds.";
+static const char kQsWriteFailed[] = "Writing the partition table failed, so the card\n"
+                                     "is not ready.\n\n"
+                                     "Check that it sits firmly in its adapter and run\n"
+                                     "Quick setup again. If it fails again, try another\n"
+                                     "card.";
+static const char kQsCheckFailed[] = "Checking the partition table failed: the card did\n"
+                                     "not give back what was written, so it is not ready.\n\n"
+                                     "Check that it sits firmly in its adapter and run\n"
+                                     "Quick setup again. If it fails again, try another\n"
+                                     "card.";
+static const char kQsFormatFailed[] = "Formatting % failed, so the card is not ready.\n\n"
+                                      "Restart the Amiga and run Quick setup again. If it\n"
+                                      "fails again, try another card.";
+static const char kQsVolumeFailed[] = "Checking % failed: the new volume can't be used,\n"
+                                      "so the card is not ready.\n\n"
+                                      "Restart the Amiga and run Quick setup again. If it\n"
+                                      "fails again, try another card.";
+static const char kQsFlushFailed[] = "Saving the new volumes to the card failed, so it\n"
+                                     "is not ready.\n\n"
+                                     "Restart the Amiga and run Quick setup again. If it\n"
+                                     "fails again, try another card.";
+/* The same three on the restart path: the marker stays, so the next start brings the popup. */
+static const char kQsResumeFormatFailed[] = "Formatting % failed, so the card is not ready.\n\n"
+                                            "Restart the Amiga with this same disk and HDPart\n"
+                                            "will offer to finish. If it fails again, try\n"
+                                            "another card.";
+static const char kQsResumeVolumeFailed[] = "Checking % failed: the new volume can't be used,\n"
+                                            "so the card is not ready.\n\n"
+                                            "Restart the Amiga with this same disk and HDPart\n"
+                                            "will offer to finish. If it fails again, try\n"
+                                            "another card.";
+static const char kQsResumeFlushFailed[] = "Saving the new volumes to the card failed, so it\n"
+                                           "is not ready.\n\n"
+                                           "Restart the Amiga with this same disk and HDPart\n"
+                                           "will offer to finish. If it fails again, try\n"
+                                           "another card.";
+/* The marker may or may not have gone, so these say "may". */
+static const char kQsClearFailed[] = "The new volumes are formatted, but Quick setup\n"
+                                     "could not update the card afterwards. You can go\n"
+                                     "on and install Workbench.\n\n"
+                                     "The next time HDPart starts it may ask to finish\n"
+                                     "setting up this card. Cancel there keeps the\n"
+                                     "volumes as they are. Continue erases them again.";
+static const char kQsCancelFailed[] = "Quick setup could not update the card, so HDPart\n"
+                                      "may ask about it again the next time it starts.\n\n"
+                                      "Nothing more was erased, but your old partition\n"
+                                      "table was already replaced.";
+static const char kQsRestartLine[] = "Restart with this same disk to finish setting up the card";
+static const char kQsRestartMore[] = "The new partitions are on the card, ready to format after the restart.";
+static const char kQsDoneNoWindow[] = "Your card is ready for Workbench.\n\n"
+                                      "Insert your Install disk, restart the Amiga and\n"
+                                      "install Workbench to System (DH0:).";
+static const char *const kQsDone[5] = {
+    "Your card is ready for Workbench.",
+    "1. Remove this disk and insert your Install disk.",
+    "2. Press Restart.",
+    "3. Install Workbench to System (DH0:).",
+    "4. Remove the floppy and restart. Your Amiga now starts from the card."
+};
+
+enum { QS_RUN_STOPPED = 0, QS_RUN_DONE, QS_RUN_FAILED, QS_RUN_MARKED, QS_RUN_CANCELLED };
+enum { QS_STEP_CHARS = 40, QS_STEPS = 6, QS_DONE_RESTART = 1, QS_DONE_BACK = 2 };
+#define QS_WK_BAR_H 8                   /* the progress bar under the checklist */
+#define QS3_W       584                 /* screen 6's longest line is 70 characters */
+#define QS_DONE_BTN_H 20                /* Restart is the big one, as what to do next */
+
+static char          g_qs_steps[QS_STEPS][QS_STEP_CHARS];   /* the checklist, as drawn */
+static volatile int  g_qs_failed;       /* the step that failed, from 1. 0: none */
+static struct Window *g_qs_wk;          /* the working window */
+static int           g_qs_nsteps, g_qs_ndone;
+static int           g_qs_live;         /* the last check found this card's blocks mounted */
+static char          g_qs_live_names[8][8];   /* and by what, for the flush on the way to Restart */
+static int           g_qs_live_n;
+static char          g_qs_resume_rows[4][60]; /* the popup's words, as drawn */
+
+/* Say why a run stopped or failed. '#' and '%' fill in; the text stays for the test to read. */
+static void qs_say(const char *t, const char *vol)
+{
+    int p = 0, i;
+    for (i = 0; t[i]; i++) {
+        if (t[i] == '%') s_cat(g_qs_said, &p, vol ? vol : "");
+        else g_qs_said[p++] = (t[i] == '#') ? (char)('0' + g_qs_taken) : t[i];
+    }
+    g_qs_said[p] = 0;
+}
+
+static void qs_working_draw(void)
+{
+    struct RastPort *rp;
+    int x = g_leftb + 4, bw = QS2_W - 8, tableH = g_qs_nsteps * QS_CF_ROW_H + 8, i, y;
+    if (!g_qs_wk) return;
+    rp = g_qs_wk->RPort;
+    DrawBevelBox(rp, x, g_topb + 3, bw, tableH, GT_VisualInfo, (ULONG)g_vi, GTBB_Recessed, TRUE, TAG_END);
+    for (i = 0; i < g_qs_nsteps; i++) {
+        y = g_topb + 3 + 4 + i * QS_CF_ROW_H;
+        qs_clear(rp, x + 2, y, bw - 4, QS_CF_ROW_H);
+        qs_text(rp, x + 8, y, g_qs_steps[i]);
+    }
+    y = g_topb + 3 + tableH + 4;
+    DrawBevelBox(rp, x, y, bw, QS_WK_BAR_H, GT_VisualInfo, (ULONG)g_vi, GTBB_Recessed, TRUE, TAG_END);
+    qs_clear(rp, x + 2, y + 1, bw - 4, QS_WK_BAR_H - 2);
+    if (g_qs_ndone > 0) {
+        SetAPen(rp, g_pen_fill);
+        RectFill(rp, x + 2, y + 1, x + 2 + (bw - 4) * g_qs_ndone / g_qs_nsteps - 1, y + QS_WK_BAR_H - 2);
+    }
+}
+
+/* Answer the window while the run is between steps. Nothing on it can be clicked. */
+static void qs_working_show(void)
+{
+    struct IntuiMessage *im;
+    qs_working_draw();
+    while ((im = GT_GetIMsg(g_qs_wk->UserPort)) != 0) {
+        ULONG cl = im->Class;
+        GT_ReplyIMsg(im);
+        if (cl == IDCMP_REFRESHWINDOW) { GT_BeginRefresh(g_qs_wk); qs_working_draw(); GT_EndRefresh(g_qs_wk, TRUE); }
+    }
+}
+
+/* One checklist row: its mark, then two words at most. */
+static void qs_step(int i, const char *mark, const char *a, const char *b)
+{
+    int p = 0;
+    s_cat(g_qs_steps[i], &p, mark);
+    s_cat(g_qs_steps[i], &p, "  ");
+    s_cat(g_qs_steps[i], &p, a);
+    if (b) s_cat(g_qs_steps[i], &p, b);
+    g_qs_steps[i][p] = 0;
+}
+
+static void qs_table_written(void)
+{
+    qs_step(0, "ok", "Partition table written", 0);
+    qs_step(1, "..", "Reading the table back", 0);
+    g_qs_ndone = 1;
+    qs_working_show();
+}
+
+/* Do two tables say everything the same, and not just the same cylinders? */
+static int qs_tables_same(const RdbModel *c, const RdbModel *m)
+{
+    int i;
+    if (c->num_parts != m->num_parts || c->cyl_blocks != m->cyl_blocks || c->hi_cyl != m->hi_cyl ||
+        c->lo_cyl != m->lo_cyl || c->setup_pending != m->setup_pending) return 0;
+    for (i = 0; i < m->num_parts; i++) {
+        const RdbPartition *a = &c->parts[i], *b = &m->parts[i];
+        if (!streq(a->name, b->name) || a->low_cyl != b->low_cyl || a->high_cyl != b->high_cyl ||
+            a->dos_type != b->dos_type || a->bootable != b->bootable || a->boot_pri != b->boot_pri ||
+            a->flags != b->flags || a->maxtransfer != b->maxtransfer || a->mask != b->mask ||
+            a->num_buffers != b->num_buffers || a->bufmemtype != b->bufmemtype) return 0;
+    }
+    return 1;
+}
+
+/* Does the read-back table say everything the wizard meant? */
+static int __attribute__((noinline)) qs_table_matches(const RdbModel *m)
+{
+    return qs_tables_same(&g_wv_chk, m);
+}
+
+/* Is the marker on the card, and is the table everything the wizard would have written for
+   it on this card? Reads the card and nothing else. Anything else, or any doubt, is a no.
+   The mask goes to *mask_out. */
+static int __attribute__((noinline)) qs_marker_on_card(const DiscDisk *card, uint32_t *mask_out)
+{
+    static RdbModel plan;
+    static DeviceInfo again;
+    const RdbModel *c = &g_qs_model;
+    DeviceHandle *h = dev_open(card->driver, card->unit);
+    int rc, nfs;
+    if (!h) return 0;
+    (void)dev_geometry(h, &again);           /* tells the handle the block size */
+    rc = rdb_parse(&g_qs_model, dev_block_io, h);
+    nfs = g_qs_model.num_fs;
+    rdb_model_free(&g_qs_model);
+    dev_close(h);
+    if (rc != RDB_OK || nfs != 0 || !quick_pending_valid(c)) return 0;
+    rdb_init_model(&plan, g_qs_geo.cylinders, g_qs_geo.heads, g_qs_geo.sectors);
+    if (quick_layout(&plan, c->setup_pending & 7u) != RDB_OK) return 0;
+    plan.setup_pending = c->setup_pending;
+    if (c->cylinders != plan.cylinders || c->heads != plan.heads || c->sectors != plan.sectors ||
+        !qs_tables_same(c, &plan)) return 0;
+    *mask_out = c->setup_pending & 7u;
+    return 1;
+}
+
+/* Ask the driver to let go of the table it was just given. */
+static int qs_table_update(const DiscDisk *card)
+{
+    DeviceHandle *h = dev_open(card->driver, card->unit);
+    int rc;
+    if (!h) return 1;
+    rc = dev_update(h);
+    dev_close(h);
+    return rc;
+}
+
+/* Is this partition's device up, on the card, with a validated volume of the right name, type
+   and size? Goes by device name: a floppy called System must not pass for the card. A lock
+   by volume name could find either one. */
+static int __attribute__((noinline)) qs_volume_ok(const DiscDisk *card, const RdbModel *m, int idx, const char *vol)
+{
+    static struct InfoData info __attribute__((aligned(4)));
+    static char path[RDB_NAME_LEN + 2];
+    const RdbPartition *pt = &m->parts[idx];
+    uint32_t blocks = (pt->high_cyl - pt->low_cyl + 1) * m->cyl_blocks;
+    char live[8];
+    int tries, p = 0;
+
+    s_cat(path, &p, pt->name);
+    path[p++] = ':';
+    path[p] = 0;
+    /* It may still be coming up after the format: about 12 seconds. */
+    for (tries = 0; tries < 60; tries++) {
+        if (safety_partition_mounted(card->driver, card->unit, pt->low_cyl, pt->high_cyl, live) &&
+            qs_name_eq(live, pt->name)) {
+            BPTR lock = Lock((CONST_STRPTR)path, SHARED_LOCK);
+            if (lock) {
+                int answer = -1;
+                if (Info(lock, &info) && info.id_DiskState == ID_VALIDATED) {
+                    struct FileLock *fl = (struct FileLock *)BADDR(lock);
+                    struct DosList *dl = (struct DosList *)BADDR(fl->fl_Volume);
+                    const UBYTE *b = (const UBYTE *)BADDR(dl->dol_Name);
+                    static char name[32];
+                    int k;
+                    for (k = 0; k < b[0] && k < 31; k++) name[k] = (char)b[1 + k];
+                    name[k] = 0;
+                    answer = qs_name_eq(name, vol) && (uint32_t)info.id_DiskType == pt->dos_type &&
+                             (uint32_t)info.id_NumBlocks == blocks - 2;
+                }
+                UnLock(lock);
+                if (answer >= 0) return answer;
+            }
+        }
+        Delay(10);
+    }
+    return 0;
+}
+
+/* Get every partition's volume onto the card, out of its filesystem's buffers. Inhibits nothing.
+   No library or font opens here, and it loads nothing: this also runs after the floppy is out.
+   Returns 0, or 1 + the index of the first partition that failed. */
+static int __attribute__((noinline)) qs_flush(const RdbModel *m)
+{
+    static char path[RDB_NAME_LEN + 2];
+    int i, failed = 0;
+    for (i = 0; i < m->num_parts; i++) {
+        struct MsgPort *port;
+        int p = 0;
+        s_cat(path, &p, m->parts[i].name);
+        path[p++] = ':';
+        path[p] = 0;
+        port = DeviceProc((CONST_STRPTR)path);
+        if ((!port || !DoPkt(port, ACTION_FLUSH, 0L, 0L, 0L, 0L, 0L)) && !failed) failed = i + 1;
+    }
+    return failed;
+}
+
+/* The same for what stands on the card's blocks before the restart: the old volumes, by the
+   names the last check found. Asked for before Restart can be pressed, so this loads nothing. */
+static void __attribute__((noinline)) qs_flush_live(void)
+{
+    static char path[10];
+    int i;
+    for (i = 0; i < g_qs_live_n; i++) {
+        struct MsgPort *port;
+        int p = 0;
+        s_cat(path, &p, g_qs_live_names[i]);
+        path[p++] = ':';
+        path[p] = 0;
+        port = DeviceProc((CONST_STRPTR)path);
+        if (port) (void)DoPkt(port, ACTION_FLUSH, 0L, 0L, 0L, 0L, 0L);
+    }
+}
+
+/* Write the table, read it back and see it says what it should. */
+static int qs_table_steps(const DiscDisk *card, RdbModel *m)
+{
+    int wv;
+
+    qs_step(0, "..", "Writing the partition table", 0);
+    qs_working_show();
+    wv = qs_write_verified(card->driver, card->unit, m, qs_table_written);
+    if (wv == WV_NO_DEVICE || wv == WV_WRITE_FAILED || wv == WV_NO_SPACE) {
+        g_qs_failed = 1;
+        qs_step(0, "!!", "Writing the partition table", 0);
+        qs_say(kQsWriteFailed, 0);
+        return QS_RUN_FAILED;
+    }
+    if (wv != WV_OK || !qs_table_matches(m)) {
+        g_qs_failed = 2;
+        qs_step(1, "!!", "Reading the table back", 0);
+        qs_say(kQsCheckFailed, 0);
+        return QS_RUN_FAILED;
+    }
+    qs_step(1, "ok", "Table read back and checked", 0);
+    g_qs_ndone = 2;
+    return QS_RUN_DONE;
+}
+
+/* May this partition be formatted now? On a first run, only if nothing is on its blocks: a
+   format would go to the old mount, wherever that is on the card. Only the restart path may
+   go through a mount, and only one this table made: see safety_resume_decide. */
+static int qs_may_format(const DiscDisk *card, const RdbModel *m, int i, int resume)
+{
+    const RdbPartition *pt = &m->parts[i];
+    char live[8];
+    if (resume)
+        return safety_resume_mount(card->driver, card->unit, pt->name, pt->low_cyl, pt->high_cyl,
+                                   m->cyl_blocks, pt->dos_type) != SAFETY_RESUME_MISMATCH;
+    return !safety_partition_mounted(card->driver, card->unit, pt->low_cyl, pt->high_cyl, live);
+}
+
+/* Format every partition, check it and flush them all, with the checklist's rows from `base`. */
+static int qs_format_steps(const DiscDisk *card, RdbModel *m, uint32_t mask, int base, int resume)
+{
+    int i;
+    for (i = 0; i < m->num_parts; i++) {
+        const char *vol = quick_volume_name(mask, i);
+        qs_step(base + i, "..", "Formatting ", vol);
+        qs_working_show();
+        if (!qs_may_format(card, m, i, resume) ||
+            format_partition(card->driver, card->unit, m, i, vol) != FMT_OK) {
+            g_qs_failed = base + 1 + i;
+            qs_step(base + i, "!!", "Formatting ", vol);
+            qs_say(resume ? kQsResumeFormatFailed : kQsFormatFailed, vol);
+            return QS_RUN_FAILED;
+        }
+        if (!qs_volume_ok(card, m, i, vol)) {
+            g_qs_failed = base + 1 + i;
+            qs_step(base + i, "!!", "Checking ", vol);
+            qs_say(resume ? kQsResumeVolumeFailed : kQsVolumeFailed, vol);
+            return QS_RUN_FAILED;
+        }
+        qs_step(base + i, "ok", vol, " formatted");
+        g_qs_ndone = base + 1 + i;
+    }
+    qs_working_show();
+    i = qs_flush(m);
+    if (i) {
+        g_qs_failed = base + i;
+        qs_step(base - 1 + i, "!!", "Saving ", quick_volume_name(mask, i - 1));
+        g_qs_ndone = base - 1 + i;
+        qs_say(resume ? kQsResumeFlushFailed : kQsFlushFailed, 0);
+        return QS_RUN_FAILED;
+    }
+    return QS_RUN_DONE;
+}
+
+/* The steps with the window up. Everything goes to card->unit and nowhere else. A card with
+   live volumes gets only the table, with the marker: formatting waits for the restart. */
+static int qs_run_steps(const DiscDisk *card, RdbModel *m, uint32_t mask)
+{
+    int rc = qs_table_steps(card, m);
+    if (rc != QS_RUN_DONE) return rc;
+    if (qs_table_update(card) != 0) {
+        g_qs_failed = 2;
+        qs_step(1, "!!", "Reading the table back", 0);
+        qs_say(kQsCheckFailed, 0);
+        return QS_RUN_FAILED;
+    }
+    if (g_qs_live) return QS_RUN_MARKED;
+    return qs_format_steps(card, m, mask, 2, 0);
+}
+
+/* Write the table without its marker, and see that it says so. Formats nothing. */
+static int qs_clear_marker(const DiscDisk *card, RdbModel *m)
+{
+    m->setup_pending = 0;
+    return qs_write_verified(card->driver, card->unit, m, 0) == WV_OK && qs_table_matches(m) &&
+           qs_table_update(card) == 0;
+}
+
+/* Is the machine still as the card screen found it, and is this still the card that was
+   confirmed? Runs every check again. Leaves m laid out as confirmed. Says why not and
+   returns 0 if anything differs. Writes nothing. */
+static int qs_recheck(const DiscDisk *card, RdbModel *m, uint32_t mask)
+{
+    static DeviceInfo was;
+    static RdbModel plan;
+    static DiscDisk now;
+    static char holds[QS_VALUE_CHARS + 2];
+    DevLiveness lv;
+    int i, same, rc;
+
+    was = g_qs_geo;
+    plan = *m;
+    for (i = 0; i < (int)sizeof(holds); i++) holds[i] = g_qs_holds[i];
+
+    gui_status("Checking your card...");
+    rc = qs_find_card(&now);                 /* lays out g_qs_layout, which may be m: see below */
+    gui_status("");
+    if (rc) {
+        g_qs_refusal = rc;
+        qs_say(kQsRefusals[rc], 0);
+        gui_msg("Quick setup", g_qs_said);
+        return 0;
+    }
+    rdb_init_model(m, g_qs_geo.cylinders, g_qs_geo.heads, g_qs_geo.sectors);
+    same = quick_layout(m, mask) == RDB_OK;
+    same = same && streq(now.driver, card->driver) && now.unit == card->unit &&
+           streq(g_qs_geo.model, was.model) && g_qs_geo.total_blocks == was.total_blocks &&
+           g_qs_geo.block_bytes == was.block_bytes && streq(g_qs_holds, holds) &&
+           m->cylinders == plan.cylinders && m->cyl_blocks == plan.cyl_blocks &&
+           m->hi_cyl == plan.hi_cyl && m->num_parts == plan.num_parts;
+    for (i = 0; same && i < m->num_parts; i++)
+        same = m->parts[i].low_cyl == plan.parts[i].low_cyl && m->parts[i].high_cyl == plan.parts[i].high_cyl;
+    if (!same) {
+        qs_say(kQsChanged, 0);
+        gui_msg("Quick setup", g_qs_said);
+        return 0;
+    }
+    /* Any live mount on the card: the single-run flow is proven unsafe, in
+       docs/reference/quick-setup-tests.md, so qs_run goes by the restart. */
+    g_qs_live_n = 0;
+    lv = safety_classify(card->driver, card->unit, g_qs_live_names, 8, &g_qs_live_n);
+    if (lv == DEV_BOOT) {
+        qs_say(kQsRefusals[QS_R_BOOTED], 0);
+        gui_msg("Quick setup", g_qs_said);
+        return 0;
+    }
+    g_qs_live = lv != DEV_CLEAR;
+    return 1;
+}
+
+/* The same before the popup's answer acts, and the marker must still be there saying the same. */
+static int qs_resume_recheck(const DiscDisk *card, RdbModel *m, uint32_t mask)
+{
+    uint32_t now = 0;
+    if (!qs_recheck(card, m, mask)) return 0;
+    if (!qs_marker_on_card(card, &now) || now != mask) {
+        qs_say(kQsChanged, 0);
+        gui_msg("Quick setup", g_qs_said);
+        return 0;
+    }
+    return 1;
+}
+
+/* Open the working window for g_qs_nsteps rows. A disk problem from here to qs_working_end is
+   the run's to report, not a system requester's. */
+static APTR g_qs_oldwin;
+static int qs_working_begin(void)
+{
+    struct Process *me = (struct Process *)FindTask(0);
+    int dwL = 0, dwT = 0;
+    int dwW = g_leftb + QS2_W + g_scr->WBorRight;
+    int dwH = g_topb + 3 + g_qs_nsteps * QS_CF_ROW_H + 8 + 4 + QS_WK_BAR_H + 6 + g_scr->WBorBottom;
+    dlg_center(dwW, dwH, &dwL, &dwT);
+    g_qs_wk = dlg_open("Quick setup: working", dwL, dwT, dwW, dwH, 0, 0);
+    if (!g_qs_wk) { gui_msg("Quick setup", kQsNoWindow); return 0; }
+    g_qs_screen = 5;
+    g_qs_oldwin = me->pr_WindowPtr;
+    me->pr_WindowPtr = (APTR)-1;
+    return 1;
+}
+
+static void qs_working_end(int rc)
+{
+    ((struct Process *)FindTask(0))->pr_WindowPtr = g_qs_oldwin;
+    qs_working_show();
+    if (rc == QS_RUN_FAILED) gui_msg("Quick setup", g_qs_said);
+    dlg_close(g_qs_wk, 0);
+    g_qs_wk = 0;
+}
+
+/* Erase the confirmed card and set it up, with the checklist drawn as it goes. Returns
+   QS_RUN_DONE, QS_RUN_MARKED (the table is written and the rest waits for a restart),
+   QS_RUN_FAILED (something was written), or QS_RUN_STOPPED (nothing was). */
+static int qs_run(const DiscDisk *card, RdbModel *m, uint32_t mask)
+{
+    int n = m->num_parts, rc, i;
+
+    g_qs_failed = 0;
+    /* Every partition must have its volume name, and every name its partition. */
+    rc = n >= 1 && n <= 4 && quick_volume_name(mask, n) == 0;
+    for (i = 0; rc && i < n; i++) rc = quick_volume_name(mask, i) != 0;
+    if (!rc) {
+        qs_say(kQsLostTrack, 0);
+        gui_msg("Quick setup", g_qs_said);
+        return QS_RUN_STOPPED;
+    }
+    if (!qs_recheck(card, m, mask)) return QS_RUN_STOPPED;
+    /* After the check, which lays m out afresh. The read-back proves it reached the card. */
+    m->setup_pending = g_qs_live ? (uint8_t)(0x80u | mask) : 0;
+
+    g_qs_nsteps = g_qs_live ? 2 : n + 2;
+    g_qs_ndone = 0;
+    qs_step(0, "  ", "Writing the partition table", 0);
+    qs_step(1, "  ", "Reading the table back", 0);
+    for (i = 2; i < QS_STEPS; i++) g_qs_steps[i][0] = 0;
+    if (!g_qs_live) for (i = 0; i < n; i++) qs_step(2 + i, "  ", "Formatting ", quick_volume_name(mask, i));
+
+    if (!qs_working_begin()) return QS_RUN_STOPPED;
+    rc = qs_run_steps(card, m, mask);
+    qs_working_end(rc);
+    return rc;
+}
+
+/* The popup's Continue: format everything through the mounts the table made, then write the
+   table again without its marker. If a format fails the marker stays. */
+static int qs_resume_steps(const DiscDisk *card, RdbModel *m, uint32_t mask)
+{
+    int n = m->num_parts, rc = qs_format_steps(card, m, mask, 0, 1);
+    if (rc != QS_RUN_DONE) return rc;
+    qs_step(n, "..", "Finishing the card", 0);
+    qs_working_show();
+    if (!qs_clear_marker(card, m)) {
+        g_qs_failed = n + 1;
+        qs_step(n, "!!", "Finishing the card", 0);
+        qs_say(kQsClearFailed, 0);
+        return QS_RUN_FAILED;
+    }
+    qs_step(n, "ok", "Card finished", 0);
+    g_qs_ndone = n + 1;
+    return QS_RUN_DONE;
+}
+
+static int qs_resume_run(const DiscDisk *card, RdbModel *m, uint32_t mask)
+{
+    int n = m->num_parts, rc, i;
+    g_qs_failed = 0;
+    if (!qs_resume_recheck(card, m, mask)) return QS_RUN_STOPPED;
+
+    g_qs_nsteps = n + 1;
+    g_qs_ndone = 0;
+    for (i = 0; i < QS_STEPS; i++) g_qs_steps[i][0] = 0;
+    for (i = 0; i < n; i++) qs_step(i, "  ", "Formatting ", quick_volume_name(mask, i));
+    qs_step(n, "  ", "Finishing the card", 0);
+
+    if (!qs_working_begin()) return QS_RUN_STOPPED;
+    rc = qs_resume_steps(card, m, mask);
+    qs_working_end(rc);
+    return rc;
+}
+
+/* The popup's Cancel: the table stays and the marker goes, so the popup never comes back. */
+static int qs_resume_cancel(const DiscDisk *card, RdbModel *m, uint32_t mask)
+{
+    struct Process *me = (struct Process *)FindTask(0);
+    APTR oldWin;
+    int ok;
+    if (!qs_resume_recheck(card, m, mask)) return QS_RUN_STOPPED;
+    oldWin = me->pr_WindowPtr;
+    me->pr_WindowPtr = (APTR)-1;
+    ok = qs_clear_marker(card, m);
+    me->pr_WindowPtr = oldWin;
+    if (ok) return QS_RUN_CANCELLED;
+    qs_say(kQsCancelFailed, 0);
+    gui_msg("Quick setup", g_qs_said);
+    return QS_RUN_FAILED;
+}
+
+static void qs_finished_draw(struct Window *w, int boxH)
+{
+    struct RastPort *rp = w->RPort;
+    int x = g_leftb + 4, i;
+    DrawBevelBox(rp, x, g_topb + 3, QS3_W - 8, boxH, GT_VisualInfo, (ULONG)g_vi, GTBB_Recessed, TRUE, TAG_END);
+    qs_text(rp, x + 8, g_topb + 3 + 4, kQsDone[0]);
+    for (i = 1; i < 5; i++) qs_text(rp, x + 8, g_topb + 3 + 8 + i * QS_CF_ROW_H, kQsDone[i]);
+}
+
+/* Screen 6. Returns QS_DONE_RESTART or QS_DONE_BACK. The user takes the floppy out while this
+   is up, so whatever follows Restart must not load anything: see gui_quick_setup. */
+static int qs_finished(void)
+{
+    struct Window *dw;
+    struct Gadget *glist = 0, *g;
+    struct NewGadget ng;
+    int boxH = 5 * QS_CF_ROW_H + 12, btnY = 3 + boxH + 6;
+    int dwW = g_leftb + QS3_W + g_scr->WBorRight, dwH = g_topb + btnY + QS_DONE_BTN_H + 6 + g_scr->WBorBottom;
+    int dwL = 0, dwT = 0, done = 0, result = QS_DONE_BACK;
+
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wincompatible-pointer-types"
+    g = CreateContext(&glist);
+#pragma GCC diagnostic pop
+    if (g) {
+        ng.ng_TextAttr = &g_font; ng.ng_VisualInfo = g_vi; ng.ng_Flags = 0;
+        ng.ng_TopEdge = g_topb + btnY; ng.ng_Width = 132; ng.ng_Height = QS_DONE_BTN_H;
+        ng.ng_LeftEdge = g_leftb + 4; ng.ng_GadgetText = (UBYTE *)"Restart"; ng.ng_GadgetID = QS_DONE_RESTART;
+        g = CreateGadget(BUTTON_KIND, g, &ng, TAG_END);
+    }
+    if (g) {
+        ng.ng_Width = 128; ng.ng_Height = 14; ng.ng_LeftEdge = g_leftb + QS3_W - 4 - 128;
+        ng.ng_TopEdge = g_topb + btnY + (QS_DONE_BTN_H - 14) / 2;
+        ng.ng_GadgetText = (UBYTE *)"Back to HDPart"; ng.ng_GadgetID = QS_DONE_BACK;
+        g = CreateGadget(BUTTON_KIND, g, &ng, TAG_END);
+    }
+    if (!g) { FreeGadgets(glist); gui_msg("Quick setup", kQsDoneNoWindow); return QS_DONE_BACK; }
+
+    dlg_center(dwW, dwH, &dwL, &dwT);
+    dw = dlg_open("Quick setup: done", dwL, dwT, dwW, dwH, BUTTONIDCMP, glist);
+    if (!dw) { FreeGadgets(glist); gui_msg("Quick setup", kQsDoneNoWindow); return QS_DONE_BACK; }
+    g_qs_screen = 6;
+    GT_RefreshWindow(dw, 0);
+    qs_finished_draw(dw, boxH);
+
+    while (!done) {
+        struct IntuiMessage *im;
+        WaitPort(dw->UserPort);
+        while (!done && (im = GT_GetIMsg(dw->UserPort)) != 0) {
+            ULONG cl = im->Class;
+            struct Gadget *ig = (struct Gadget *)im->IAddress;
+            GT_ReplyIMsg(im);
+            if (cl == IDCMP_CLOSEWINDOW) done = 1;
+            else if (cl == IDCMP_REFRESHWINDOW) { GT_BeginRefresh(dw); qs_finished_draw(dw, boxH); GT_EndRefresh(dw, TRUE); }
+            else if (cl == IDCMP_GADGETUP) { result = ig->GadgetID; done = 1; }
+        }
+    }
+    dlg_close(dw, glist);
+    return result;
+}
+
+/* Show the card in the main window, with nothing marked unsaved. The wizard has already
+   proved it is the only disk on this driver, so no scan is needed. */
+static void qs_show_in_main(const DiscDisk *card)
+{
+    int i, idx = -1;
+    g_dirty = 0;
+    gui_build_drivers();
+    for (i = 1; g_drvlabels[i]; i++) if (streq(g_drvlabels[i], card->driver)) idx = i;
+    if (idx < 0) { gui_init_picker(); return; }
+    GT_SetGadgetAttrs(g_gad[GID_DEVICE], g_win, 0, GTCY_Labels, (ULONG)g_drvlabels, GTCY_Active, (ULONG)idx, TAG_END);
+    gui_select_driver(idx);
+    g_disks[0] = *card;
+    g_ndisks = 1;
+    gui_build_units("(no disk found)");
+    gui_set_units();
+    gui_select_unit(0);
+}
+
+static void __attribute__((noinline)) qs_reboot(void) { ColdReboot(); }
+
+static void qs_offer_draw(struct Window *w, int boxH)
+{
+    struct RastPort *rp = w->RPort;
+    int x = g_leftb + 4;
+    DrawBevelBox(rp, x, g_topb + 3, QS3_W - 8, boxH, GT_VisualInfo, (ULONG)g_vi, GTBB_Recessed, TRUE, TAG_END);
+    qs_text(rp, x + 8, g_topb + 3 + 4, kQsRestartLine);
+    qs_text(rp, x + 8, g_topb + 3 + 4 + 2 * QS_CF_ROW_H, kQsRestartMore);
+}
+
+/* The table is on the card and the old volumes are still live, so going back to the main window
+   would leave them in use over a table that no longer describes them. Restart is the only way
+   on, and there is no close gadget. With no window for it, say so and return. */
+static void qs_restart_offer(void)
+{
+    struct Window *dw;
+    struct Gadget *glist = 0, *g;
+    struct NewGadget ng;
+    int boxH = 3 * QS_CF_ROW_H + 8, btnY = 3 + boxH + 6;
+    int dwW = g_leftb + QS3_W + g_scr->WBorRight, dwH = g_topb + btnY + QS_DONE_BTN_H + 6 + g_scr->WBorBottom;
+    int dwL = 0, dwT = 0, done = 0;
+
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wincompatible-pointer-types"
+    g = CreateContext(&glist);
+#pragma GCC diagnostic pop
+    if (g) {
+        ng.ng_TextAttr = &g_font; ng.ng_VisualInfo = g_vi; ng.ng_Flags = 0;
+        ng.ng_TopEdge = g_topb + btnY; ng.ng_Width = 132; ng.ng_Height = QS_DONE_BTN_H;
+        ng.ng_LeftEdge = g_leftb + 4; ng.ng_GadgetText = (UBYTE *)"Restart"; ng.ng_GadgetID = QS_DONE_RESTART;
+        g = CreateGadget(BUTTON_KIND, g, &ng, TAG_END);
+    }
+    dw = 0;
+    if (g) {
+        dlg_center(dwW, dwH, &dwL, &dwT);
+        /* No depth gadget: sent behind the main window, this would look frozen. */
+        dw = dlg_open_flags("Quick setup: restart", dwL, dwT, dwW, dwH, BUTTONIDCMP, glist, 0);
+    }
+    if (!dw) { FreeGadgets(glist); gui_msg("Quick setup", kQsRestartLine); return; }
+    g_qs_screen = 8;
+    GT_RefreshWindow(dw, 0);
+    qs_offer_draw(dw, boxH);
+
+    while (!done) {
+        struct IntuiMessage *im;
+        WaitPort(dw->UserPort);
+        while (!done && (im = GT_GetIMsg(dw->UserPort)) != 0) {
+            ULONG cl = im->Class;
+            GT_ReplyIMsg(im);
+            if (cl == IDCMP_REFRESHWINDOW) { GT_BeginRefresh(dw); qs_offer_draw(dw, boxH); GT_EndRefresh(dw, TRUE); }
+            else if (cl == IDCMP_GADGETUP) done = 1;
+        }
+    }
+    dlg_close(dw, glist);
+    /* As at the end of the Finished screen: nothing may load from disk or ask for a volume. */
+    ((struct Process *)FindTask(0))->pr_WindowPtr = (APTR)-1;
+    qs_flush_live();
+    qs_reboot();
+}
+
+/* Whatever a run ended in, on to what comes next. */
+static void qs_after_run(const DiscDisk *card, RdbModel *m, int r)
+{
+    if (r == QS_RUN_MARKED) qs_restart_offer();
+    if (r == QS_RUN_DONE && qs_finished() == QS_DONE_RESTART) {
+        /* The floppy is out by now. From here to the reboot nothing may load from
+           disk or ask for a volume: no library, no font, no requester, just a
+           packet to each handler. Tested by "Restart" in tests/target/quick.mjs. */
+        ((struct Process *)FindTask(0))->pr_WindowPtr = (APTR)-1;
+        (void)qs_flush(m);
+        qs_reboot();
+    }
+    /* The main window's table is out of date once anything was written. */
+    if (r != QS_RUN_STOPPED) qs_show_in_main(card);
+}
+
+static void qs_resume_draw(struct Window *w, int boxH)
+{
+    struct RastPort *rp = w->RPort;
+    int x = g_leftb + 4, i;
+    DrawBevelBox(rp, x, g_topb + 3, QS_W - 8, boxH, GT_VisualInfo, (ULONG)g_vi, GTBB_Recessed, TRUE, TAG_END);
+    for (i = 0; i < 4 && g_qs_resume_rows[i][0]; i++) qs_text(rp, x + 8, g_topb + 3 + 4 + i * QS_CF_ROW_H, g_qs_resume_rows[i]);
+}
+
+/* "Finish setting up this card?" with the names the marker gives. Returns QS_ANS_NEXT for
+   Continue or QS_ANS_CANCEL for Cancel, or -1 with no window, which is no popup at all. */
+static int qs_resume_screen(uint32_t mask, int has_files)
+{
+    struct Window *dw;
+    struct Gadget *glist = 0, *g;
+    struct NewGadget ng;
+    int boxH = (has_files ? 4 : 3) * QS_CF_ROW_H + 8, btnY = 3 + boxH + 6;
+    int dwW = g_leftb + QS_W + g_scr->WBorRight, dwH = g_topb + btnY + 14 + 6 + g_scr->WBorBottom;
+    int dwL = 0, dwT = 0, done = 0, result = QS_ANS_CANCEL, i, p = 0;
+    const char *vol;
+
+    for (i = 0; (vol = quick_volume_name(mask, i)) != 0; i++) {
+        if (i) s_cat(g_qs_resume_rows[1], &p, ", ");
+        s_cat(g_qs_resume_rows[1], &p, vol);
+    }
+    s_cat(g_qs_resume_rows[1], &p, ".");
+    g_qs_resume_rows[1][p] = 0;
+    p = 0; s_cat(g_qs_resume_rows[0], &p, "Finish setting up this card?"); g_qs_resume_rows[0][p] = 0;
+    p = 0; s_cat(g_qs_resume_rows[2], &p, "Everything on them will be erased."); g_qs_resume_rows[2][p] = 0;
+    p = 0; if (has_files) s_cat(g_qs_resume_rows[3], &p, "This card already has files on it."); g_qs_resume_rows[3][p] = 0;
+
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wincompatible-pointer-types"
+    g = CreateContext(&glist);
+#pragma GCC diagnostic pop
+    if (g) {
+        ng.ng_TextAttr = &g_font; ng.ng_VisualInfo = g_vi; ng.ng_Flags = 0;
+        ng.ng_TopEdge = g_topb + btnY; ng.ng_Width = 90; ng.ng_Height = 14;
+        ng.ng_LeftEdge = g_leftb + 4; ng.ng_GadgetText = (UBYTE *)"Continue"; ng.ng_GadgetID = 1;
+        g = CreateGadget(BUTTON_KIND, g, &ng, TAG_END);
+    }
+    if (g) {
+        ng.ng_LeftEdge = g_leftb + QS_W - 4 - 90; ng.ng_GadgetText = (UBYTE *)"Cancel"; ng.ng_GadgetID = 0;
+        g = CreateGadget(BUTTON_KIND, g, &ng, TAG_END);
+    }
+    dw = 0;
+    if (g) {
+        dlg_center(dwW, dwH, &dwL, &dwT);
+        dw = dlg_open_flags("Quick setup: finish", dwL, dwT, dwW, dwH, BUTTONIDCMP, glist, 0);
+    }
+    if (!dw) { FreeGadgets(glist); return -1; }
+    g_qs_screen = 7;
+    GT_RefreshWindow(dw, 0);
+    qs_resume_draw(dw, boxH);
+
+    while (!done) {
+        struct IntuiMessage *im;
+        WaitPort(dw->UserPort);
+        while (!done && (im = GT_GetIMsg(dw->UserPort)) != 0) {
+            ULONG cl = im->Class;
+            struct Gadget *ig = (struct Gadget *)im->IAddress;
+            GT_ReplyIMsg(im);
+            if (cl == IDCMP_REFRESHWINDOW) { GT_BeginRefresh(dw); qs_resume_draw(dw, boxH); GT_EndRefresh(dw, TRUE); }
+            else if (cl == IDCMP_GADGETUP) { result = ig->GadgetID == 1 ? QS_ANS_NEXT : QS_ANS_CANCEL; done = 1; }
+        }
+    }
+    dlg_close(dw, glist);
+    return result;
+}
+
+/* Does any partition of this table hold files? Only a valid root block whose directory has an
+   entry counts, so a freshly formatted one does not. A read that fails counts for nothing. */
+static int __attribute__((noinline)) qs_card_has_files(const DiscDisk *card, const RdbModel *m)
+{
+    static DeviceInfo again;
+    DeviceHandle *h = dev_open(card->driver, card->unit);
+    int i, k, found = 0;
+    if (!h) return 0;
+    (void)dev_geometry(h, &again);           /* tells the handle the block size */
+    for (i = 0; i < m->num_parts && !found; i++) {
+        if (!qs_read_root(h, &m->parts[i], m->cyl_blocks) || g_qs_block[3] != 72) continue;
+        for (k = 0; k < 72 && !found; k++) found = g_qs_block[6 + k] != 0;
+    }
+    dev_close(h);
+    return found;
+}
+
+/* Everything queued for the main window while the popup and what it led to were up: a press
+   from then is no longer about this card, and must not open anything now. */
+static void qs_drop_queued(void)
+{
+    struct IntuiMessage *im;
+    while ((im = GT_GetIMsg(g_win->UserPort)) != 0) {
+        ULONG cl = im->Class;
+        GT_ReplyIMsg(im);
+        if (cl == IDCMP_REFRESHWINDOW) {
+            GT_BeginRefresh(g_win);
+            gui_draw_chrome();
+            gui_draw_bar();
+            GT_EndRefresh(g_win, TRUE);
+        }
+    }
+    if (g_gad[GID_DEVICE])
+        GT_SetGadgetAttrs(g_gad[GID_DEVICE], g_win, 0, GTCY_Active, (ULONG)g_drv_idx, TAG_END);
+}
+
+/* Is there a card to offer the popup for? Sets g_qs_check_stop to the gate that said no:
+   1 not the IDE port, 10 + a QS_R_* reason the card was refused, 3 no marker that matches.
+   The caller adds 5: the popup's window could not open. */
+static int qs_resume_wanted(uint32_t *mask)
+{
+    int rc;
+    if (!safety_is_internal_ide()) { g_qs_check_stop = 1; return 0; }
+    rc = qs_find_card(&g_qs_card);
+    if (rc != 0) { g_qs_check_stop = 10 + rc; return 0; }
+    if (!qs_marker_on_card(&g_qs_card, mask)) { g_qs_check_stop = 3; return 0; }
+    rdb_init_model(&g_qs_layout, g_qs_geo.cylinders, g_qs_geo.heads, g_qs_geo.sectors);
+    if (quick_layout(&g_qs_layout, *mask) != RDB_OK) { g_qs_check_stop = 3; return 0; }
+    return 1;
+}
+
+/* Once, at startup, with the main window up. The only thing that opens the wizard by itself:
+   the same conditions as the refusals, then the marker on the card it would use, with a table
+   that matches it. Reads only. Any doubt means nothing happens and nothing is said. The window
+   answers nothing meanwhile, which the status line accounts for. */
+static void gui_quick_resume_check(void)
+{
+    static char status[sizeof(g_statusbuf)];
+    uint32_t mask = 0;
+    int i, r, wanted, has_files;
+
+    g_qs_resume_checks++;
+    g_qs_check_stop = 0;
+    for (i = 0; i < (int)sizeof(status); i++) status[i] = g_statusbuf[i];
+    gui_status("Looking for your card...");
+    wanted = qs_resume_wanted(&mask);
+    has_files = wanted && qs_card_has_files(&g_qs_card, &g_qs_layout);     /* only the wording */
+    gui_status(status);
+    if (!wanted) return;
+
+    g_qs_mask = mask;
+    r = qs_resume_screen(mask, has_files);
+    if (r >= 0) {
+        r = r == QS_ANS_NEXT ? qs_resume_run(&g_qs_card, &g_qs_layout, mask)
+                             : qs_resume_cancel(&g_qs_card, &g_qs_layout, mask);
+        gui_status(status);
+        qs_after_run(&g_qs_card, &g_qs_layout, r);
+        qs_drop_queued();
+    } else {
+        g_qs_check_stop = 5;
+    }
+    g_qs_screen = 0;
+}
+
+/* The wizard's entry, running one screen function per step. */
+static void gui_quick_setup(void)
+{
+    static char status[sizeof(g_statusbuf)];
+    int i;
+
+    /* Back to HDPart replaces what the main window holds. */
+    if (!gui_discard_ok("Quick setup")) return;
+
+    for (i = 0; i < (int)sizeof(status); i++) status[i] = g_statusbuf[i];
+    g_qs_screen = 2;
+    gui_status("Looking for your card...");
+    g_qs_refusal = qs_find_card(&g_qs_card);
+    gui_status(status);
+
+    if (g_qs_refusal) {
+        qs_say(kQsRefusals[g_qs_refusal], 0);
+        gui_msg("Quick setup", g_qs_said);
+    } else {
+        int step = 2;
+        g_qs_mask = QS_WORK | QS_GAMES;
+        while (step) {
+            int r;
+            if (step == 2) {
+                g_qs_screen = 2;
+                step = qs_card_screen() ? 3 : 0;
+            } else if (step == 3) {
+                r = qs_choose(&g_qs_card, &g_qs_layout, &g_qs_mask);
+                step = r == QS_ANS_NEXT ? 4 : r == QS_ANS_BACK ? 2 : 0;
+            } else if (step == 4) {
+                r = qs_confirm(&g_qs_card, &g_qs_layout, g_qs_mask);
+                step = r == QS_ANS_NEXT ? 5 : r == QS_ANS_BACK ? 3 : 0;
+            } else {
+                r = qs_run(&g_qs_card, &g_qs_layout, g_qs_mask);
+                step = 0;
+                gui_status(status);
+                qs_after_run(&g_qs_card, &g_qs_layout, r);
+            }
+        }
+    }
+    g_qs_refusal = 0;
+    g_qs_screen = 0;
+}
+
+/* A driver has been picked. The panel stays gone for this session. The gadget is freed at
+   exit, since a click on it may still be waiting in the window's message port. */
+static void gui_quick_hide(void)
+{
+    if (g_qs_panel_gone) return;
+    g_qs_panel_gone = 1;
+    if (g_win && g_gad[GID_QUICK]) RemoveGadget(g_win, g_gad[GID_QUICK]);
+}
+
 int gui_run(void)
 {
     BOOL done = FALSE;
+
+    g_qs_is_ide = safety_is_internal_ide();
 
     GadToolsBase = OpenLibrary("gadtools.library", 37);
     GfxBase = (struct GfxBase *)OpenLibrary("graphics.library", 37);
@@ -2066,7 +3695,7 @@ int gui_run(void)
         WA_Top,  g_scr->BarHeight + 4,
         WA_Width,  g_leftb + WIN_W + g_scr->WBorRight,
         WA_Height, g_topb + WIN_H + g_scr->WBorBottom,
-        WA_Title, (ULONG)"HDPart 0.11.2",
+        WA_Title, (ULONG)"HDPart 0.12",
         WA_Gadgets, (ULONG)g_glist,
         WA_IDCMP, IDCMP_CLOSEWINDOW | IDCMP_REFRESHWINDOW | IDCMP_MOUSEBUTTONS | IDCMP_MENUPICK | IDCMP_VANILLAKEY | CYCLEIDCMP | BUTTONIDCMP | ARROWIDCMP,
         WA_Flags, WFLG_DRAGBAR | WFLG_DEPTHGADGET | WFLG_CLOSEGADGET |
@@ -2086,6 +3715,7 @@ int gui_run(void)
     gui_draw_chrome();
     gui_init_picker();     /* no-probe picker: prompt + driver names */
     gui_draw_bar();        /* initial bar (Task 3a.4.1) */
+    gui_quick_resume_check();
 
     while (!done) {
         struct IntuiMessage *imsg;
@@ -2140,6 +3770,7 @@ int gui_run(void)
                             gui_format(g_sel_part);
                     }
                     else if (gad->GadgetID == GID_FS) gui_filesystems();
+                    else if (gad->GadgetID == GID_QUICK) gui_quick_setup();
                     else if (gad->GadgetID == GID_DRIVER) gui_load_driver();
                     else if (gad->GadgetID == GID_SAVE) gui_save();
                     else if (gad->GadgetID == GID_SPLIT) gui_split();
@@ -2172,6 +3803,7 @@ int gui_run(void)
                             else if (it == ID_REFRESH) gui_refresh_current();
                             else if (it == ID_INIT) gui_init_disk();
                             else if (it == ID_FS) gui_filesystems();
+                            else if (it == ID_QUICK) gui_quick_setup();
                         } else if (mn == MN_PART) {
                             if (it == IP_NEW) gui_new();
                             else if (it == IP_EDIT) {
@@ -2233,6 +3865,7 @@ cleanup_win:
     CloseWindow(g_win); g_win = 0;
 cleanup_gad:
     FreeGadgets(g_glist); g_glist = 0;
+    if (g_qs_panel_gone && g_gad[GID_QUICK]) { FreeGadgets(g_gad[GID_QUICK]); g_gad[GID_QUICK] = 0; }
     FreeVisualInfo(g_vi); g_vi = 0;   /* reached by fall-through from cleanup_gad */
 cleanup_scr:
     if (g_dri) { FreeScreenDrawInfo(g_scr, g_dri); g_dri = 0; }
@@ -2332,6 +3965,7 @@ static void gui_select_driver(int idx)
         gui_status("Select a driver, then Scan.");
         return;
     }
+    gui_quick_hide();
     { const char *nm = g_drvlabels[idx]; int k;
       for (k = 0; k < 39 && nm[k]; k++) g_target_driver[k] = nm[k];
       g_target_driver[k] = 0; }
@@ -2463,7 +4097,7 @@ static const char *drv_err_text(int code)
 static void gui_about(void)
 {
     gui_msg("About HDPart",
-            "HDPart 0.11.2\n"
+            "HDPart 0.12\n"
             "RDB hard-disk partition tool\n"
             "for AmigaOS 2.04+ (KS V37+).\n"
             "\n"
@@ -3002,9 +4636,13 @@ static void gui_load_pens(void)
     if (pens_readable(g_scr, g_pen_shine, g_pen_fill)) g_pen_seltext = g_pen_shine;
 }
 
+/* The wizard draws the disk map into its own window: while set, the drawing helpers use it. */
+static struct RastPort *g_map_rp;
+#define MAP_RP() (g_map_rp ? g_map_rp : g_win->RPort)
+
 static void gui_text(int x, int y, const char *s, int pen)
 {
-    struct RastPort *rp = g_win->RPort;
+    struct RastPort *rp = MAP_RP();
     int n = 0;
     while (s[n]) n++;
     SetAPen(rp, pen);
@@ -3015,8 +4653,8 @@ static void gui_text(int x, int y, const char *s, int pen)
 
 static void gui_box(int x, int y, int w, int h, int pen)
 {
-    SetAPen(g_win->RPort, pen);
-    RectFill(g_win->RPort, x, y, x + w - 1, y + h - 1);
+    SetAPen(MAP_RP(), pen);
+    RectFill(MAP_RP(), x, y, x + w - 1, y + h - 1);
 }
 
 /* Fill patterns distinguish filesystem families in only 4 colours. Line patterns,
@@ -3025,7 +4663,7 @@ enum { FILL_DOS, FILL_PFS, FILL_SFS, FILL_OTHER, FILL_FREE };
 
 static void gui_pattern(int x, int y, int w, int h, int kind)
 {
-    struct RastPort *rp = g_win->RPort;
+    struct RastPort *rp = MAP_RP();
     int r;
     if (w <= 0 || h <= 0) return;
     if (kind == FILL_DOS) { gui_box(x, y, w, h, g_pen_fill); return; }
@@ -3061,16 +4699,16 @@ static int fs_fill_kind(uint32_t t)
 }
 
 /* Short "name, size" label on a map slice, when the slice is wide enough. */
-static void gui_slice_label(int x, int w, const char *top, const char *bot)
+static void gui_slice_label(int x, int y, int w, const char *top, const char *bot)
 {
     int a = 0, b = 0, lw;
     while (top[a]) a++;
     while (bot[b]) b++;
     lw = ((a > b) ? a : b) * 8;
     if (lw + 10 > w) return;
-    gui_box(x + 3, g_bar.y + 4, lw + 4, 24, g_pen_shine);
-    gui_text(x + 5, g_bar.y + 5, top, g_pen_text);
-    gui_text(x + 5, g_bar.y + 16, bot, g_pen_text);
+    gui_box(x + 3, y + 4, lw + 4, 24, g_pen_shine);
+    gui_text(x + 5, y + 5, top, g_pen_text);
+    gui_text(x + 5, y + 16, bot, g_pen_text);
 }
 
 /* Return the partition index whose map slice contains (mx,my), or -1. */
@@ -3187,6 +4825,14 @@ static void gui_draw_details(void)
     static char buf[48];
     int x = RIGHT_X + 3 + g_leftb, y = DETAIL_Y + g_topb, w = RIGHT_W - 6, p;
     if (!g_win) return;
+    if (!g_qs_panel_gone) {
+        /* No clearing here: the button sits in this box and would need redrawing. */
+        static const char q1[] = "First time setting up a CF or SD card?";
+        static const char q2[] = "Or pick a driver above to do it yourself.";
+        gui_text(x + (w - (int)(sizeof(q1) - 1) * 8) / 2, y + 6, q1, g_pen_text);
+        gui_text(x + (w - (int)(sizeof(q2) - 1) * 8) / 2, y + 44, q2, g_pen_text);
+        return;
+    }
     gui_box(x, y + 2, w, DETAIL_H - 4, g_pen_bg);
     if (!g_have_model || g_sel_part < 0 || g_sel_part >= g_model.num_parts) {
         gui_text(x + 3, y + 4, "No partition selected", g_pen_text);
@@ -3257,44 +4903,51 @@ static void gui_draw_chrome(void)
     gui_draw_details();
 }
 
-void gui_draw_bar(void)
+/* The disk map for model m in the rectangle x,y,w,h on rp: free space first, then each
+   partition to scale. The main window and the Quick setup screens share it. rdb_label says
+   what the blank block at the start is called; the wizard leaves it unlabelled. vols, when
+   given, is a Quick setup mask: slices carry its volume names (System, Work...) not DH0... */
+static void gui_map_draw(struct RastPort *rp, const RdbModel *m, int x, int y, int w, int h, int sel, int rdb_label,
+                         const uint32_t *vols)
 {
     static char lbl[12];
-    int i;
+    int i, rw;
+    g_map_rp = rp;
+    rw = (int)((m->lo_cyl * (ULONG)w) / m->cylinders);
+    gui_pattern(x + rw, y, w - rw, h, FILL_FREE);
+    if (rdb_label && rw >= 26)   /* Cylinders below lo_cyl hold the RDB: say so, or it reads as a drawing fault. */
+        gui_text(x + (rw - 24) / 2, y + (h - 8) / 2, "RDB", g_pen_text);
+    for (i = 0; i < m->num_parts && i < RDB_MAX_PARTS; i++) {
+        const RdbPartition *pt = &m->parts[i];
+        int x0 = x + (int)((pt->low_cyl  * (ULONG)w) / m->cylinders);
+        int x1 = x + (int)(((pt->high_cyl + 1) * (ULONG)w) / m->cylinders);
+        int p = 0;
+        if (x1 <= x0) x1 = x0 + 1;
+        if (x1 > x + w) x1 = x + w;
+        gui_pattern(x0, y, x1 - x0, h, fs_fill_kind(pt->dos_type));
+        p += u2s(lbl + p, disc_blocks_to_mb((pt->high_cyl - pt->low_cyl + 1) * m->cyl_blocks, m->block_bytes));
+        s_cat(lbl, &p, " MB"); lbl[p] = 0;
+        gui_slice_label(x0, y, x1 - x0, (vols && quick_volume_name(*vols, i)) ? quick_volume_name(*vols, i) : pt->name, lbl);
+        if (x1 - x0 > 1) {            /* a 1-pixel gap keeps neighbours apart */
+            gui_box(x1 - 1, y, 1, h, g_pen_bg);
+        }
+        if (i == sel) {
+            gui_box(x0, y, x1 - x0, 2, g_pen_text);
+            gui_box(x0, y + h - 2, x1 - x0, 2, g_pen_text);
+            gui_box(x0, y, 2, h, g_pen_text);
+            gui_box(x1 - 2, y, 2, h, g_pen_text);
+        }
+    }
+    g_map_rp = 0;
+}
+
+void gui_draw_bar(void)
+{
     if (!g_win) return;
     gui_box(g_bar.x, g_bar.y, g_bar.w, g_bar.h, g_pen_bg);
     gui_draw_easter();
     if (!g_have_model || g_model.cylinders == 0) return;
-
-    /* Free cylinders first, then each partition drawn over them, to scale. */
-    gui_pattern(g_bar.x + (int)((g_model.lo_cyl * (ULONG)g_bar.w) / g_model.cylinders), g_bar.y,
-                g_bar.w - (int)((g_model.lo_cyl * (ULONG)g_bar.w) / g_model.cylinders), g_bar.h, FILL_FREE);
-    {   /* Cylinders below lo_cyl hold the RDB: say so, or it reads as a drawing fault. */
-        int rw = (int)((g_model.lo_cyl * (ULONG)g_bar.w) / g_model.cylinders);
-        if (rw >= 26)
-            gui_text(g_bar.x + (rw - 24) / 2, g_bar.y + (g_bar.h - 8) / 2, "RDB", g_pen_text);
-    }
-    for (i = 0; i < g_model.num_parts && i < RDB_MAX_PARTS; i++) {
-        RdbPartition *pt = &g_model.parts[i];
-        int x0 = g_bar.x + (int)((pt->low_cyl  * (ULONG)g_bar.w) / g_model.cylinders);
-        int x1 = g_bar.x + (int)(((pt->high_cyl + 1) * (ULONG)g_bar.w) / g_model.cylinders);
-        int p = 0;
-        if (x1 <= x0) x1 = x0 + 1;
-        if (x1 > g_bar.x + g_bar.w) x1 = g_bar.x + g_bar.w;
-        gui_pattern(x0, g_bar.y, x1 - x0, g_bar.h, fs_fill_kind(pt->dos_type));
-        p += u2s(lbl + p, disc_blocks_to_mb((pt->high_cyl - pt->low_cyl + 1) * g_model.cyl_blocks, g_model.block_bytes));
-        s_cat(lbl, &p, " MB"); lbl[p] = 0;
-        gui_slice_label(x0, x1 - x0, pt->name, lbl);
-        if (x1 - x0 > 1) {            /* a 1-pixel gap keeps neighbours apart */
-            gui_box(x1 - 1, g_bar.y, 1, g_bar.h, g_pen_bg);
-        }
-        if (i == g_sel_part) {
-            gui_box(x0, g_bar.y, x1 - x0, 2, g_pen_text);
-            gui_box(x0, g_bar.y + g_bar.h - 2, x1 - x0, 2, g_pen_text);
-            gui_box(x0, g_bar.y, 2, g_bar.h, g_pen_text);
-            gui_box(x1 - 2, g_bar.y, 2, g_bar.h, g_pen_text);
-        }
-    }
+    gui_map_draw(g_win->RPort, &g_model, g_bar.x, g_bar.y, g_bar.w, g_bar.h, g_sel_part, 1, 0);
 }
 
 /* A tiny hand-drawn pi glyph in the bottom-right corner (no Topaz glyph for it).

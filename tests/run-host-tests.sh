@@ -2,7 +2,7 @@
 # Compile and run HDPart host unit tests with the system compiler.
 set -e
 cd "$(dirname "$0")/.."
-cc -std=c99 -Wall -Wextra -g -o /tmp/hdpart_tests tests/test_rdb.c src/rdb.c
+cc -std=c99 -Wall -Wextra -g -o /tmp/hdpart_tests tests/test_rdb.c src/rdb.c src/quick.c
 /tmp/hdpart_tests
 cc -std=c99 -Wall -Wextra -g -o /tmp/hdpart_fshd tests/test_fshd.c src/rdb.c src/fsload.c
 /tmp/hdpart_fshd
@@ -16,3 +16,5 @@ cc -std=c99 -Wall -Wextra -g -o /tmp/hdpart_format tests/test_format.c src/forma
 /tmp/hdpart_format
 cc -std=c99 -Wall -Wextra -g -o /tmp/hdpart_fsres tests/test_fsres.c src/fsres.c
 /tmp/hdpart_fsres
+cc -std=c99 -Wall -Wextra -g -o /tmp/hdpart_quick tests/test_quick.c src/quick.c src/rdb.c
+/tmp/hdpart_quick

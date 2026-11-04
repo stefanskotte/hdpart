@@ -2,15 +2,43 @@
 // Window, gadget and program state are read from guest memory using the ELF
 // symbols, so nothing here depends on pixel positions that vary by Kickstart.
 import { spawn, execFileSync } from 'node:child_process';
-import { createWriteStream } from 'node:fs';
+import { appendFileSync, closeSync, openSync, statSync, existsSync, writeSync } from 'node:fs';
+import { dirname } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import net from 'node:net';
 
+const WD_USERDATA = 120, WINDOW_MARK = 0x48445054;   // intuition.h Window.UserData; 'HDPT'
 export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const HOME = process.env.HOME;
 export const WINUAE = process.env.WINUAE_PATH || `${HOME}/Devel/winuae-logical/build/winuae`;
 const MCP_DIR = process.env.WINUAE_MCP_DIR || `${HOME}/Devel/mcp-winuae-emu`;
 const PORT = Number(process.env.WINUAE_GDB_PORT || 2345);
+// A normal run logs about 2 MB. An orphaned emulator once wrote 255 GiB and filled the disk.
+export const LOG_CAP = Number(process.env.WINUAE_LOG_CAP || 20 * 1024 * 1024);
+
+// Starts a process with its output going to logPath, up to cap bytes in that file. Past the cap the process
+// is killed, so a runaway stops instead of going unnoticed. Output goes through pipes rather than to the file,
+// so a process that outlives this one loses its pipe and gets SIGPIPE on its next write.
+export function spawnCapped(cmd, args, logPath, cap = LOG_CAP) {
+  let size = existsSync(logPath) ? statSync(logPath).size : 0;
+  const fd = openSync(logPath, 'a');
+  const child = spawn(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+  child.capped = false;
+  const take = (chunk) => {
+    if (child.capped) return;
+    const room = Math.max(0, cap - size), n = Math.min(room, chunk.length);
+    if (n) { writeSync(fd, chunk, 0, n); size += n; }
+    if (chunk.length > room) {
+      child.capped = true;
+      console.error(`emulator stopped: log ${logPath} reached its ${cap} byte limit`);
+      child.kill('SIGKILL');
+    }
+  };
+  child.stdout.on('data', take);
+  child.stderr.on('data', take);
+  child.once('close', () => closeSync(fd));
+  return child;
+}
 
 function portOpen() {
   return new Promise((res) => {
@@ -38,6 +66,12 @@ export function loadSymbols(elf) {
   return { sections, syms };
 }
 
+// Has the program finished reacting, i.e. is it blocked in Wait() on this signal mask and nothing else?
+// By state, not by list: exec's idle loop leaves the last task as ThisTask, so with nothing else scheduled
+// a blocked program still shows as current. A running or ready task is not 4 (TS_WAIT), and a crashed one
+// or one in a dialog waits on other signals, so all of those keep the wait going until it times out.
+export const blockedOn = (task, mask) => Boolean(task) && task.state === 4 && task.signals_wait === mask;
+
 export class Emu {
   constructor(cfgPath, elf, logPath) {
     this.cfgPath = cfgPath; this.logPath = logPath;
@@ -47,10 +81,8 @@ export class Emu {
 
   async start() {
     if (await portOpen()) throw new Error(`port ${PORT} is already in use: another emulator is running`);
-    const log = createWriteStream(this.logPath, { flags: 'a' });
-    await new Promise((r) => log.on('open', r));
-    this.child = spawn(WINUAE, ['-f', this.cfgPath, '-s', 'use_gui=no', '-s', 'debugging_features=gdbserver',
-      '-s', `gdb_port=${PORT}`, '-s', 'cpu_threaded=false'], { stdio: ['ignore', log, log] });
+    this.child = spawnCapped(WINUAE, ['-f', this.cfgPath, '-s', 'use_gui=no', '-s', 'debugging_features=gdbserver',
+      '-s', `gdb_port=${PORT}`, '-s', 'cpu_threaded=false'], this.logPath);
     for (let i = 0; i < 60 && !(await portOpen()); i++) await sleep(500);
     const base = pathToFileURL(`${MCP_DIR}/node_modules/@modelcontextprotocol/sdk/dist/esm/client/`).href;
     const { Client } = await import(`${base}index.js`);
@@ -106,7 +138,7 @@ export class Emu {
   }
 
   /* ---- program location ---- */
-  async locate(timeout = 90000) {
+  async locate(timeout = 90000, pollMs = 1000) {
     const end = Date.now() + timeout;
     while (Date.now() < end) {
       let tasks = [];
@@ -121,7 +153,7 @@ export class Emu {
           return;
         }
       }
-      await this.go(); await sleep(1000);
+      await this.go(); await sleep(pollMs);
     }
     throw new Error('HDPart process not found: did the machine boot?');
   }
@@ -171,6 +203,17 @@ export class Emu {
       await sleep(150);
     }
   }
+  // Wait until the program blocks on window w's port.
+  async waitIdle(w, timeout) {
+    const sig = await this.u8((await this.u32(w + 86)) + 15), mask = (1 << sig) >>> 0;
+    await this.waitFor('program idle', async () =>
+      blockedOn(JSON.parse(await this.tool('winuae_tasks')).find((x) => x.address === this.process), mask), timeout);
+  }
+  // One look: is the program blocked on window w's port right now?
+  async isIdle(w) {
+    const sig = await this.u8((await this.u32(w + 86)) + 15), mask = (1 << sig) >>> 0;
+    return blockedOn(JSON.parse(await this.tool('winuae_tasks')).find((x) => x.address === this.process), mask);
+  }
   waitWin(title, timeout) { return this.waitFor(`window "${title}"`, () => this.win(title), timeout); }
 
   /* ---- input ---- */
@@ -194,14 +237,23 @@ export class Emu {
     }
     throw new Error('input sequence did not finish');
   }
-  // Closed loop on Screen->MouseX/Y: the count-to-pixel ratio differs per screen mode.
+  // Closed loop on Screen->MouseX/Y: the count-to-pixel ratio differs per screen mode. Intuition updates these as it
+  // handles the movement, so one read can be a stop on the way: arrived means two reads with the guest running between them.
+  // Returns the settled position.
   async moveTo(x, y) {
     const scr = await this.g32('g_scr');
-    let sx = 1, sy = 2;
-    for (let i = 0; i < 16; i++) {
+    let sx = 1, sy = 2, seen = null;
+    for (let i = 0; i < 24; i++) {
       const my = await this.i16(scr + 16), mx = await this.i16(scr + 18);
       const dx = x - mx, dy = y - my;
-      if (Math.abs(dx) <= 2 && Math.abs(dy) <= 2) { await this.go(); return; }
+      if (Math.abs(dx) <= 2 && Math.abs(dy) <= 2) {
+        await this.go();
+        if (seen && seen.mx === mx && seen.my === my) return { mx, my, reads: i + 1 };
+        seen = { mx, my };
+        await sleep(100);       // a few frames
+        continue;
+      }
+      seen = null;
       const steps = [];
       for (const [axis, count] of [['x', Math.round(dx * sx)], ['y', Math.round(dy * sy)]]) {
         for (let n = count; n !== 0;) {
@@ -214,8 +266,12 @@ export class Emu {
     }
     throw new Error(`pointer did not reach ${x},${y}`);
   }
+  // One line per press, beside the emulator log: where it was meant to go and where the pointer was. After a failure this
+  // says whether the press went astray or landed and was ignored.
+  pressLog(line) { appendFileSync(`${dirname(this.logPath)}/press.log`, `${new Date().toISOString()} ${line}\n`); }
   async clickAt(x, y) {
-    await this.moveTo(x, y);
+    const at = await this.moveTo(x, y);
+    this.pressLog(`press target ${x},${y} mouse ${at.mx},${at.my} after ${at.reads} reads`);
     await this.seq([{ after_frames: 2, action: 'button', button: 0, pressed: true, port: 0 },
       { after_frames: 6, action: 'button', button: 0, pressed: false, port: 0 }]);
   }
@@ -228,13 +284,16 @@ export class Emu {
     const wl = await this.i16(w + 4), wt = await this.i16(w + 6);
     await this.clickAt(wl + g.left + (g.width >> 1), wt + g.top + (g.height >> 1));
   }
-  // Click a dialog button and wait for that dialog to close or be replaced.
+  // Click a dialog button and wait for that dialog to close or be replaced. Its address doesn't say: the next window of the same
+  // size lands on the same memory, with its first gadget at the same address too, and on a fast machine it is up before the first
+  // look. So mark this window in its UserData, which HDPart doesn't use and which a new window starts without.
   async clickClose(w, id, timeout = 20000) {
     const first = await this.u32(w + 62);
+    await this.tool('winuae_memory_write', { address: w + WD_USERDATA, data: WINDOW_MARK.toString(16) });
     await this.click(w, id);
     await this.waitFor('dialog to close', async () => {
       const open = (await this.windows()).some((x) => x.addr === w);
-      return !open || (await this.u32(w + 62)) !== first;
+      return !open || (await this.u32(w + 62)) !== first || (await this.u32(w + WD_USERDATA)) !== WINDOW_MARK;
     }, timeout);
     await sleep(400);      // let the code after the dialog finish before anyone looks
   }
@@ -285,8 +344,9 @@ export class Emu {
   }
 
   /* ---- fault injection ---- */
-  // Run `act`, stop at the next call to function `sym`, make it return 0 without running.
-  async failNextCall(sym, act) {
+  // Run `act`, stop at the next call to function `sym`, make it return `value` without running.
+  // `before(sp)` runs at that stop, with the call's return address at sp and its arguments above it.
+  async failNextCall(sym, act, value = 0, before = null) {
     const bp = this.addr(sym);
     await this.tool('winuae_breakpoint_set', { address: bp });
     await act();
@@ -295,7 +355,8 @@ export class Emu {
     const sp = parseInt(regs.match(/A7=\$([0-9A-F]+)/)[1], 16), pc = parseInt(regs.match(/PC=\$([0-9A-F]+)/)[1], 16);
     if (pc !== bp) throw new Error(`stopped at ${pc.toString(16)}, not ${sym}`);
     const ret = await this.u32(sp);
-    await this.tool('winuae_registers_set', { D0: 0, PC: ret, A7: sp + 4 });
+    if (before) await before(sp);
+    await this.tool('winuae_registers_set', { D0: value, PC: ret, A7: sp + 4 });
     await this.tool('winuae_breakpoint_clear', { address: bp });
     await this.go();
   }

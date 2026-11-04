@@ -1,6 +1,6 @@
 // Host-side reader for a hardfile written by HDPart. Validates every checksum,
 // so a block the Amiga could not trust fails the test rather than parsing quietly.
-import { readFileSync } from 'node:fs';
+import { closeSync, fstatSync, openSync, readFileSync, readSync } from 'node:fs';
 
 const NIL = 0xFFFFFFFF;
 function block(d, n, id) {
@@ -13,13 +13,23 @@ function block(d, n, id) {
   return b;
 }
 
+// The table lives at the start of the disk. A big sparse card is too large to load whole.
+function readHead(file, max = 32 << 20) {
+  const fd = openSync(file, 'r');
+  try {
+    const b = Buffer.alloc(Math.min(fstatSync(fd).size, max));
+    readSync(fd, b, 0, b.length, 0);
+    return b;
+  } finally { closeSync(fd); }
+}
+
 export function readRdb(file) {
-  const d = readFileSync(file);
+  const d = readHead(file);
   const r = block(d, 0, 'RDSK');
   const out = { cylBlocks: r.readUInt32BE(144), loCyl: r.readUInt32BE(136), hiCyl: r.readUInt32BE(140), parts: [], fs: [] };
   for (let n = r.readUInt32BE(28); n !== NIL;) {
     const p = block(d, n, 'PART');
-    out.parts.push({ name: p.toString('latin1', 37, 37 + p[36]), low: p.readUInt32BE(128 + 36), high: p.readUInt32BE(128 + 40),
+    out.parts.push({ name: p.toString('latin1', 37, 37 + p[36]), flags: p.readUInt32BE(20), low: p.readUInt32BE(128 + 36), high: p.readUInt32BE(128 + 40),
       dosType: p.readUInt32BE(128 + 64), numBuffers: p.readUInt32BE(128 + 44), bufMemType: p.readUInt32BE(128 + 48),
       maxTransfer: p.readUInt32BE(128 + 52), mask: p.readUInt32BE(128 + 56) });
     n = p.readUInt32BE(16);

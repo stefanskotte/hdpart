@@ -465,6 +465,18 @@ int rdb_validate(const RdbModel *m)
 #define RDB_o_AutoParkSecs  148
 #define RDB_o_HighRDSKBlock 152
 #define RDB_SUMMEDLONGS     64u
+/* Quick setup marker: ControllerVendor/Product/Revision, inside the checksummed longs. */
+#define RDB_o_CtlVendor     188   /* 8 bytes  "HDPART  " */
+#define RDB_o_CtlProduct    196   /* 16 bytes "QUICKSETUP      " */
+#define RDB_o_CtlRevision   212   /* 4 bytes  '0'+mask, three spaces */
+static int qs_same(const uint8_t *a, const char *b, int n)
+{   /* no memcmp: the m68k build has no string.h here */
+    int i;
+    for (i = 0; i < n; i++) if (a[i] != (uint8_t)b[i]) return 0;
+    return 1;
+}
+static const char QS_VENDOR[8]    = { 'H','D','P','A','R','T',' ',' ' };
+static const char QS_PRODUCT[16]  = { 'Q','U','I','C','K','S','E','T','U','P',' ',' ',' ',' ',' ',' ' };
 
 /* PartitionBlock field offsets */
 #define PART_o_ID           0
@@ -695,6 +707,14 @@ int rdb_serialize(const RdbModel *m, BlockIO io, void *ctx)
     be_put32(blk + RDB_o_CylBlocks, m->cyl_blocks);
     be_put32(blk + RDB_o_AutoParkSecs, 0);
     be_put32(blk + RDB_o_HighRDSKBlock, high_rdsk);
+    if (m->setup_pending & 0x80u) {
+        memcpy(blk + RDB_o_CtlVendor,  QS_VENDOR,  8);
+        memcpy(blk + RDB_o_CtlProduct, QS_PRODUCT, 16);
+        blk[RDB_o_CtlRevision]     = (uint8_t)('0' + (m->setup_pending & 7u));
+        blk[RDB_o_CtlRevision + 1] = ' ';
+        blk[RDB_o_CtlRevision + 2] = ' ';
+        blk[RDB_o_CtlRevision + 3] = ' ';
+    }
     rdb_set_checksum(blk, RDB_SUMMEDLONGS, RDB_o_ChkSum);
     if (io(ctx, 0, blk, 1)) return RDB_ERR_IO;
 
@@ -883,10 +903,20 @@ int rdb_parse(RdbModel *m, BlockIO io, void *ctx)
     int found;
 
     memset(m, 0, sizeof(*m));
+    m->setup_pending = 0;      /* every path that does not match leaves this 0 */
 
     found = find_rdsk_block(io, ctx, blk);
     if (found < 0) return RDB_ERR_IO;
     if (found == 0) return RDB_ERR_NO_RDB;
+
+    /* find_rdsk_block only returns a block whose checksum is valid. */
+    if (be_get32(blk + RDB_o_SummedLongs) >= 54u &&   /* checksum must cover bytes up to 215 */
+        qs_same(blk + RDB_o_CtlVendor, QS_VENDOR, 8) &&
+        qs_same(blk + RDB_o_CtlProduct, QS_PRODUCT, 16) &&
+        blk[RDB_o_CtlRevision] >= '0' && blk[RDB_o_CtlRevision] <= '7' &&
+        blk[RDB_o_CtlRevision + 1] == ' ' && blk[RDB_o_CtlRevision + 2] == ' ' &&
+        blk[RDB_o_CtlRevision + 3] == ' ')
+        m->setup_pending = (uint8_t)(0x80u | (uint8_t)(blk[RDB_o_CtlRevision] - '0'));
 
     m->block_bytes   = be_get32(blk + RDB_o_BlockBytes);
     if (m->block_bytes == 0) m->block_bytes = RDB_BLOCK_BYTES;
@@ -905,7 +935,7 @@ int rdb_parse(RdbModel *m, BlockIO io, void *ctx)
     while (part_ptr != NULLPTR && part_ptr != 0 && m->num_parts < RDB_MAX_PARTS) {
         RdbPartition *p;
         int len, i;
-        if (io(ctx, part_ptr, blk, 0)) return RDB_ERR_IO;
+        if (io(ctx, part_ptr, blk, 0)) { m->setup_pending = 0; return RDB_ERR_IO; }
         if (be_get32(blk + PART_o_ID) != ID_PART) break;
         if (!rdb_checksum_ok(blk, be_get32(blk + PART_o_SummedLongs))) break;
 
@@ -936,7 +966,7 @@ int rdb_parse(RdbModel *m, BlockIO io, void *ctx)
 
     {
         int rc = read_fshd_chain(m, io, ctx, fshd_ptr);
-        if (rc != RDB_OK) return rc;
+        if (rc != RDB_OK) { m->setup_pending = 0; return rc; }
     }
     return RDB_OK;
 }

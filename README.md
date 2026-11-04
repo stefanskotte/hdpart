@@ -15,6 +15,26 @@ single window, runs on a real Workbench or boots standalone from its own floppy.
 
 ![HDPart partitioning a disk](docs/screenshot.png)
 
+## Quick setup
+
+Quick setup is for someone with a new CF or SD card who just wants it ready for
+Workbench, without learning what cylinders are. It asks what you want on the
+card, shows you the result, erases the card, and makes a System partition and
+your choice of Work, Games and Demos, formatted and ready.
+
+**It is for** an A600, A1200 or A4000 with a CF or SD card on the internal IDE
+port, started from the HDPart floppy.
+
+**It is not for** an A500, an A3000, SCSI drives, PCMCIA cards or Zorro
+controllers, or for anything that needs PFS3 or larger partitions. It uses at
+most the first 4 GB of a card and makes partitions of at most 2 GB. For anything
+else, use HDPart's main window. On a machine or setup it can't confirm, it says
+so and changes nothing.
+
+**How far it has been tested:** in an emulator only. It has not yet been run on
+real hardware, or with a real Workbench install. Keep a copy of anything you
+care about on the card.
+
 ## Credits & attribution
 
 HDPart's RDB handling is **based on `rdbtool`** (part of **amitools**) by

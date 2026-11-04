@@ -5,6 +5,7 @@
 #include <stdint.h>
 #include "../src/endian.h"
 #include "../src/rdb.h"
+#include "../src/quick.h"
 
 static int g_fail = 0;
 #define CHECK(cond) do { if (!(cond)) { \
@@ -523,6 +524,173 @@ static void test_used_percent(void)
     fclose(f);
 }
 
+/* ---- Quick setup marker ---- */
+static void marker_image(FileCtx *c, RdbModel *m)
+{   /* 2000 blocks of zeros under a tiny table */
+    static uint8_t z[RDB_BLOCK_BYTES];
+    int i;
+    c->f = tmpfile();
+    for (i = 0; i < 2000; i++) fwrite(z, 1, RDB_BLOCK_BYTES, c->f);
+    rdb_init_model(m, 100, 4, 5);
+    rdb_add_partition_cyl(m, "DH0", m->lo_cyl, m->lo_cyl + 9, RDB_DOSTYPE_FFS_INTL);
+    m->parts[0].bootable = 1; m->parts[0].flags |= RDB_PBFF_BOOTABLE;
+}
+
+static void test_setup_marker(void)
+{
+    FileCtx c; RdbModel m, r; uint8_t blk[RDB_BLOCK_BYTES]; int i, zero = 1;
+    marker_image(&c, &m);
+
+    /* no marker: bytes 188..215 are zero and nothing is pending */
+    CHECK(rdb_serialize(&m, file_io, &c) == RDB_OK);
+    file_io(&c, 0, blk, 0);
+    for (i = 188; i < 216; i++) if (blk[i]) zero = 0;
+    CHECK(zero);
+    CHECK(rdb_parse(&r, file_io, &c) == RDB_OK && r.setup_pending == 0);
+
+    /* round trip for every mask */
+    for (i = 0; i < 8; i++) {
+        m.setup_pending = (uint8_t)(0x80 | i);
+        CHECK(rdb_serialize(&m, file_io, &c) == RDB_OK);
+        CHECK(rdb_parse(&r, file_io, &c) == RDB_OK);
+        CHECK(r.setup_pending == (uint8_t)(0x80 | i));
+    }
+    file_io(&c, 0, blk, 0);
+    CHECK(memcmp(blk + 188, "HDPART  ", 8) == 0);
+    CHECK(memcmp(blk + 196, "QUICKSETUP      ", 16) == 0);
+    CHECK(blk[212] == '7' && memcmp(blk + 213, "   ", 3) == 0);
+
+    /* read, clear, serialize (what the normal UI save does) drops it */
+    CHECK(rdb_parse(&r, file_io, &c) == RDB_OK && r.setup_pending != 0);
+    r.setup_pending = 0;
+    CHECK(rdb_serialize(&r, file_io, &c) == RDB_OK);
+    CHECK(rdb_parse(&r, file_io, &c) == RDB_OK && r.setup_pending == 0);
+    fclose(c.f);
+}
+
+static void test_setup_marker_rejects(void)
+{
+    FileCtx c; RdbModel m, r; uint8_t blk[RDB_BLOCK_BYTES], good[RDB_BLOCK_BYTES];
+    marker_image(&c, &m);
+    m.setup_pending = 0x80 | 3;
+    CHECK(rdb_serialize(&m, file_io, &c) == RDB_OK);
+    file_io(&c, 0, good, 0);
+
+    /* marker text, bad checksum: the guard exercised is find_rdsk_block's checksum,
+       so the block is not an RDB at all */
+    memcpy(blk, good, sizeof blk); blk[20] ^= 0xFF;
+    file_io(&c, 0, blk, 1);
+    CHECK(rdb_parse(&r, file_io, &c) != RDB_OK && r.setup_pending == 0);
+
+    /* mask digit outside '0'..'7', or short padding: valid checksum, no marker */
+    { static const char *bad[] = { "8   ", ":   ", "/   ", "3  X", "3 X ", "3X  ", "3\0\0\0" };
+      int k;
+      for (k = 0; k < 7; k++) {
+          memcpy(blk, good, sizeof blk);
+          memcpy(blk + 212, bad[k], 4);
+          rdb_set_checksum(blk, 64, 8);
+          file_io(&c, 0, blk, 1);
+          CHECK(rdb_parse(&r, file_io, &c) == RDB_OK && r.setup_pending == 0);
+      } }
+    /* valid checksum and marker text, but SummedLongs too short to cover it */
+    { int sl;
+      for (sl = 53; sl >= 8; sl -= 45) {
+          memcpy(blk, good, sizeof blk);
+          be_put32(blk + 4, (uint32_t)sl);
+          rdb_set_checksum(blk, (uint32_t)sl, 8);
+          file_io(&c, 0, blk, 1);
+          CHECK(rdb_parse(&r, file_io, &c) == RDB_OK && r.setup_pending == 0);
+      }
+      memcpy(blk, good, sizeof blk); be_put32(blk + 4, 54); rdb_set_checksum(blk, 54, 8);
+      file_io(&c, 0, blk, 1);
+      CHECK(rdb_parse(&r, file_io, &c) == RDB_OK && r.setup_pending == (0x80 | 3)); }
+    /* wrong vendor or product */
+    memcpy(blk, good, sizeof blk); blk[188] = 'X'; rdb_set_checksum(blk, 64, 8);
+    file_io(&c, 0, blk, 1);
+    CHECK(rdb_parse(&r, file_io, &c) == RDB_OK && r.setup_pending == 0);
+    memcpy(blk, good, sizeof blk); blk[200] = 'X'; rdb_set_checksum(blk, 64, 8);
+    file_io(&c, 0, blk, 1);
+    CHECK(rdb_parse(&r, file_io, &c) == RDB_OK && r.setup_pending == 0);
+
+    /* a model reused for a second parse keeps no stale flag */
+    file_io(&c, 0, good, 1);
+    CHECK(rdb_parse(&r, file_io, &c) == RDB_OK && r.setup_pending == (0x80 | 3));
+    memcpy(blk, good, sizeof blk); blk[188] = 'X'; rdb_set_checksum(blk, 64, 8);
+    file_io(&c, 0, blk, 1);
+    CHECK(rdb_parse(&r, file_io, &c) == RDB_OK && r.setup_pending == 0);   /* parsed, no match */
+    r.setup_pending = 0x80 | 1;
+    memset(blk, 0, sizeof blk); file_io(&c, 0, blk, 1);                     /* no RDSK left */
+    CHECK(rdb_parse(&r, file_io, &c) == RDB_ERR_NO_RDB && r.setup_pending == 0);
+    fclose(c.f);
+}
+
+static void test_geometry_agrees(void)
+{
+    /* Measured: 3.1 A1200 and 3.2 A4000 agree, 3.1 A4000 does not. */
+    CHECK(quick_geometry_agrees(15500, 16, 63, 15624756));
+    CHECK(quick_geometry_agrees(924, 9, 63, 524288));
+    CHECK(!quick_geometry_agrees(924, 1, 63, 523907));
+    CHECK(!quick_geometry_agrees(62003, 1, 63, 15624755));
+    /* The limit, both ways: 6400 blocks allow a difference of 100. */
+    CHECK(quick_geometry_agrees(6500, 1, 1, 6400));
+    CHECK(!quick_geometry_agrees(6501, 1, 1, 6400));
+    CHECK(quick_geometry_agrees(6300, 1, 1, 6400));
+    CHECK(!quick_geometry_agrees(6299, 1, 1, 6400));
+    /* Zeros, and products that don't fit 32 bits. */
+    CHECK(!quick_geometry_agrees(0, 16, 63, 1000));
+    CHECK(!quick_geometry_agrees(1000, 0, 63, 1000));
+    CHECK(!quick_geometry_agrees(1000, 16, 0, 1000));
+    CHECK(!quick_geometry_agrees(1000, 16, 63, 0));
+    CHECK(!quick_geometry_agrees(0x10000000u, 0x100, 1, 16));
+    CHECK(!quick_geometry_agrees(0x10000u, 0x10000u, 0x10000u, 16));
+}
+
+static void test_cap_cylinders(void)
+{
+    /* Agrees within total/64 but overstates: the review's example. */
+    CHECK(quick_geometry_agrees(31250, 4, 63, 7812500));
+    CHECK(quick_cap_cylinders(31250, 4, 63, 7812500) == 31001);
+    CHECK(31001u * 4u * 63u <= 7812500u);
+    /* Exact, and understating: left alone. */
+    CHECK(quick_cap_cylinders(1000, 16, 63, 1008000) == 1000);
+    CHECK(quick_cap_cylinders(15500, 16, 63, 15624756) == 15500);
+    /* Figures with a zero have nothing to cap by. */
+    CHECK(quick_cap_cylinders(1000, 0, 63, 1008000) == 1000);
+    CHECK(quick_cap_cylinders(1000, 16, 0, 1008000) == 1000);
+    /* A layout from capped figures ends on the drive. */
+    {
+        RdbModel m;
+        rdb_init_model(&m, quick_cap_cylinders(31250, 4, 63, 7812500), 4, 63);
+        CHECK(quick_layout(&m, QS_WORK | QS_GAMES | QS_DEMOS) == RDB_OK);
+        CHECK((m.parts[m.num_parts - 1].high_cyl + 1u) * m.cyl_blocks <= 7812500u);
+    }
+}
+
+static void test_pending_valid(void)
+{
+    RdbModel m;
+    rdb_init_model(&m, 2000, 16, 63);
+    CHECK(quick_layout(&m, QS_WORK | QS_GAMES) == RDB_OK);
+    CHECK(!quick_pending_valid(&m));                     /* no flag */
+    m.setup_pending = 0x80 | QS_WORK | QS_GAMES;
+    CHECK(quick_pending_valid(&m));
+    m.setup_pending = 0x80 | QS_WORK;                    /* count disagrees */
+    CHECK(!quick_pending_valid(&m));
+    m.setup_pending = 0x80 | QS_WORK | QS_GAMES;
+    m.parts[2].name[2] = '5';                            /* name disagrees */
+    CHECK(!quick_pending_valid(&m));
+    m.parts[2].name[2] = '2';
+    CHECK(quick_pending_valid(&m));
+    m.parts[0].bootable = 0;
+    CHECK(!quick_pending_valid(&m));
+    m.parts[0].bootable = 1;
+    m.parts[1].dos_type = 0x50465303u;
+    CHECK(!quick_pending_valid(&m));
+    m.parts[1].dos_type = RDB_DOSTYPE_FFS_INTL;
+    m.setup_pending = 0x08;                              /* high bit missing */
+    CHECK(!quick_pending_valid(&m));
+}
+
 int main(int argc, char **argv)
 {
     if (argc >= 2 && strcmp(argv[1], "--emit") == 0) {
@@ -597,6 +765,11 @@ int main(int argc, char **argv)
     test_short_table_size();
     test_used_percent();
     test_resize_cyls();
+    test_setup_marker();
+    test_setup_marker_rejects();
+    test_pending_valid();
+    test_geometry_agrees();
+    test_cap_cylinders();
     if (g_fail) { printf("%d CHECK(s) FAILED\n", g_fail); return 1; }
     printf("ALL TESTS PASSED\n");
     return 0;

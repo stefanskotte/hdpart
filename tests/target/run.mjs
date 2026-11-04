@@ -6,6 +6,7 @@ import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { Emu, sleep } from './emu.mjs';
 import { readRdb, partInfo } from './rdbcheck.mjs';
+import { recordFailure } from './faillog.mjs';
 
 const ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname), '../..');
 const ROMS = process.env.KICKSTART_DIR || `${process.env.HOME}/Documents/FS-UAE/Kickstarts`;
@@ -68,13 +69,15 @@ class Suite {
     } catch (err) {
       this.results.push({ name, pass: false, err: err.message });
       console.log(`  FAIL ${name}: ${err.message}`);
-      try { await this.e.shot(`${this.dir}/shots/FAIL-${this.results.length}.png`); } catch { /* emulator gone */ }
-      try {   // what the program was doing: a timeout alone can't tell busy from stuck
-        const task = JSON.parse(await this.e.tool('winuae_tasks')).find((x) => x.address === this.e.process);
-        console.log(`       task: ${JSON.stringify(task)}`);
-        console.log(`       windows: ${JSON.stringify((await this.e.windows()).map((w) => w.title))}`);
-        console.log(`       unit=${await this.e.g32('g_cur_unitidx')} dirty=${await this.dirty()} status="${await this.status()}"`);
-      } catch { /* emulator gone */ }
+      const shot = `${this.dir}/shots/FAIL-${this.results.length}.png`;
+      const lines = [];
+      try { await this.e.shot(shot); } catch { /* emulator gone */ }
+      const ev = async (f) => { try { lines.push(await f()); } catch (e) { lines.push(`(unavailable: ${e.message})`); } };
+      await ev(async () => `task: ${JSON.stringify(JSON.parse(await this.e.tool('winuae_tasks')).find((x) => x.address === this.e.process))}`);
+      await ev(async () => `windows: ${JSON.stringify((await this.e.windows()).map((w) => w.title))}`);
+      await ev(async () => `unit=${await this.e.g32('g_cur_unitidx')} dirty=${await this.dirty()} status="${await this.status()}"`);
+      for (const l of lines) console.log(`       ${l}`);
+      recordFailure(ROOT, { ks: this.key, name, error: err.message, lines, shot });
       throw err;
     }
   }
@@ -96,14 +99,7 @@ class Suite {
 
   // Wait until the program blocks on its main window, i.e. has finished reacting.
   // Reading a disk with an embedded handler takes seconds on a 7 MHz 68000.
-  async idle(timeout = 60000) {
-    const e = this.e, w = await this.main();
-    const sig = await e.u8((await e.u32(w + 86)) + 15), mask = (1 << sig) >>> 0;
-    await e.waitFor('program idle', async () => {
-      const t = JSON.parse(await e.tool('winuae_tasks')).find((x) => x.address === e.process);
-      return t && t.list === 'waiting' && t.signals_wait === mask;
-    }, timeout);
-  }
+  async idle(timeout = 60000) { await this.e.waitIdle(await this.main(), timeout); }
 
   // Two-button gui_request boxes carry a gadget with ID 0.
   async isChoice(w) { return (await this.e.gadgets(w)).some((g) => g.id === CANCEL); }

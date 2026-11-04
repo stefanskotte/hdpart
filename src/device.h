@@ -28,6 +28,8 @@ int dev_geometry(DeviceHandle *h, DeviceInfo *out);
 
 /* Read/write one 512-byte block. Returns 0 on success, else io_Error. */
 int dev_read_block (DeviceHandle *h, ULONG block, UBYTE *buf512);
+/* Ask the driver to write out anything it holds. 0 if done, or if it holds nothing. */
+int dev_update(DeviceHandle *h);
 int dev_write_block(DeviceHandle *h, ULONG block, UBYTE *buf512);
 
 /* Best-effort SCSI INQUIRY model string. Returns 0 on success (model filled),

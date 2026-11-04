@@ -174,6 +174,15 @@ int dev_write_block(DeviceHandle *h, ULONG block, UBYTE *buf512)
     return dev_rw(h, block, buf512, CMD_WRITE);
 }
 
+int dev_update(DeviceHandle *h)
+{
+    LONG err;
+    h->req->iotd_Req.io_Command = CMD_UPDATE;
+    h->req->iotd_Req.io_Actual  = 0;
+    err = DoIO((struct IORequest *)h->req);
+    return err == IOERR_NOCMD ? 0 : (int)err;   /* no such command: nothing is held back */
+}
+
 int dev_block_io(void *ctx, uint32_t block, uint8_t *buf, int write)
 {
     DeviceHandle *h = (DeviceHandle *)ctx;
