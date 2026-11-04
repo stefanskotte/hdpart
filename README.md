@@ -22,6 +22,17 @@ Workbench, without learning what cylinders are. It asks what you want on the
 card, shows you the result, erases the card, and makes a System partition and
 your choice of Work, Games and Demos, formatted and ready.
 
+| | |
+|:---:|:---:|
+| ![The Quick setup button in the main window](docs/quick-setup-1-start.png) | ![The card it found, and a warning that it will be erased](docs/quick-setup-2-card.png) |
+| Click **Quick setup...** in the main window | It shows the card and warns before erasing |
+| ![Ticking Work, Games and Demos, with a map of the card](docs/quick-setup-3-partitions.png) | ![The last check before erasing](docs/quick-setup-4-ready.png) |
+| Tick what you want, and the map follows | One last look before anything is erased |
+| ![A checklist of each step as it runs](docs/quick-setup-5-working.png) | ![The finished screen with the next steps](docs/quick-setup-6-done.png) |
+| Each step is ticked off as it runs | Then it tells you what to do next |
+
+*Shown in an emulator with a 4 GB card, which is why it's called UAE-IDE.*
+
 **It is for** an A600, A1200 or A4000 with a CF or SD card on the internal IDE
 port, started from the HDPart floppy.
 
