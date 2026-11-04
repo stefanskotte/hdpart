@@ -1,6 +1,6 @@
 # Quick setup: the engine on emulated IDE
 
-Date: 2026-11-03. HDPart 0.11.2, unchanged. Everything here ran with `tests/target/quick.mjs`, on WinUAE, with the card on the
+Started 2026-11-03 on HDPart 0.11.2, before the wizard existed; the later sections cover the wizard up to 0.12. Everything here ran with `tests/target/quick.mjs`, on WinUAE, with the card on the
 emulated internal IDE port (`hardfile2=...,ide0`) and HDPart driving `scsi.device` unit 0.
 
 Labels, as in `rom-findings-maxtransfer-mask-buffers.md`:

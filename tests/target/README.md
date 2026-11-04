@@ -12,8 +12,8 @@ make target-test KS=ks31     # one (ks204, ks31, ks32)
 ```
 
 Exits non-zero if anything fails. Each Kickstart stops at its first failure, because
-later steps build on earlier ones. Logs, disks and screenshots (`FAIL-*.png`,
-`start.png`, `guards.png`, `about.png`) go to `out/target-test/<ks>/`.
+later steps build on earlier ones. Logs, disks and screenshots go to
+`out/target-test/<ks>/`.
 
 ## Requirements
 
@@ -58,8 +58,8 @@ disk, their help buttons open, and an unsafe MaxTransfer is refused.
 
 **Not covered yet:** the ASL file requester (the boots have no `asl.library`, so file
 pickers use the typed path) and Load asl.library, loading a working `.device`, Bootable
-and Boot Pri, Resize with Move Start, booting from a formatted partition,
-reading and writing files on a formatted volume, and real hardware.
+and Boot Pri, Resize with Move Start, booting from a formatted partition, and real
+hardware. `quick.mjs` below reads and writes files on formatted volumes on emulated IDE.
 
 ## Emulated IDE: `quick.mjs`
 

@@ -87,7 +87,7 @@ install-fsuae:
 # `make adf`            build a shareable 880K OFS floppy with the program + icons
 #                       (out/HDPart-$(ADFVER).adf). Primary use: mount under an
 #                       existing Workbench and double-click HDPart; it is also
-#                       bootable (auto-runs HDPart on its own screen). Needs
+#                       bootable (auto-runs HDPart on the Workbench screen). Needs
 #                       amitools' xdftool (pip3 install amitools).
 # ADFVER: keep in sync with the window title in src/gui.c ("HDPart 0.12").
 ADFVER = 0.12

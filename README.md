@@ -4,13 +4,22 @@ A modern AmigaOS **RDB hard-disk partition tool** for Kickstart 2.04+ (V37+) —
 usable HDToolBox replacement aimed at CF/SD-on-IDE retro setups. GadTools GUI,
 single window, runs on a real Workbench or boots standalone from its own floppy.
 
-- Discover a device → read its Rigid Disk Block → init / partition / resize / split → save.
+- **Quick setup:** a guided path for first-timers that gets a CF or SD card ready
+  for a Workbench install. See [below](#quick-setup).
+- Pick a driver → scan its units → read the Rigid Disk Block → init / partition /
+  resize / split → save.
 - **Format** a partition into a ready, empty volume live — no reboot. Won't format
   the disk you booted from.
 - **Filesystems:** the ROM ones (FFS/OFS, Intl, DirCache), plus PFS3 and SFS
   handlers embedded in the RDB, loaded from a file or copied from another disk.
-- Two-panel GUI (Disk / Partitions) with a disk-map bar, a screen-top Amiga menu
-  bar, and keyboard shortcuts.
+- **Guided settings:** presets and help for MaxTransfer, Mask, Buffers and Buffer
+  memory, based on what the Kickstart ROMs and PFS3 actually do with them.
+- **Drive Bay GUI:** a map of the disk across the top, the partition table and a
+  details panel below it, a screen-top Amiga menu bar and keyboard shortcuts. It
+  opens on the Workbench screen.
+- File pickers use `asl.library` when it's there, which the boot floppy doesn't
+  include, and a typed path otherwise. *Load asl.library...* can bring one in from
+  another disk.
 - Freestanding 68000 build — runs on a stock A500+/A600/A1200/A4000.
 
 ![HDPart partitioning a disk](docs/screenshot.png)
@@ -86,7 +95,8 @@ On-target suite, which drives the real GUI in WinUAE on Kickstart 2.04, 3.1 and
 [`tests/target/README.md`](tests/target/README.md)):
 
 ```sh
-make target-test
+make target-test    # the normal UI, on those three Kickstarts
+make target-quick   # Quick setup, on emulated IDE, for every machine whose ROM you set
 ```
 
 ## License
