@@ -2214,11 +2214,15 @@ static int qs_read_holds(DeviceHandle *h)
     rc = rdb_parse(&g_qs_model, dev_block_io, h);
     if (rc == RDB_ERR_IO) return QS_R_UNREADABLE;
     if (rc != RDB_OK) {
-        /* The table search looks in these blocks, so a blank card is zero here. */
+        /* The table search looks in these blocks, so a blank card is blank here. Blank is
+           zeros, or the ones a new card's flash comes erased to: each block all of one. */
         int blk, zero = 1;
         for (blk = 0; blk < 16 && zero; blk++) {
+            ULONG fill;
             if (dev_read_block(h, (ULONG)blk, (UBYTE *)g_qs_block) != 0) return QS_R_UNREADABLE;
-            for (i = 0; i < 128; i++) if (g_qs_block[i]) { zero = 0; break; }
+            fill = g_qs_block[0];
+            if (fill != 0 && fill != 0xFFFFFFFFUL) { zero = 0; break; }
+            for (i = 1; i < 128; i++) if (g_qs_block[i] != fill) { zero = 0; break; }
         }
         s_cat(g_qs_holds, &p, zero ? "Empty" : "Not an Amiga disk");
     } else if (g_qs_model.num_parts == 0) {

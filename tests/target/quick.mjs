@@ -939,6 +939,12 @@ const pcCard = (card) => {
   writeSync(fd, mbr, 0, 512, 0); writeSync(fd, bs, 0, 512, 63 * 512);
   closeSync(fd);
 };
+// A new card as some come: flash erased to all ones, end to end.
+const erasedCard = (card) => {
+  const fd = openSync(card, 'w'), ones = Buffer.alloc(16 * MiB, 0xFF);
+  for (let at = 0; at < 256 * MiB; at += ones.length) writeSync(fd, ones, 0, ones.length, at);
+  closeSync(fd);
+};
 
 
 // Screens 3 and 4. Everything is read from the program's own variables, so the test sees what it drew.
@@ -1184,6 +1190,18 @@ const CARD_RUNS = {
       const { w, said } = await cardScreen(s);
       eq(said.holds, 'Not an Amiga disk', 'Now holds');
       await qsShot(s, 'pc');
+      await s.e.clickClose(w, QS.CANCEL);
+      await closed(s);
+      eq(hashFile(card), was, 'hash of the card');
+    });
+    return { [card]: was };
+  }),
+  erased: (spec) => cardRun(spec, 'erased', { make: erasedCard }, async (s, card, was) => {
+    await s.step('Erased card (all ones) says Empty', async () => {
+      await openWizard(s);
+      const { w, said } = await cardScreen(s);
+      eq(said.holds, 'Empty', 'Now holds');
+      ok(/^25[56] MB$/.test(said.size), `size: ${said.size}`);
       await s.e.clickClose(w, QS.CANCEL);
       await closed(s);
       eq(hashFile(card), was, 'hash of the card');
@@ -1849,6 +1867,19 @@ const RUN_RUNS = {
       checkVolumes(s, card, VOLUMES);
       await backToMain(s);
       await mainShows(s, 3);
+      noRequesters(s);
+    });
+    return null;
+  }),
+  // All ones everywhere the table, the filesystems and the files land.
+  erased: (spec) => cardRun(spec, 'run-erased', { make: erasedCard, keep: AFTER_CARD }, async (s, card) => {
+    await s.step('run: an erased card (all ones) ends with a valid table and working volumes', async () => {
+      await fullRun(s);
+      checkTable(s, card, 3);
+      checkVolumes(s, card, VOLUMES);
+      await backToMain(s);
+      await mainShows(s, 3);
+      checkStamps(card, await volcheckEach(s, VOLUMES));
       noRequesters(s);
     });
     return null;
