@@ -32,6 +32,10 @@ int dev_read_block (DeviceHandle *h, ULONG block, UBYTE *buf512);
 int dev_update(DeviceHandle *h);
 int dev_write_block(DeviceHandle *h, ULONG block, UBYTE *buf512);
 
+/* Raw 36-byte SCSI INQUIRY into data[]. Returns 0 on success, 1 if the command
+   ran but reported a bad status, else the io_Error (no HD_SCSICMD support). */
+int dev_inquiry(DeviceHandle *h, UBYTE data[36]);
+
 /* Best-effort SCSI INQUIRY model string. Returns 0 on success (model filled),
    nonzero if the device does not support HD_SCSICMD (model set to ""). */
 int dev_inquiry_model(DeviceHandle *h, char model[40]);

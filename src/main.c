@@ -60,6 +60,16 @@ static int run_scan(void)
         put_str(out, disks[i].driver);
         put_str(out, " unit ");
         put_uint(out, disks[i].unit);
+        {   uint32_t id, lun;
+            char lab[12];
+            disc_unit_decode(disks[i].unit, &id, &lun);
+            if (lun || id > 7u) {             /* SCSI ID.LUN when it isn't plain */
+                disc_unit_label(disks[i].unit, lab, sizeof(lab));
+                put_str(out, " (ID ");
+                put_str(out, lab);
+                put_str(out, ")");
+            }
+        }
         put_str(out, "  ");
         put_uint(out, disks[i].size_mb);
         put_str(out, " MB  [");

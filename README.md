@@ -8,6 +8,15 @@ single window, runs on a real Workbench or boots standalone from its own floppy.
   for a Workbench install. See [below](#quick-setup).
 - Pick a driver → scan its units → read the Rigid Disk Block → init / partition /
   resize / split → save.
+- **SCSI IDs and LUNs:** units are scanned and numbered the way the A4091's
+  [mounter](https://github.com/A4091/mounter) does it: `ID + LUN×10`, and the
+  Phase V wide scheme (`LUN×10000 + ID×10 + 8`) for IDs 8–15 on wide drivers
+  (`a4770.device`, `scsi770.device`, `cybppc.device`). A unit shows as `#ID` or
+  `#ID.LUN`. LUNs 1–7 are only tried behind an ID whose LUN 0 answered; one that
+  reports no device, or answers exactly like LUN 0, is left out. Saving keeps the
+  RDB's last-disk, last-LUN, last-ID and no-reselect flags and its host ID. Tested
+  in an emulator on the A3000's scsi.device and on an A4091 with a4091.device
+  42.39; wide IDs and real LUNs are not yet tested on hardware.
 - **Format** a partition into a ready, empty volume live — no reboot. Won't format
   the disk you booted from.
 - **Filesystems:** the ROM ones (FFS/OFS, Intl, DirCache), plus PFS3 and SFS

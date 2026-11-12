@@ -836,7 +836,7 @@ static void gui_load_asl(void)
     }
 }
 
-static char g_msgbuf[120];
+static char g_msgbuf[160];
 
 /* Stage the pool filesystems a partition references into g_model.fs[], ready to
    serialize. Deep-copies so pool and model never alias seg_data. All-or-nothing:
@@ -946,6 +946,16 @@ static int gui_save(void)
     { int k; for (k = 0; g_cur_driver[k] && p < 100; k++) g_msgbuf[p++] = g_cur_driver[k]; }
     s_cat(g_msgbuf, &p, " unit ");
     p += u2s(g_msgbuf + p, g_cur_unit);
+    {   uint32_t id, lun;
+        disc_unit_decode(g_cur_unit, &id, &lun);
+        if (lun || id > 7u) {                 /* a SCSI number that is not plain: spell it out */
+            s_cat(g_msgbuf, &p, " (ID ");
+            p += u2s(g_msgbuf + p, id);
+            s_cat(g_msgbuf, &p, " LUN ");
+            p += u2s(g_msgbuf + p, lun);
+            s_cat(g_msgbuf, &p, ")");
+        }
+    }
     s_cat(g_msgbuf, &p, " ?\nThis overwrites the disk's RDB.");
     g_msgbuf[p] = 0;
     if (!gui_confirm("Save", g_msgbuf)) return 0;
@@ -3930,8 +3940,9 @@ static int gui_build_units(const char *emptyText)
         char *t = g_unittext[j];
         int p = 0;
         s_cat(t, &p, "#");
-        p += u2s(t + p, (ULONG)d->unit);
+        p += disc_unit_label(d->unit, t + p, 8);   /* "#3", "#3.1": SCSI ID.LUN */
         s_pad(t, &p, 5);
+        if (t[p - 1] != ' ') t[p++] = ' ';
         p += u2s(t + p, (ULONG)d->size_mb);
         s_cat(t, &p, " MB");
         t[p] = 0;
@@ -4197,8 +4208,10 @@ static void fs_rebuild_list(int sel, struct Window *dw, struct Gadget *glv)
                           TAG_END);
 }
 
-/* Sub-picker for "Copy from disk": Driver cycle + Unit cycle (0..7) + OK/Cancel.
-   Collects driver name (into drvOut[40]) and unit number (into *unitOut).
+/* Sub-picker for "Copy from disk": Driver cycle + ID cycle (0..15) + LUN cycle (0..7)
+   + OK/Cancel. Collects driver name (into drvOut[40]) and the unit number, ID and LUN
+   in the SCSI scheme (disc_unit_encode), into *unitOut. Two fixed cycles because a
+   cycle's labels can't be changed after creation on V37 GadTools.
    Returns 1 if the user pressed OK, 0 if cancelled/closed.
    Multi-FS source (which > 0) is out of scope; caller always uses which=0. */
 static int gui_copy_from_disk_picker(char drvOut[40], uint32_t *unitOut)
@@ -4206,17 +4219,18 @@ static int gui_copy_from_disk_picker(char drvOut[40], uint32_t *unitOut)
     /* Local driver labels built from disc_candidate_drivers (same as gui_build_drivers
        but in local arrays so this picker is self-contained). */
     static const char *plabels[DISC_MAX + 2];
-    static const char *ulabels[9];  /* "0".."7" + NULL */
-    static char       unumbufs[8][4];
+    static const char *ulabels[17]; /* IDs "0".."15" + NULL */
+    static const char *llabels[9];  /* LUNs "0".."7" + NULL */
+    static char       unumbufs[16][4];
     const char *cands[DISC_MAX];
     int nc, i;
     struct Window *pw;
     struct Gadget *pglist = 0, *pg;
-    struct Gadget *gDrv = 0, *gUnit = 0;
+    struct Gadget *gDrv = 0, *gUnit = 0, *gLun = 0;
     struct NewGadget ng;
     int dt = g_topb, dl = g_leftb;
     int pdone = 0, presult = 0;
-    int drvIdx = 0, unitIdx = 0;
+    int drvIdx = 0, unitIdx = 0, lunIdx = 0;
 
     /* Build driver list. */
     nc = disc_candidate_drivers(cands, DISC_MAX);
@@ -4227,13 +4241,17 @@ static int gui_copy_from_disk_picker(char drvOut[40], uint32_t *unitOut)
     for (i = 0; i < nc && i < DISC_MAX; i++) plabels[i] = cands[i];
     plabels[nc] = 0;
 
-    /* Build unit labels 0..7. */
-    for (i = 0; i < 8; i++) {
-        unumbufs[i][0] = (char)('0' + i);
-        unumbufs[i][1] = 0;
+    /* Build ID labels 0..15 and LUN labels 0..7. */
+    for (i = 0; i < 16; i++) {
+        int k = 0;
+        if (i >= 10) unumbufs[i][k++] = '1';
+        unumbufs[i][k++] = (char)('0' + i % 10);
+        unumbufs[i][k] = 0;
         ulabels[i] = unumbufs[i];
+        if (i < 8) llabels[i] = unumbufs[i];
     }
-    ulabels[8] = 0;
+    ulabels[16] = 0;
+    llabels[8] = 0;
 
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wincompatible-pointer-types"
@@ -4248,11 +4266,15 @@ static int gui_copy_from_disk_picker(char drvOut[40], uint32_t *unitOut)
     pg = CreateGadget(CYCLE_KIND, pg, &ng, GTCY_Labels, (ULONG)plabels, GTCY_Active, 0, TAG_END);
     gDrv = pg;
 
-    /* Unit cycle (0..7) */
-    ng.ng_LeftEdge = dl + 80; ng.ng_TopEdge = dt + 26; ng.ng_Width = 80; ng.ng_Height = 14;
-    ng.ng_GadgetText = (UBYTE *)"Unit"; ng.ng_GadgetID = 2;
+    /* Unit: SCSI ID cycle (0..15) and LUN cycle (0..7); IDE master/slave = ID 0/1 */
+    ng.ng_LeftEdge = dl + 80; ng.ng_TopEdge = dt + 26; ng.ng_Width = 70; ng.ng_Height = 14;
+    ng.ng_GadgetText = (UBYTE *)"Unit ID"; ng.ng_GadgetID = 2;
     pg = CreateGadget(CYCLE_KIND, pg, &ng, GTCY_Labels, (ULONG)ulabels, GTCY_Active, 0, TAG_END);
     gUnit = pg;
+    ng.ng_LeftEdge = dl + 230; ng.ng_Width = 70;
+    ng.ng_GadgetText = (UBYTE *)"LUN"; ng.ng_GadgetID = 3;
+    pg = CreateGadget(CYCLE_KIND, pg, &ng, GTCY_Labels, (ULONG)llabels, GTCY_Active, 0, TAG_END);
+    gLun = pg;
 
     /* OK / Cancel */
     ng.ng_LeftEdge = dl + 10; ng.ng_TopEdge = dt + 48; ng.ng_Width = 70; ng.ng_Height = 14;
@@ -4285,6 +4307,7 @@ static int gui_copy_from_disk_picker(char drvOut[40], uint32_t *unitOut)
             else if (cl == IDCMP_GADGETUP) {
                 if (ig == gDrv)       drvIdx  = (int)code;
                 else if (ig == gUnit) unitIdx = (int)code;
+                else if (ig == gLun)  lunIdx  = (int)code;
                 else if (ig->GadgetID == 10) { presult = 1; pdone = 1; } /* OK */
                 else if (ig->GadgetID == 11) { pdone = 1; }              /* Cancel */
             }
@@ -4297,7 +4320,7 @@ static int gui_copy_from_disk_picker(char drvOut[40], uint32_t *unitOut)
         const char *src = plabels[drvIdx];
         int k; for (k = 0; k < 39 && src[k]; k++) drvOut[k] = src[k];
         drvOut[k] = 0;
-        *unitOut = (uint32_t)unitIdx;
+        *unitOut = disc_unit_encode((uint32_t)unitIdx, (uint32_t)lunIdx);
     }
     return presult;
 }

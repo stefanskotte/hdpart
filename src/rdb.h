@@ -72,7 +72,17 @@ typedef struct {
     RdbFileSys   fs[RDB_MAX_FS];
     int          num_fs;
     uint8_t      setup_pending;  /* 0 none, else 0x80|mask: Quick setup marker in the RDSK block */
+    uint32_t     rdsk_flags;     /* rdb_Flags kept across a re-save: RDB_RDSK_KEEP_FLAGS bits only */
+    uint32_t     host_id;        /* rdb_HostID kept across a re-save (7 for a new table) */
 } RdbModel;
+
+/* rdb_Flags bits (devices/hardblocks.h). The scan-control ones are kept on a re-save;
+   DISKID/CTRLRID/SYNCH claim fields HDPart does not write, so they are dropped. */
+#define RDB_RDBFF_LAST       0x01u   /* no disks beyond this one */
+#define RDB_RDBFF_LASTLUN    0x02u   /* no LUNs beyond this one at this ID */
+#define RDB_RDBFF_LASTTID    0x04u   /* no IDs beyond this one */
+#define RDB_RDBFF_NORESELECT 0x08u   /* don't let the drive reselect */
+#define RDB_RDSK_KEEP_FLAGS  0x0Fu
 
 #define RDB_RESERVED_CYLS 2u          /* cylinders reserved for RDB metadata */
 #define RDB_RESERVED_MIN_BLOCKS 1024u /* reserve >= this many metadata blocks (table + ~512KB embedded FS) */
@@ -194,6 +204,10 @@ int rdb_present(BlockIO io, void *ctx);
    for the Units list. Walks only the PART chain, so it does not read an embedded
    handler. Returns RDB_OK with *pct set, RDB_ERR_NO_RDB, or RDB_ERR_IO. */
 int rdb_used_percent(BlockIO io, void *ctx, uint32_t *pct);
+
+/* rdb_Flags of the disk's RDSK block (all bits, as stored). Returns RDB_OK,
+   RDB_ERR_NO_RDB or RDB_ERR_IO; *flags is 0 unless RDB_OK. */
+int rdb_disk_flags(BlockIO io, void *ctx, uint32_t *flags);
 
 /* Release all heap owned by the model (each fs[].seg_data) and zero num_fs.
    Safe to call repeatedly and on a zero-initialized model. */

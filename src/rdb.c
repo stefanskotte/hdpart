@@ -106,6 +106,7 @@ void rdb_init_model(RdbModel *m, uint32_t cyl, uint32_t heads, uint32_t sectors)
     m->block_bytes = RDB_BLOCK_BYTES;
     m->cyl_blocks  = heads * sectors;
     m->hi_cyl      = (cyl > 0) ? cyl - 1 : 0;
+    m->host_id     = 7u;
     m->rdb_blocks_lo = 0;
     {
         uint32_t rc = RDB_RESERVED_CYLS;              /* classic: cyl 0..1 */
@@ -684,9 +685,9 @@ int rdb_serialize(const RdbModel *m, BlockIO io, void *ctx)
     memset(blk, 0, sizeof(blk));
     be_put32(blk + RDB_o_ID, ID_RDSK);
     be_put32(blk + RDB_o_SummedLongs, RDB_SUMMEDLONGS);
-    be_put32(blk + RDB_o_HostID, 7);
+    be_put32(blk + RDB_o_HostID, m->host_id);
     be_put32(blk + RDB_o_BlockBytes, m->block_bytes);
-    be_put32(blk + RDB_o_Flags, 0);
+    be_put32(blk + RDB_o_Flags, m->rdsk_flags & RDB_RDSK_KEEP_FLAGS);
     be_put32(blk + RDB_o_BadBlockList, NULLPTR);
     be_put32(blk + RDB_o_PartitionList, part_block_first);
     be_put32(blk + RDB_o_FileSysHdr,
@@ -870,6 +871,17 @@ int rdb_present(BlockIO io, void *ctx)
     return (r == 1) ? RDB_OK : (r < 0 ? RDB_ERR_IO : RDB_ERR_NO_RDB);
 }
 
+int rdb_disk_flags(BlockIO io, void *ctx, uint32_t *flags)
+{
+    uint8_t blk[RDB_BLOCK_BYTES];
+    int r = find_rdsk_block(io, ctx, blk);
+    *flags = 0;
+    if (r < 0) return RDB_ERR_IO;
+    if (r == 0) return RDB_ERR_NO_RDB;
+    *flags = be_get32(blk + RDB_o_Flags);
+    return RDB_OK;
+}
+
 int rdb_used_percent(BlockIO io, void *ctx, uint32_t *pct)
 {
     uint8_t blk[RDB_BLOCK_BYTES];
@@ -918,6 +930,8 @@ int rdb_parse(RdbModel *m, BlockIO io, void *ctx)
         blk[RDB_o_CtlRevision + 3] == ' ')
         m->setup_pending = (uint8_t)(0x80u | (uint8_t)(blk[RDB_o_CtlRevision] - '0'));
 
+    m->host_id       = be_get32(blk + RDB_o_HostID);
+    m->rdsk_flags    = be_get32(blk + RDB_o_Flags) & RDB_RDSK_KEEP_FLAGS;
     m->block_bytes   = be_get32(blk + RDB_o_BlockBytes);
     if (m->block_bytes == 0) m->block_bytes = RDB_BLOCK_BYTES;
     m->cylinders     = be_get32(blk + RDB_o_Cylinders);

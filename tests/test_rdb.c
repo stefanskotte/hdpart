@@ -691,6 +691,39 @@ static void test_pending_valid(void)
     CHECK(!quick_pending_valid(&m));
 }
 
+static void test_rdsk_flags_kept(void)
+{
+    RdbModel m, back;
+    uint32_t f;
+    memset(g_ram, 0, sizeof(g_ram));
+    rdb_init_model(&m, 996, 16, 63);
+    CHECK(m.host_id == 7u && m.rdsk_flags == 0u);
+    CHECK(rdb_add_partition(&m, "DH0", 200, RDB_DOSTYPE_FFS_INTL) == RDB_OK);
+    CHECK(rdb_serialize(&m, ram_io, 0) == RDB_OK);
+    CHECK(be_get32(g_ram[0] + 12) == 7u);              /* HostID */
+    CHECK(be_get32(g_ram[0] + 20) == 0u);              /* Flags */
+    CHECK(rdb_disk_flags(ram_io, 0, &f) == RDB_OK && f == 0u);
+
+    /* A table from another tool: LASTLUN|NORESELECT|DISKID, host at ID 6. */
+    m.rdsk_flags = RDB_RDBFF_LASTLUN | RDB_RDBFF_NORESELECT | 0x10u;
+    m.host_id = 6u;
+    CHECK(rdb_serialize(&m, ram_io, 0) == RDB_OK);
+    CHECK(be_get32(g_ram[0] + 20) == (RDB_RDBFF_LASTLUN | RDB_RDBFF_NORESELECT)); /* DISKID dropped */
+    CHECK(be_get32(g_ram[0] + 12) == 6u);
+    CHECK(rdb_disk_flags(ram_io, 0, &f) == RDB_OK && (f & RDB_RDBFF_LASTLUN));
+    CHECK(rdb_parse(&back, ram_io, 0) == RDB_OK);
+    CHECK(back.rdsk_flags == (RDB_RDBFF_LASTLUN | RDB_RDBFF_NORESELECT));
+    CHECK(back.host_id == 6u);
+    /* Re-save keeps them. */
+    memset(g_ram, 0, sizeof(g_ram));
+    CHECK(rdb_serialize(&back, ram_io, 0) == RDB_OK);
+    CHECK(be_get32(g_ram[0] + 20) == (RDB_RDBFF_LASTLUN | RDB_RDBFF_NORESELECT));
+    CHECK(be_get32(g_ram[0] + 12) == 6u);
+    rdb_model_free(&back);
+    memset(g_ram, 0, sizeof(g_ram));
+    CHECK(rdb_disk_flags(ram_io, 0, &f) == RDB_ERR_NO_RDB && f == 0u);
+}
+
 int main(int argc, char **argv)
 {
     if (argc >= 2 && strcmp(argv[1], "--emit") == 0) {
@@ -768,6 +801,7 @@ int main(int argc, char **argv)
     test_setup_marker();
     test_setup_marker_rejects();
     test_pending_valid();
+    test_rdsk_flags_kept();
     test_geometry_agrees();
     test_cap_cylinders();
     if (g_fail) { printf("%d CHECK(s) FAILED\n", g_fail); return 1; }

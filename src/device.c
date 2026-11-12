@@ -201,24 +201,24 @@ int dev_unit_ready(DeviceHandle *h)
     return h->req->iotd_Req.io_Actual ? 0 : 1;  /* io_Actual != 0 => no disk */
 }
 
-/* Standard SCSI INQUIRY (6-byte CDB), 36-byte response.
-   Response: bytes 8..15 = vendor id, 16..31 = product id (space padded). */
-int dev_inquiry_model(DeviceHandle *h, char model[40])
+/* Standard SCSI INQUIRY (6-byte CDB), 36-byte response, into data[36].
+   Returns 0 on success, else the io_Error (no SCSI passthrough) or 1 for a
+   failed command status. */
+int dev_inquiry(DeviceHandle *h, UBYTE data[36])
 {
     static UBYTE cdb[6];
-    static UBYTE data[36];
+    static UBYTE buf[36];
     static UBYTE sense[32];
     struct SCSICmd sc;
     LONG err;
-    int i, n;
+    int i;
 
-    model[0] = 0;
     for (i = 0; i < 6;  i++) cdb[i]  = 0;
-    for (i = 0; i < 36; i++) data[i] = 0;
+    for (i = 0; i < 36; i++) buf[i] = 0;
     cdb[0] = 0x12;   /* INQUIRY */
     cdb[4] = 36;     /* allocation length */
 
-    sc.scsi_Data       = (UWORD *)data;
+    sc.scsi_Data       = (UWORD *)buf;
     sc.scsi_Length     = 36;
     sc.scsi_Actual     = 0;
     sc.scsi_Command    = cdb;
@@ -235,7 +235,21 @@ int dev_inquiry_model(DeviceHandle *h, char model[40])
     h->req->iotd_Req.io_Length  = sizeof(sc);
     h->req->iotd_Req.io_Actual  = 0;
     err = DoIO((struct IORequest *)h->req);
+    for (i = 0; i < 36; i++) data[i] = buf[i];
     if (err != 0) return (int)err;     /* device has no SCSI passthrough */
+    if (sc.scsi_Status != 0) return 1;
+    return 0;
+}
+
+/* Response: bytes 8..15 = vendor id, 16..31 = product id (space padded). */
+int dev_inquiry_model(DeviceHandle *h, char model[40])
+{
+    static UBYTE data[36];
+    int i, n, err;
+
+    model[0] = 0;
+    err = dev_inquiry(h, data);
+    if (err != 0 && err != 1) return err;   /* keep the old behaviour on a bad status */
 
     /* Compose "VENDOR PRODUCT", trimming trailing spaces of each field. */
     n = 0;

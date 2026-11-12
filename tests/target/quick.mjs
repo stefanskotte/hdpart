@@ -29,7 +29,7 @@ export const MACHINES = {
   ...ENGINE,
   ks314a4000: A4000, ks32a4000: A4000,
   a3000ks204: A3000, a3000ks31: A3000, a3000ks32: A3000, a500pks204: A500P, a4000tks31: A4000T, a4000tks32: A4000T,
-  a3000roma4000: A3000, a3000roma1200: A3000,
+  a3000roma4000: A3000, a3000roma1200: A3000, a3000a4091: A3000,
   ks314setpatch: A1200, ks32setpatch: A1200, ks31softload: A1200, a3000softload: A3000,
 };
 
@@ -195,13 +195,13 @@ export class QuickSuite {
     await this.collectRequesters('after restart');
   }
 
-  async pickScsi(wantParts) {
+  async pickScsi(wantParts, driver = 'scsi.device') {
     const e = this.e;
     for (let i = 0; i < 40; i++) {
       const idx = (await e.g32('g_drv_idx')) | 0;
       const label = await e.cstr(await e.u32(e.addr('g_drvlabels') + Math.max(idx, 0) * 4), 40);
-      if (idx >= 0 && label.includes('scsi.device')) break;
-      if (i === 39) throw new Error('no scsi.device in the driver list');
+      if (idx >= 0 && label === driver) break;
+      if (i === 39) throw new Error(`no ${driver} in the driver list`);
       await this.clickMain(GID.DEVICE);
       await sleep(500);
     }
@@ -790,6 +790,57 @@ async function ideCheck(spec) {
     res.pass = true;
   } catch (err) { res.pass = false; res.err = err.message; } finally { await s.e.stop(); }
   writeFileSync(`${s.dir}/result.json`, JSON.stringify(res, null, 1));
+  return res;
+}
+
+/* ---- SCSI unit scan: IDs and LUNs the way a4091/mounter numbers them ----
+   Disks at IDs 2 and 5 on the A3000's own scsi.device, or on an emulated A4091 running the real
+   a4091.device (ROM from QUICK_A4091_ROM, a4091-software release) with its LUN switch on. WinUAE answers
+   INQUIRY on a LUN above 0 with "no LUN here" (0x7F), so the scan must list exactly units 2 and 5. */
+const SCSI_IDS = {
+  a3000ks204: { driver: 'scsi.device', ctl: '' }, a3000ks31: { driver: 'scsi.device', ctl: '' }, a3000ks32: { driver: 'scsi.device', ctl: '' },
+  a3000a4091: { driver: 'a4091.device', ctl: '_a4091', cfg: () => [`a4091_rom_file=${process.env.QUICK_A4091_ROM}`, 'a4091_rom_options=lun=true'] },
+};
+async function scsiUnits(spec) {
+  const c = SCSI_IDS[spec.key];
+  if (c.ctl && !(process.env.QUICK_A4091_ROM && existsSync(process.env.QUICK_A4091_ROM))) {
+    console.log(`--- skip scsi on ${spec.key}: QUICK_A4091_ROM not set`); return { test: 'scsi', key: spec.key, pass: true, skipped: true };
+  }
+  const card = `${ROOT}/out/target-quick/${spec.key}/scsi-id2.hdf`, second = `${ROOT}/out/target-quick/${spec.key}/scsi-id5.hdf`;
+  rmSync(card, { force: true }); rmSync(second, { force: true });
+  mkdirSync(path.dirname(card), { recursive: true });
+  makeAmigaCard(second, 64 * MiB, USED);
+  const s = new QuickSuite({ ...spec, bootPri: 5, controller: `scsi2${c.ctl}`, cfg: () => [...(c.cfg ? c.cfg() : []), `hardfile2=rw,:${second},0,0,0,512,-128,,scsi5${c.ctl}`] },
+    card, { name: 'scsi', cardBytes: 64 * MiB });
+  s.prepare();
+  const was = { [card]: hashFile(card), [second]: hashFile(second) };
+  const res = { test: 'scsi', key: spec.key };
+  try {
+    await s.boot();
+    await s.step('SCSI scan: IDs 2 and 5 found, no ghost LUNs', async () => {
+      const e = s.e;
+      await s.pickScsi(undefined, c.driver);
+      const n = (await e.g32('g_ndisks')) | 0, base = e.addr('g_disks'), units = [];
+      for (let i = 0; i < n; i++) {
+        const d = base + i * 100;               // DiscDisk: driver[40] unit size_mb status partitionable used_pct label[40]
+        if ((await e.cstr(d, 40)) !== c.driver) continue;
+        units.push({ unit: await e.u32(d + 40), mb: await e.u32(d + 44), status: await e.u32(d + 48), part: await e.u32(d + 52) });
+      }
+      s.note(`${c.driver} units: ${JSON.stringify(units)}`);
+      const rows = [];
+      for (let i = 0; i < ((await e.g32('g_nunits')) | 0); i++) rows.push((await e.cstr(e.addr('g_unittext') + i * 24, 24)).trim());
+      s.note(`Units list: ${JSON.stringify(rows)}`);
+      eq(units.map((u) => u.unit).sort((a, b) => a - b).join(), '2,5', `${c.driver} units`);
+      eq(rows.length, 2, 'rows in the Units list');
+      ok(/^#2 +6[34] MB$/.test(rows[0]) && /^#5 +6[34] MB$/.test(rows[1]), `labels ${JSON.stringify(rows)}`);
+      res.units = units;
+    });
+    res.pass = true;
+  } catch (err) { res.pass = false; res.err = err.message; } finally { await s.e.stop(); }
+  for (const [f, h] of Object.entries(was)) if (res.pass && hashFile(f) !== h) { res.pass = false; res.err = `${path.basename(f)} changed`; }
+  console.log(`  ${res.pass ? 'ok  ' : 'FAIL'} ${spec.key} scsi${res.err ? `: ${res.err}` : ''}`);
+  writeFileSync(`${s.dir}/result.json`, JSON.stringify(res, null, 1));
+  rmSync(card, { force: true }); rmSync(second, { force: true });
   return res;
 }
 
@@ -3201,6 +3252,7 @@ async function cardTest(spec) {
 const TESTS = {
   // keys: the default machines. allowed: what the test can run on when keys are named. Engine tests need a card on IDE.
   ide: { fn: ideCheck, keys: Object.keys(IDE_CHECK), allowed: Object.keys(IDE_CHECK) },
+  scsi: { fn: scsiUnits, keys: Object.keys(SCSI_IDS), allowed: Object.keys(SCSI_IDS) },
   fresh: { fn: fresh, keys: Object.keys(ENGINE), allowed: Object.keys(ENGINE) },
   used: { fn: used, keys: ['ks31a1200', 'ks32'], allowed: Object.keys(ENGINE) },
   restart: { fn: restartPath, keys: ['ks31a1200', 'ks32'], allowed: Object.keys(ENGINE) },

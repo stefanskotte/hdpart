@@ -140,6 +140,57 @@ static void test_synth_chs(void)
     CHECK((uint64_t)c * h * s <= 500u);
 }
 
+static void test_unit_numbering(void)
+{
+    uint32_t id, lun, i, l;
+    char b[12];
+    /* Classic: unit = ID + LUN*10 (a4091-software calculate_unit_number). */
+    CHECK(disc_unit_encode(0, 0) == 0);
+    CHECK(disc_unit_encode(3, 0) == 3);
+    CHECK(disc_unit_encode(3, 1) == 13);
+    CHECK(disc_unit_encode(7, 7) == 77);
+    /* Phase V wide: LUN*10000 + ID*10 + 8. */
+    CHECK(disc_unit_encode(8, 0) == 88);
+    CHECK(disc_unit_encode(12, 0) == 128);
+    CHECK(disc_unit_encode(15, 7) == 70158);
+    CHECK(disc_unit_encode(2, 8) == 80028);          /* LUN above 7 is wide too */
+    /* Every ID 0..15 / LUN 0..7 round-trips. */
+    for (i = 0; i < 16; i++)
+        for (l = 0; l < 8; l++) {
+            disc_unit_decode(disc_unit_encode(i, l), &id, &lun);
+            CHECK(id == i && lun == l);
+        }
+    disc_unit_decode(1, &id, &lun);  CHECK(id == 1 && lun == 0);   /* IDE slave */
+    /* Labels: ID, or ID.LUN when LUN is not 0. */
+    disc_unit_label(0, b, sizeof b);     CHECK(strcmp(b, "0") == 0);
+    disc_unit_label(13, b, sizeof b);    CHECK(strcmp(b, "3.1") == 0);
+    disc_unit_label(128, b, sizeof b);   CHECK(strcmp(b, "12") == 0);
+    disc_unit_label(70158, b, sizeof b); CHECK(strcmp(b, "15.7") == 0);
+    disc_unit_label(70158, b, 3);        CHECK(strcmp(b, "15") == 0);  /* truncates */
+}
+
+static void test_wide_and_inquiry(void)
+{
+    DiscIdent a, c;
+    CHECK(disc_driver_wide("a4770.device") == 1);
+    CHECK(disc_driver_wide("SCSI770.device") == 1);
+    CHECK(disc_driver_wide("a4091.device") == 0);     /* 53C710: narrow */
+    CHECK(disc_driver_wide("scsi.device") == 0);
+    CHECK(disc_driver_wide(0) == 0);
+    CHECK(disc_inquiry_absent(0x00) == 0);            /* disk present */
+    CHECK(disc_inquiry_absent(0x05) == 0);            /* CD-ROM present */
+    CHECK(disc_inquiry_absent(0x20) == 1);            /* qualifier 1: not connected */
+    CHECK(disc_inquiry_absent(0x7F) == 1);            /* qualifier 3: no LUN */
+    CHECK(disc_inquiry_absent(0x1F) == 1);            /* type: none */
+    memset(&a, 0, sizeof a); a.has_inq = 1; a.inq[8] = 'Q'; a.total_blocks = 1000; a.sum = 42;
+    c = a;
+    CHECK(disc_ident_same(&a, &c) == 1);              /* a ghost of LUN 0 */
+    c.sum = 43;        CHECK(disc_ident_same(&a, &c) == 0);
+    c = a; c.inq[16] = 'X';  CHECK(disc_ident_same(&a, &c) == 0);
+    c = a; c.total_blocks = 999; CHECK(disc_ident_same(&a, &c) == 0);
+    c = a; c.has_inq = 0;    CHECK(disc_ident_same(&a, &c) == 0);
+}
+
 int main(void)
 {
     test_bcpl_to_c();
@@ -150,6 +201,8 @@ int main(void)
     test_extra_driver_registry();
     test_parse_read_capacity10();
     test_synth_chs();
+    test_unit_numbering();
+    test_wide_and_inquiry();
     if (g_fail) { printf("%d CHECK(s) FAILED\n", g_fail); return 1; }
     printf("DISCOVER TESTS PASSED\n");
     return 0;

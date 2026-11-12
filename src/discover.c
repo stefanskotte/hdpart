@@ -107,6 +107,98 @@ void disc_synth_chs(uint32_t total_blocks,
     if (sectors) *sectors = s;
 }
 
+/* ---- SCSI unit numbering (plain C; shared by host + target) ---- */
+#define DISC_WIDE_MARK 8u        /* HD_WIDESCSI: last digit 8 marks a Phase V wide unit */
+
+uint32_t disc_unit_encode(uint32_t id, uint32_t lun)
+{
+    if (id > 7u || lun > 7u)
+        return lun * 10000u + id * 10u + DISC_WIDE_MARK;
+    return id + lun * 10u;
+}
+
+void disc_unit_decode(uint32_t unit, uint32_t *id, uint32_t *lun)
+{
+    uint32_t i, l;
+    if (unit % 10u == DISC_WIDE_MARK) {
+        i = (unit / 10u) % 1000u;
+        l = (unit / 10000u) % 1000u;
+    } else {
+        i = unit % 10u;
+        l = unit / 10u;
+    }
+    if (id)  *id  = i;
+    if (lun) *lun = l;
+}
+
+static int disc_put_uint(char *out, int p, int outsz, uint32_t v)
+{
+    char tmp[11];
+    int n = 0;
+    do { tmp[n++] = (char)('0' + v % 10u); v /= 10u; } while (v && n < 10);
+    while (n > 0 && p < outsz - 1) out[p++] = tmp[--n];
+    return p;
+}
+
+int disc_unit_label(uint32_t unit, char *out, int outsz)
+{
+    uint32_t id, lun;
+    int p = 0;
+    if (!out || outsz <= 0) return 0;
+    disc_unit_decode(unit, &id, &lun);
+    p = disc_put_uint(out, p, outsz, id);
+    if (lun) {
+        if (p < outsz - 1) out[p++] = '.';
+        p = disc_put_uint(out, p, outsz, lun);
+    }
+    out[p] = 0;
+    return p;
+}
+
+static int disc_name_ieq(const char *a, const char *b)
+{
+    int n;
+    for (n = 0; a[n] && b[n]; n++) {
+        char ca = a[n], cb = b[n];
+        if (ca >= 'A' && ca <= 'Z') ca = (char)(ca + 32);
+        if (cb >= 'A' && cb <= 'Z') cb = (char)(cb + 32);
+        if (ca != cb) return 0;
+    }
+    return a[n] == 0 && b[n] == 0;
+}
+
+/* Drivers that decode Phase V wide unit numbers. a4770/scsi770 are the 53C770
+   drivers from a4091-software (16 targets when wide is on; a target beyond what the
+   board allows simply fails to open). cybppc.device is Phase 5's own CyberStorm PPC
+   driver, where the scheme comes from. */
+static const char *const kWideDrivers[] = {
+    "a4770.device", "scsi770.device", "cybppc.device", 0
+};
+
+int disc_driver_wide(const char *name)
+{
+    int i;
+    if (!name) return 0;
+    for (i = 0; kWideDrivers[i]; i++)
+        if (disc_name_ieq(name, kWideDrivers[i])) return 1;
+    return 0;
+}
+
+int disc_inquiry_absent(uint8_t byte0)
+{
+    return (byte0 & 0xE0u) != 0 || (byte0 & 0x1Fu) == 0x1Fu;
+}
+
+int disc_ident_same(const DiscIdent *a, const DiscIdent *b)
+{
+    int i;
+    if (!a || !b) return 0;
+    if (a->has_inq != b->has_inq) return 0;
+    if (a->has_inq)
+        for (i = 0; i < 36; i++) if (a->inq[i] != b->inq[i]) return 0;
+    return a->total_blocks == b->total_blocks && a->sum == b->sum;
+}
+
 /* ---- user-loaded driver registry (plain C; shared by host + target) ---- */
 #define DISC_EXTRA_MAX 8
 static char g_extra[DISC_EXTRA_MAX][DISC_DRIVER_LEN];
@@ -131,16 +223,18 @@ int disc_extra_count(void) { return g_extra_n; }
 
 #ifdef HDPART_AMIGA
 
-/* Curated list of common block-device driver names (probed units 0..PROBE_UNITS-1).
+/* Curated list of common block-device driver names (probed by probe_driver_units).
    uaehf.device covers FS-UAE/WinUAE hardfiles; scsi.device is the A600/A1200
    built-in IDE and most controllers; the rest are common 3rd-party controllers.
-   disc_candidate_drivers() lists only the ones actually resident in memory. */
+   a4091/a4092/a4770.device and scsi710/scsi770.device are the a4091-software
+   family (A4091, A4092, A4770, A4000T). disc_candidate_drivers() lists only the
+   ones actually resident in memory. */
 static const char *const kProbeDrivers[] = {
     "scsi.device", "2nd.scsi.device", "uaehf.device", "lide.device",
     "ide.device", "oktagon.device", "gvpscsi.device", "omniscsi.device",
-    "a4091.device", "a3000scsi.device", "z3scsi.device", 0
+    "a4091.device", "a4092.device", "a4770.device", "scsi710.device",
+    "scsi770.device", "cybppc.device", "a3000scsi.device", "z3scsi.device", 0
 };
-#define PROBE_UNITS 8
 
 static int disc_name_eq(const char *a, const char *b)
 {
@@ -285,28 +379,86 @@ static void scan_dos_devices(DiscDisk out[], int *count, int max)
     UnLockDosList(LDF_DEVICES | LDF_READ);
 }
 
-/* (2) Probe the curated driver/unit matrix for disks not already listed. */
+/* What one unit looks like from outside (see DiscIdent). 0 if the unit opened. */
+static int read_ident(const char *driver, ULONG unit, DiscIdent *id)
+{
+    static UBYTE blk[512];
+    DeviceHandle *h = dev_open(driver, unit);
+    DeviceInfo info;
+    ULONG b;
+    int i;
+    for (i = 0; i < (int)sizeof(*id); i++) ((UBYTE *)id)[i] = 0;
+    if (!h) return -1;
+    id->has_inq = (dev_inquiry(h, id->inq) == 0);
+    if (dev_unit_ready(h) && dev_geometry(h, &info) == 0 &&
+        info.has_media && info.total_blocks > 0) {
+        id->total_blocks = info.total_blocks;
+        for (b = 0; b < 16 && b < info.total_blocks; b++) {
+            if (dev_read_block(h, b, blk) != 0) { id->sum ^= 0xA5A5A5A5u; break; }
+            for (i = 0; i < 512; i++) id->sum += (uint32_t)blk[i] << (8 * (i & 3));
+        }
+    }
+    dev_close(h);
+    return 0;
+}
+
+/* RDBFF_LASTLUN set in this unit's RDB? */
+static int unit_last_lun(const char *driver, ULONG unit)
+{
+    DeviceHandle *h = dev_open(driver, unit);
+    DeviceInfo info;
+    uint32_t flags = 0;
+    if (!h) return 0;
+    if (dev_unit_ready(h) && dev_geometry(h, &info) == 0 && info.has_media &&
+        info.total_blocks > 0 && rdb_disk_flags(dev_block_io, h, &flags) != RDB_OK)
+        flags = 0;
+    dev_close(h);
+    return (flags & RDB_RDBFF_LASTLUN) != 0;
+}
+
+/* Scan one driver the way a4091/mounter does (see discover_probe_driver in the
+   header), adding each unit found. A LUN above 0 must also say a device is there
+   and must not mirror LUN 0, since HDPart writes to what it lists. */
+static void probe_driver_units(DiscDisk out[], int *count, int max, const char *driver)
+{
+    uint32_t ids = disc_driver_wide(driver) ? DISC_WIDE_IDS : DISC_NARROW_IDS;
+    uint32_t id, lun;
+    for (id = 0; id < ids; id++) {
+        DiscIdent lun0;
+        int have_lun0 = 0;
+        for (lun = 0; lun < DISC_MAX_LUN; lun++) {
+            ULONG unit = disc_unit_encode(id, lun);
+            DeviceHandle *h = dev_open(driver, unit);
+            if (!h) break;                          /* no unit: next ID */
+            if (lun > 0) {
+                static UBYTE inq[36];
+                DiscIdent me;
+                int absent = (dev_inquiry(h, inq) == 0 && disc_inquiry_absent(inq[0]));
+                dev_close(h);
+                if (absent) break;
+                if (!have_lun0) {
+                    if (read_ident(driver, disc_unit_encode(id, 0), &lun0) != 0) break;
+                    have_lun0 = 1;
+                }
+                if (read_ident(driver, unit, &me) != 0 || disc_ident_same(&lun0, &me))
+                    break;                          /* a ghost of LUN 0 */
+            } else {
+                dev_close(h);
+            }
+            add_unique(out, count, max, driver, unit);
+            if (unit_last_lun(driver, unit)) break;
+        }
+    }
+}
+
+/* (2) Probe the curated drivers and the user-loaded ones. */
 static void scan_probe(DiscDisk out[], int *count, int max)
 {
     int di;
-    for (di = 0; kProbeDrivers[di]; di++) {
-        ULONG u;
-        for (u = 0; u < PROBE_UNITS; u++) {
-            DeviceHandle *h = dev_open(kProbeDrivers[di], u);
-            if (!h) continue;          /* driver/unit not present */
-            dev_close(h);
-            add_unique(out, count, max, kProbeDrivers[di], u);
-        }
-    }
-    for (di = 0; di < g_extra_n; di++) {
-        ULONG u;
-        for (u = 0; u < PROBE_UNITS; u++) {
-            DeviceHandle *h = dev_open(g_extra[di], u);
-            if (!h) continue;
-            dev_close(h);
-            add_unique(out, count, max, g_extra[di], u);
-        }
-    }
+    for (di = 0; kProbeDrivers[di]; di++)
+        probe_driver_units(out, count, max, kProbeDrivers[di]);
+    for (di = 0; di < g_extra_n; di++)
+        probe_driver_units(out, count, max, g_extra[di]);
 }
 
 int discover_disks(DiscDisk out[], int max)
@@ -323,16 +475,10 @@ int discover_disks(DiscDisk out[], int max)
 int discover_probe_driver(DiscDisk out[], int *count, int max, const char *driver)
 {
     int before;
-    ULONG u;
     int i;
     if (!driver || !driver[0] || !count) return 0;
     before = *count;
-    for (u = 0; u < PROBE_UNITS; u++) {
-        DeviceHandle *h = dev_open(driver, u);
-        if (!h) continue;          /* unit not present */
-        dev_close(h);
-        add_unique(out, count, max, driver, u);
-    }
+    probe_driver_units(out, count, max, driver);
     /* Classify only the entries we just added. */
     for (i = before; i < *count; i++)
         probe_one(&out[i]);
