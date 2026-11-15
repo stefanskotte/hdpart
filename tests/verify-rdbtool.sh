@@ -30,9 +30,13 @@ echo "=== amitools block-parser cross-check (embedded FS) ==="
 /tmp/hdpart_tests --emit-fs
 python3 - <<'PY'
 import sys, glob
-# locate amitools site-packages (brew Cellar) without importing the buggy CLI
-for p in glob.glob("/opt/homebrew/Cellar/amitools/*/libexec/lib/python*/site-packages"):
-    sys.path.insert(0, p)
+# locate amitools site-packages (brew Cellar or /opt/amiga-*) without importing the buggy CLI
+for pat in (
+    "/opt/amiga-*/libexec/amitools/lib/python*/site-packages",
+    "/opt/homebrew/Cellar/amitools/*/libexec/lib/python*/site-packages",
+):
+    for p in glob.glob(pat):
+        sys.path.insert(0, p)
 from amitools.fs.blkdev.RawBlockDevice import RawBlockDevice
 from amitools.fs.block.rdb.RDBlock import RDBlock
 from amitools.fs.block.rdb.FSHeaderBlock import FSHeaderBlock
