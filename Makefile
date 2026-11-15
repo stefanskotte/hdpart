@@ -1,4 +1,6 @@
-# HDPart - AmigaOS application Makefile (Bartman m68k-amiga-elf toolchain)
+# HDPart - AmigaOS application Makefile
+# Supports Bartman's m68k-amiga-elf-gcc + elf2hunk toolchain as well as
+# AmigaPorts m68k-amigaos-gcc (on PATH or under /opt/amiga*/bin).
 # Builds a normal AmigaDOS hunk executable (NOT a bare-metal demo).
 
 ifdef OS
@@ -6,14 +8,46 @@ ifdef OS
 	SHELL = cmd.exe
 endif
 
-CC    = m68k-amiga-elf-gcc
+ifndef WINDOWS
+ifdef AMIGA_TOOLCHAIN_BIN
+export PATH := $(AMIGA_TOOLCHAIN_BIN):$(PATH)
+DEFAULT_CC := $(AMIGA_TOOLCHAIN_BIN)/m68k-amigaos-gcc
+else ifneq ($(shell command -v m68k-amiga-elf-gcc 2>/dev/null),)
+DEFAULT_CC := m68k-amiga-elf-gcc
+else ifneq ($(shell command -v m68k-amigaos-gcc 2>/dev/null),)
+DEFAULT_CC := m68k-amigaos-gcc
+else
+OPT_AMIGA_CC := $(lastword $(sort $(wildcard /opt/amiga/bin/m68k-amigaos-gcc /opt/amiga-*/bin/m68k-amigaos-gcc)))
+ifneq ($(OPT_AMIGA_CC),)
+export PATH := $(patsubst %/,%,$(dir $(OPT_AMIGA_CC))):$(PATH)
+DEFAULT_CC := $(OPT_AMIGA_CC)
+else
+DEFAULT_CC := m68k-amiga-elf-gcc
+endif
+endif
+else
+DEFAULT_CC := m68k-amiga-elf-gcc
+endif
+
+CC      = $(DEFAULT_CC)
+TOOLCHAIN_PREFIX = $(patsubst %-gcc,%-,$(CC))
+AS      = $(TOOLCHAIN_PREFIX)as
+LD      = $(TOOLCHAIN_PREFIX)ld
+OBJDUMP = $(TOOLCHAIN_PREFIX)objdump
+STRIP   = $(TOOLCHAIN_PREFIX)strip
+
+ifneq ($(findstring amigaos,$(CC)),)
+AMIGAOS_GCC = 1
+endif
+
 # `program` is overridable by the VSCode build task (passes program=${config:amiga.program}).
 # The Bartman amiga-debug extension runs <program>.exe and reads <program>.elf for symbols.
 program ?= out/HDPart
 OUT   = $(program)
 
-# Only compile our own sources under src/.
-c_sources := $(wildcard src/*.c)
+# Only compile our own sources under src/. Place startup.c first so _start is
+# at byte 0 of .text under both m68k-amigaos-ld and m68k-amiga-elf-ld.
+c_sources := src/startup.c $(filter-out src/startup.c,$(sort $(wildcard src/*.c)))
 c_objects := $(addprefix obj/,$(patsubst src/%.c,%.o,$(c_sources)))
 
 # Ensure build output dirs exist on a fresh checkout (CI / new clone) so -MMD can
@@ -22,7 +56,9 @@ ifndef WINDOWS
 $(shell mkdir -p obj out)
 endif
 
-ifdef WINDOWS
+ifdef AMIGAOS_GCC
+	SDKDIR = $(abspath $(dir $(shell command -v $(CC) 2>/dev/null))../m68k-amigaos/ndk-include)
+else ifdef WINDOWS
 	SDKDIR = $(abspath $(dir $(shell where $(CC)))..\m68k-amiga-elf\sys-include)
 else
 	SDKDIR = $(abspath $(dir $(shell which $(CC)))../m68k-amiga-elf/sys-include)
@@ -34,15 +70,27 @@ CCFLAGS = -g -MP -MMD -m68000 -Os -nostdlib -ffreestanding -fomit-frame-pointer 
           -Wall -Wextra -Wno-unused-function \
           -Wno-pointer-sign -Wno-volatile-register-var \
           -ffunction-sections -fdata-sections -Isrc -DHDPART_AMIGA
-LDFLAGS = -nostdlib -Wl,-e,_start,--emit-relocs,--gc-sections,-Map=$(OUT).map
 
-# elf2hunk ignores the ELF entry symbol and runs the first byte of the code
-# hunk. This guard fails the build if the lowest-addressed function is not
-# _start (see src/startup.c). Skipped on Windows (cmd.exe shell).
+ifdef AMIGAOS_GCC
+LDFLAGS = -nostdlib -Wl,-e,_start,--gc-sections,-Map=$(OUT).map
+else
+LDFLAGS = -nostdlib -Wl,-e,_start,--emit-relocs,--gc-sections,-Map=$(OUT).map
+endif
+
+# AmigaDOS LoadSeg() ignores any entry symbol and runs the first byte of the
+# code hunk. This guard fails the build if offset 0 of .text is not _start
+# (see src/startup.c). Skipped on Windows (cmd.exe shell).
 ifdef WINDOWS
 ENTRY_CHECK = @echo (entry-order check skipped on Windows)
+else ifdef AMIGAOS_GCC
+ENTRY_CHECK = @addr=`$(OBJDUMP) -t $(OUT).debug | awk '$$NF == "_start" {print $$1; exit}'`; \
+	if [ "$$addr" != "00000000" ]; then \
+		echo "FATAL: hunk entry _start is at '$${addr:-missing}', expected 00000000 (startup not first in .text)"; \
+		exit 1; \
+	fi; \
+	echo "entry-order OK: _start is at 00000000 in .text"
 else
-ENTRY_CHECK = @first=`m68k-amiga-elf-objdump -d $(OUT).elf | awk '/^[0-9a-f]+ </{print $$2; exit}'`; \
+ENTRY_CHECK = @first=`$(OBJDUMP) -d $(OUT).elf | awk '/^[0-9a-f]+ </{print $$2; exit}'`; \
 	if [ "$$first" != "<_start>:" ]; then \
 		echo "FATAL: hunk entry is $$first, expected <_start>: (startup not first in .text)"; \
 		exit 1; \
@@ -52,6 +100,16 @@ endif
 
 all: $(OUT).exe
 
+ifdef AMIGAOS_GCC
+$(OUT).exe: $(OUT).debug
+	$(info Stripping $@)
+	@$(STRIP) -o $(OUT).exe $(OUT).debug
+	$(ENTRY_CHECK)
+
+$(OUT).debug: $(c_objects)
+	$(info Linking $@)
+	@$(CC) $(CCFLAGS) $(LDFLAGS) $(c_objects) -o $@
+else
 $(OUT).exe: $(OUT).elf
 	$(info Elf2Hunk $@)
 	@elf2hunk $(OUT).elf $(OUT).exe
@@ -60,6 +118,7 @@ $(OUT).exe: $(OUT).elf
 $(OUT).elf: $(c_objects)
 	$(info Linking $@)
 	@$(CC) $(CCFLAGS) $(LDFLAGS) $(c_objects) -o $@
+endif
 
 obj/%.o : src/%.c
 	$(info Compiling $<)
@@ -131,9 +190,13 @@ VOLCHECK = out/volcheck
 
 $(VOLCHECK): tests/target/guest/volcheck.s
 	$(info Assembling $<)
-	@m68k-amiga-elf-as -m68000 -o obj/volcheck.o $<
-	@m68k-amiga-elf-ld -e start --emit-relocs -o out/volcheck.elf obj/volcheck.o
+	@$(AS) -m68000 -o obj/volcheck.o $<
+ifdef AMIGAOS_GCC
+	@$(LD) -e start -s -o $@ obj/volcheck.o
+else
+	@$(LD) -e start --emit-relocs -o out/volcheck.elf obj/volcheck.o
 	@elf2hunk out/volcheck.elf $@
+endif
 
 target-quick: $(OUT).exe $(VOLCHECK)
 	@node tests/target/quick.mjs $(QUICK)

@@ -2,7 +2,7 @@
 // Window, gadget and program state are read from guest memory using the ELF
 // symbols, so nothing here depends on pixel positions that vary by Kickstart.
 import { spawn, execFileSync } from 'node:child_process';
-import { appendFileSync, closeSync, openSync, statSync, existsSync, writeSync } from 'node:fs';
+import { appendFileSync, closeSync, openSync, readFileSync, statSync, existsSync, writeSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import net from 'node:net';
@@ -48,10 +48,15 @@ function portOpen() {
   });
 }
 
-// elf2hunk emits one hunk per ELF section, in this order.
-const SECTIONS = ['.text', '.rodata', '.data', '.bss'];
+// elf2hunk emits one hunk per ELF section, in this order; m68k-amigaos-ld folds .rodata into .text.
+const ELF_SECTIONS = ['.text', '.rodata', '.data', '.bss'];
+const HUNK_SECTIONS = ['.text', '.data', '.bss'];
 
 export function loadSymbols(elf) {
+  if (!existsSync(elf)) {
+    const mapPath = elf.replace(/\.elf$/, '.map');
+    if (existsSync(mapPath)) return loadSymbolsFromMap(mapPath);
+  }
   const objdump = process.env.AMIGA_OBJDUMP || 'm68k-amiga-elf-objdump';
   const sections = {};
   for (const l of execFileSync(objdump, ['-h', elf], { encoding: 'utf8' }).split('\n')) {
@@ -61,9 +66,39 @@ export function loadSymbols(elf) {
   const syms = {};
   for (const l of execFileSync(objdump, ['-t', elf], { encoding: 'utf8', maxBuffer: 1 << 26 }).split('\n')) {
     const m = l.match(/^([0-9a-f]{8})\s.*\s(\.\w+)\s+[0-9a-f]{8}\s+(\S+)$/);
-    if (m && SECTIONS.includes(m[2])) syms[m[3]] = { vma: parseInt(m[1], 16), section: m[2] };
+    if (m && ELF_SECTIONS.includes(m[2])) syms[m[3]] = { vma: parseInt(m[1], 16), section: m[2] };
   }
-  return { sections, syms };
+  return { order: ELF_SECTIONS, sections, syms };
+}
+
+function loadSymbolsFromMap(mapPath) {
+  const sections = {}, syms = {};
+  let inMap = false, curSec = null, pendingSym = null;
+  for (const l of readFileSync(mapPath, 'utf8').split('\n')) {
+    if (l.startsWith('Linker script and memory map')) { inMap = true; continue; }
+    if (!inMap) continue;
+    const top = l.match(/^(\.\S+)\s+0x([0-9a-f]+)/);
+    if (top) {
+      curSec = HUNK_SECTIONS.includes(top[1]) ? top[1] : null;
+      if (curSec) sections[curSec] = parseInt(top[2], 16);
+      pendingSym = null;
+      continue;
+    }
+    if (!curSec) continue;
+    const subSame = l.match(/^\s+\.(?:text|rodata|data|bss)\.(\S+)\s+0x([0-9a-f]+)\s+0x[0-9a-f]+/);
+    if (subSame) { syms[subSame[1]] = { vma: parseInt(subSame[2], 16), section: curSec }; pendingSym = null; continue; }
+    const subWrap = l.match(/^\s+\.(?:text|rodata|data|bss)\.(\S+)\s*$/);
+    if (subWrap) { pendingSym = subWrap[1]; continue; }
+    if (pendingSym) {
+      const cont = l.match(/^\s+0x([0-9a-f]+)\s+0x[0-9a-f]+/);
+      if (cont) syms[pendingSym] = { vma: parseInt(cont[1], 16), section: curSec };
+      pendingSym = null;
+      continue;
+    }
+    const glob = l.match(/^\s+0x([0-9a-f]+)\s+([A-Za-z_]\S*)\s*$/);
+    if (glob && !glob[2].startsWith('0x')) syms[glob[2]] = { vma: parseInt(glob[1], 16), section: curSec };
+  }
+  return { order: HUNK_SECTIONS, sections, syms };
 }
 
 // Has the program finished reacting, i.e. is it blocked in Wait() on this signal mask and nothing else?
@@ -147,7 +182,7 @@ export class Emu {
         if (t.type !== 13) continue;
         let s;
         try { s = JSON.parse(await this.tool('winuae_loaded_segments', { address: t.address })); } catch { continue; }
-        if (s.command === 'HDPart' && s.segments?.length === SECTIONS.length) {
+        if (s.command === 'HDPart' && s.segments?.length === this.sym.order.length) {
           this.segs = s.segments; this.process = t.address;
           await this.go();
           return;
@@ -161,7 +196,7 @@ export class Emu {
     let s = this.sym.syms[name];
     if (!s) { const k = Object.keys(this.sym.syms).find((n) => n.startsWith(`${name}.`)); s = this.sym.syms[k]; }
     if (!s) throw new Error(`no symbol ${name}`);
-    return this.segs[SECTIONS.indexOf(s.section)].address + (s.vma - this.sym.sections[s.section]);
+    return this.segs[this.sym.order.indexOf(s.section)].address + (s.vma - this.sym.sections[s.section]);
   }
   async g32(name) { return this.u32(this.addr(name)); }
   async gstr(name, off = 0, max = 80) { return this.cstr(this.addr(name) + off, max); }
