@@ -205,6 +205,15 @@ int rdb_present(BlockIO io, void *ctx);
    handler. Returns RDB_OK with *pct set, RDB_ERR_NO_RDB, or RDB_ERR_IO. */
 int rdb_used_percent(BlockIO io, void *ctx, uint32_t *pct);
 
+/* The partition layout of a disk for the Units list mini-map, read with the
+   percentage on Scan. Positions are in 1/1000 of the disk's cylinders, so they draw
+   at any width; hi is exclusive. rdb_end is where the RDB area stops (lo_cyl). */
+#define RDB_LAYOUT_MAX 16
+typedef struct { uint16_t lo, hi; uint32_t dos_type; } RdbLayoutSeg;
+typedef struct { uint16_t rdb_end; uint8_t nseg; RdbLayoutSeg seg[RDB_LAYOUT_MAX]; } RdbLayout;
+int rdb_used_layout(BlockIO io, void *ctx, uint32_t *pct, RdbLayout *lay);
+uint16_t rdb_permille(uint32_t cyl, uint32_t cylinders);
+
 /* rdb_Flags of the disk's RDSK block (all bits, as stored). Returns RDB_OK,
    RDB_ERR_NO_RDB or RDB_ERR_IO; *flags is 0 unless RDB_OK. */
 int rdb_disk_flags(BlockIO io, void *ctx, uint32_t *flags);

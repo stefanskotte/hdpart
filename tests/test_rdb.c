@@ -524,6 +524,51 @@ static void test_used_percent(void)
     fclose(f);
 }
 
+static void test_used_layout(void)
+{
+    FILE *f = tmpfile();
+    static uint8_t z[RDB_BLOCK_BYTES];
+    FileCtx c;
+    RdbModel m;
+    RdbLayout lay;
+    uint32_t i, pct = 999;
+    CHECK(rdb_permille(0, 0) == 0);
+    CHECK(rdb_permille(64, 64) == 1000);
+    CHECK(rdb_permille(2000000000u, 4000000000u) == 500);   /* divides first: no overflow */
+    CHECK(f != NULL);
+    if (!f) return;
+    for (i = 0; i < 64u * 4u * 32u; i++) fwrite(z, 1, RDB_BLOCK_BYTES, f);
+    c.f = f;
+    lay.nseg = 99;
+    CHECK(rdb_used_layout(file_io, &c, &pct, &lay) == RDB_ERR_NO_RDB);
+    CHECK(lay.nseg == 0);
+    rdb_init_model(&m, 64, 4, 32);
+    { uint32_t span = m.hi_cyl - m.lo_cyl + 1u, q = span / 4u;
+      CHECK(rdb_add_partition_cyl(&m, "A", m.lo_cyl, m.lo_cyl + q - 1u, RDB_DOSTYPE_FFS_INTL) == 0);
+      CHECK(rdb_add_partition_cyl(&m, "B", m.lo_cyl + q, m.lo_cyl + 2u * q - 1u, 0x50465303u) == 1);
+      CHECK(rdb_serialize(&m, file_io, &c) == RDB_OK);
+      CHECK(rdb_used_layout(file_io, &c, &pct, &lay) == RDB_OK);
+      CHECK(pct == (2u * q * 100u) / span);
+      CHECK(lay.nseg == 2);
+      CHECK(lay.rdb_end == rdb_permille(m.lo_cyl, m.cylinders));
+      CHECK(lay.seg[0].lo == rdb_permille(m.lo_cyl, 64));
+      CHECK(lay.seg[0].hi == lay.seg[1].lo);
+      CHECK(lay.seg[1].hi == rdb_permille(m.lo_cyl + 2u * q, 64));
+      CHECK(lay.seg[0].dos_type == RDB_DOSTYPE_FFS_INTL);
+      CHECK(lay.seg[1].dos_type == 0x50465303u); }
+    /* more partitions than the mini-map keeps: 16 segments, the percentage counts all */
+    rdb_init_model(&m, 64, 4, 32);
+    for (i = 0; i < 20u; i++) {
+        char nm[4] = { 'P', (char)('A' + i), 0, 0 };
+        CHECK(rdb_add_partition_cyl(&m, nm, m.lo_cyl + i, m.lo_cyl + i, RDB_DOSTYPE_FFS_INTL) == (int)i);
+    }
+    CHECK(rdb_serialize(&m, file_io, &c) == RDB_OK);
+    CHECK(rdb_used_layout(file_io, &c, &pct, &lay) == RDB_OK);
+    CHECK(lay.nseg == RDB_LAYOUT_MAX);
+    CHECK(pct == (20u * 100u) / (m.hi_cyl - m.lo_cyl + 1u));
+    fclose(f);
+}
+
 /* ---- Quick setup marker ---- */
 static void marker_image(FileCtx *c, RdbModel *m)
 {   /* 2000 blocks of zeros under a tiny table */
@@ -797,6 +842,7 @@ int main(int argc, char **argv)
     test_split_range();
     test_short_table_size();
     test_used_percent();
+    test_used_layout();
     test_resize_cyls();
     test_setup_marker();
     test_setup_marker_rejects();

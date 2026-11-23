@@ -882,23 +882,42 @@ int rdb_disk_flags(BlockIO io, void *ctx, uint32_t *flags)
     return RDB_OK;
 }
 
-int rdb_used_percent(BlockIO io, void *ctx, uint32_t *pct)
+uint16_t rdb_permille(uint32_t cyl, uint32_t cylinders)
+{
+    uint32_t v;
+    if (!cylinders) return 0;
+    v = (cylinders > 4000000u) ? cyl / (cylinders / 1000u) : (cyl * 1000u) / cylinders;
+    return (uint16_t)(v > 1000u ? 1000u : v);
+}
+
+int rdb_used_layout(BlockIO io, void *ctx, uint32_t *pct, RdbLayout *lay)
 {
     uint8_t blk[RDB_BLOCK_BYTES];
-    uint32_t lo, hi, part, used = 0, span;
+    uint32_t lo, hi, cyls, part, used = 0, span;
     int guard = 0;
     int r = find_rdsk_block(io, ctx, blk);
+    if (lay) { lay->nseg = 0; lay->rdb_end = 0; }
     if (r < 0) return RDB_ERR_IO;
     if (r == 0) return RDB_ERR_NO_RDB;
     lo   = be_get32(blk + RDB_o_LoCylinder);
     hi   = be_get32(blk + RDB_o_HiCylinder);
+    cyls = be_get32(blk + RDB_o_Cylinders);
+    if (lay) lay->rdb_end = rdb_permille(lo, cyls);
     part = be_get32(blk + RDB_o_PartitionList);
     while (part != NULLPTR && part != 0 && ++guard <= RDB_MAX_PARTS) {
         if (io(ctx, part, blk, 0)) return RDB_ERR_IO;
         if (be_get32(blk + PART_o_ID) != ID_PART ||
             !rdb_checksum_ok(blk, be_get32(blk + PART_o_SummedLongs))) break;
         { uint32_t a = env_get(blk, DE_LowCyl), b = env_get(blk, DE_HighCyl);
-          if (b >= a) used += b - a + 1u; }
+          if (b >= a) {
+              used += b - a + 1u;
+              if (lay && lay->nseg < RDB_LAYOUT_MAX) {
+                  RdbLayoutSeg *g = &lay->seg[lay->nseg++];
+                  g->lo = rdb_permille(a, cyls);
+                  g->hi = rdb_permille(b + 1u, cyls);
+                  g->dos_type = env_get(blk, DE_DosType);
+              }
+          } }
         part = be_get32(blk + PART_o_Next);
     }
     span = (hi >= lo) ? hi - lo + 1u : 0u;
@@ -906,6 +925,11 @@ int rdb_used_percent(BlockIO io, void *ctx, uint32_t *pct)
     *pct = !span ? 0u : (span > 40000000u) ? used / (span / 100u) : (used * 100u) / span;
     if (*pct > 100u) *pct = 100u;
     return RDB_OK;
+}
+
+int rdb_used_percent(BlockIO io, void *ctx, uint32_t *pct)
+{
+    return rdb_used_layout(io, ctx, pct, 0);
 }
 
 int rdb_parse(RdbModel *m, BlockIO io, void *ctx)
