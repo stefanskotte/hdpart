@@ -11,6 +11,22 @@
 #include <proto/exec.h>
 #include <proto/dos.h>
 
+#ifndef __ELF__
+/* Under m68k-amigaos-gcc, unnamed string literals land in .text ahead of the
+ * function that uses them, and the default amiga linker script places *(.text)
+ * first in object-file order. Emit _start at the very top of startup.c (linked
+ * first) so byte 0 of HUNK_CODE jumps straight into hdpart_entry. */
+__asm__(
+    ".text\n"
+    ".globl _start\n"
+    "_start:\n"
+    "    jra _hdpart_entry\n"
+);
+#define HDPART_START hdpart_entry
+#else
+#define HDPART_START _start
+#endif
+
 struct ExecBase  *SysBase = 0;
 struct DosLibrary *DOSBase = 0;
 
@@ -44,8 +60,8 @@ static __attribute__((noinline)) void hdpart_run_swapped(void)
  * function the linker happened to place first (e.g. hdpart_main) with SysBase
  * uninitialised, and the first library call dereferences a NULL base -> Guru.
  * (Verified by the Makefile's post-link entry guard.) */
-__attribute__((section(".text.startup")))
-int _start(void)
+__attribute__((used, section(".text.startup")))
+int HDPART_START(void)
 {
     struct Process  *proc;
     struct WBStartup *wbmsg = 0;

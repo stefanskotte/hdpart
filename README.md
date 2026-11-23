@@ -81,14 +81,19 @@ extension (m68k-amiga-elf GCC, `elf2hunk`, and the Amiga SDK) — thank you.
 
 ## Building
 
-Uses the Bartman `amiga-debug` GCC cross-toolchain (m68k-amiga-elf, gcc 15.x),
-which is **not** on the default PATH:
+Supports **Bartman's `amiga-debug`** GCC cross-toolchain (`m68k-amiga-elf-gcc` +
+`elf2hunk`) as well as **AmigaPorts `m68k-amigaos-gcc`** (on `PATH` or installed
+under `/opt/amiga*`):
 
 ```sh
+# Bartman's VSCode amiga-debug toolchain:
 export AMIGA_BIN="$HOME/.vscode/extensions/bartmanabyss.amiga-debug-1.8.2/bin/darwin"  # or .../linux
 export PATH="$AMIGA_BIN/opt/bin:$AMIGA_BIN:$PATH"
 
-make            # -> out/HDPart.exe (AmigaDOS hunk) + out/HDPart.elf (symbols)
+# Or AmigaPorts m68k-amigaos-gcc (auto-detected on PATH or in /opt/amiga*/bin):
+export PATH="/opt/amiga/bin:$PATH"
+
+make            # -> out/HDPart.exe (AmigaDOS hunk) + out/HDPart.elf or .debug (symbols)
 make adf        # -> out/HDPart-<ver>.adf  (bootable 880K OFS floppy; needs amitools' xdftool)
 ```
 
