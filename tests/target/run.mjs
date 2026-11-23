@@ -135,15 +135,15 @@ class Suite {
     await this.idle();
   }
   // The Units mini-map layout kept for a listed row: DiscDisk is 232 bytes with the
-  // layout at 60 (both pinned in src/discover.h). Segments are 8 bytes from +4.
+  // layout at 60 (both pinned in src/discover.h): nseg at +0, 8-byte segments from +4.
   async unitLayout(row) {
     const e = this.e, idx = (await e.u32(e.addr('g_unitmap') + row * 4)) | 0;
-    const base = e.addr('g_disks') + idx * 232 + 60, n = await e.u8(base + 2), seg = [];
+    const base = e.addr('g_disks') + idx * 232 + 60, n = await e.u8(base), seg = [];
     for (let i = 0; i < n; i++) {
       const b = await e.mem(base + 4 + i * 8, 8);
       seg.push({ lo: b.readUInt16BE(0), hi: b.readUInt16BE(2), dosType: b.readUInt32BE(4) });
     }
-    return { rdbEnd: await e.u16(base), seg };
+    return { seg };
   }
   // A listed unit other than the current one.
   async otherUnitRow() {
@@ -161,11 +161,11 @@ class Suite {
   // Select partition i by clicking its slice of the disk-map bar.
   async selectPart(i) {
     const e = this.e, w = await this.main();
-    const cyl = await e.u32(e.addr('g_model'));
+    const m = await e.mem(e.addr('g_model'), 28), lo = m.readUInt32BE(20), span = m.readUInt32BE(24) - lo + 1;   // RdbModel lo_cyl/hi_cyl: the map covers only them
     const nums = (await this.row(i)).trim().split(/\s+/).filter((x) => /^\d+$/.test(x)).map(Number);
     const [low, high] = nums.slice(-2);
     const bar = await e.mem(e.addr('g_bar'), 8);
-    const x = bar.readInt16BE(0) + Math.floor(((low + high + 1) / 2 * bar.readInt16BE(4)) / cyl);
+    const x = bar.readInt16BE(0) + Math.floor((((low + high + 1) / 2 - lo) * bar.readInt16BE(4)) / span);
     await e.clickAt((await e.i16(w + 4)) + x, (await e.i16(w + 6)) + bar.readInt16BE(2) + (bar.readInt16BE(6) >> 1));
     await e.waitFor(`partition ${i} selected`, async () => (await this.sel()) === i);
   }
@@ -328,10 +328,12 @@ class Suite {
       eq(r.fs.length, 0, 'no filesystem embedded');
       eq(r.parts[0].maxTransfer, 0x1FE00, 'new partition uses the IDE-safe MaxTransfer');
       // The disk was blank at Scan, so a mini-map layout here can only come from Save.
-      const pm = (c) => Math.min(1000, r.cylinders > 4000000 ? Math.floor(c / Math.floor(r.cylinders / 1000)) : Math.floor((c * 1000) / r.cylinders));
+      // Positions are in 1/1000 of the partitionable cylinders loCyl..hiCyl (src/rdb.c).
+      const span = r.hiCyl - r.loCyl + 1;
+      const pm = (c) => { const v = Math.min(Math.max(c, r.loCyl), r.hiCyl + 1) - r.loCyl;
+        return Math.min(1000, span > 4000000 ? Math.floor(v / Math.floor(span / 1000)) : Math.floor((v * 1000) / span)); };
       const lay = await this.unitLayout((await e.g32('g_cur_unitidx')) | 0);
       eq(lay.seg.length, 3, 'mini-map segments after Save');
-      eq(lay.rdbEnd, pm(r.loCyl), 'mini-map RDB end');
       r.parts.forEach((p, i) => {
         eq(lay.seg[i].lo, pm(p.low), `mini-map segment ${i} start`);
         eq(lay.seg[i].hi, pm(p.high + 1), `mini-map segment ${i} end`);

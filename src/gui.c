@@ -248,7 +248,7 @@ static void gui_quick_setup(void);            /* the Quick setup wizard */
 static void gui_quick_hide(void);             /* a driver was picked: the panel goes for good */
 static void gui_draw_chrome(void);        /* BevelBox group frames + captions */
 void gui_draw_bar(void);
-static void gui_map_draw(struct RastPort *rp, const RdbModel *m, int x, int y, int w, int h, int sel, int rdb_label, const uint32_t *vols);
+static void gui_map_draw(struct RastPort *rp, const RdbModel *m, int x, int y, int w, int h, int sel, const uint32_t *vols);
 static void gui_draw_table(void);         /* partition table rows */
 static void gui_draw_units(void);         /* Units list rows + meters */
 static int gui_unit_percent(int row);
@@ -2360,7 +2360,7 @@ static int __attribute__((noinline)) qs_find_card(DiscDisk *out)
     out->size_mb = mb;
     out->partitionable = 1;
     out->used_pct = -1;
-    out->layout.nseg = 0; out->layout.rdb_end = 0;
+    out->layout.nseg = 0;
     return 0;
 }
 
@@ -2531,7 +2531,7 @@ static void qs_choose_draw(struct Window *w, const RdbModel *m)
     DrawBevelBox(rp, x, y, bw, QS_CH_MAP_H, GT_VisualInfo, (ULONG)g_vi, GTBB_Recessed, TRUE, TAG_END);
     qs_clear(rp, x + 2, y + 2, bw - 4, QS_CH_MAP_H - 4);
     if (m->num_parts > 0 && m->cylinders > 0)
-        gui_map_draw(rp, m, x + 2, y + 2, bw - 4, QS_CH_MAP_H - 4, -1, 0, &g_qs_mask);
+        gui_map_draw(rp, m, x + 2, y + 2, bw - 4, QS_CH_MAP_H - 4, -1, &g_qs_mask);
     y = g_topb + QS_CH_MSG_Y;
     DrawBevelBox(rp, x, y, bw, QS_CH_MSG_H, GT_VisualInfo, (ULONG)g_vi, TAG_END);
     qs_clear(rp, x + 2, y + 2, bw - 4, QS_CH_MSG_H - 4);
@@ -4766,32 +4766,11 @@ static int fs_fill_kind(uint32_t t)
     }
 }
 
-/* Diagonal hatching for the RDB area: reserved space, not a partition. */
-static void gui_hatch(int x, int y, int w, int h)
-{
-    struct RastPort *rp = MAP_RP();
-    int r, i;
-    if (w <= 0 || h <= 0) return;
-    gui_box(x, y, w, h, g_pen_bg);
-    SetDrMd(rp, JAM1);
-    SetAPen(rp, g_pen_text);
-    for (r = 0; r < h; r++) {
-        UWORD p = 0;
-        for (i = 0; i < 16; i++)
-            if (((x + i + y + r) & 7) == 0) p |= (UWORD)(0x8000u >> i);
-        rp->LinePtrn = p; rp->Flags |= FRST_DOT; rp->linpatcnt = 15;
-        Move(rp, x, y + r);
-        Draw(rp, x + w - 1, y + r);
-    }
-    rp->LinePtrn = 0xFFFF; rp->Flags |= FRST_DOT; rp->linpatcnt = 15;
-}
-
 /* The Units list mini-map: the disk map in miniature, from a layout in 1/1000ths. */
 static void gui_mini_map(int x, int y, int w, int h, const RdbLayout *l)
 {
-    int i, re = (int)((l->rdb_end * (ULONG)w) / 1000u);
+    int i;
     gui_pattern(x, y, w, h, FILL_FREE);
-    gui_hatch(x, y, re, h);
     for (i = 0; i < l->nseg; i++) {
         int x0 = x + (int)((l->seg[i].lo * (ULONG)w) / 1000u);
         int x1 = x + (int)((l->seg[i].hi * (ULONG)w) / 1000u);
@@ -4811,11 +4790,10 @@ static void gui_layout_from_model(RdbLayout *l, const RdbModel *m)
 {
     int i;
     l->nseg = 0;
-    l->rdb_end = rdb_permille(m->lo_cyl, m->cylinders);
     for (i = 0; i < m->num_parts && i < RDB_MAX_PARTS && l->nseg < RDB_LAYOUT_MAX; i++) {
         RdbLayoutSeg *g = &l->seg[l->nseg++];
-        g->lo = rdb_permille(m->parts[i].low_cyl, m->cylinders);
-        g->hi = rdb_permille(m->parts[i].high_cyl + 1u, m->cylinders);
+        g->lo = rdb_span_permille(m->parts[i].low_cyl, m->lo_cyl, m->hi_cyl);
+        g->hi = rdb_span_permille(m->parts[i].high_cyl + 1u, m->lo_cyl, m->hi_cyl);
         g->dos_type = m->parts[i].dos_type;
     }
 }
@@ -4844,6 +4822,18 @@ static void gui_slice_label(int x, int y, int w, const char *top, const char *bo
     gui_text_fx(x + 5, y + 18, bot, kind != FILL_DOS);
 }
 
+/* Where cylinder cyl lands on a map of width w. The map covers only the cylinders that
+   can hold partitions (lo_cyl..hi_cyl): the RDB area in front can't be edited, and to
+   scale it was a sliver on any real disk, so it is left out. */
+static int map_x(const RdbModel *m, uint32_t cyl, int w)
+{
+    uint32_t span = (m->hi_cyl >= m->lo_cyl) ? m->hi_cyl - m->lo_cyl + 1u : 0u;
+    if (!span) return 0;
+    if (cyl < m->lo_cyl) cyl = m->lo_cyl;
+    if (cyl > m->hi_cyl + 1u) cyl = m->hi_cyl + 1u;
+    return (int)(((cyl - m->lo_cyl) * (ULONG)w) / span);
+}
+
 /* Return the partition index whose map slice contains (mx,my), or -1. */
 static int gui_part_at_x(int mx, int my)
 {
@@ -4852,8 +4842,8 @@ static int gui_part_at_x(int mx, int my)
     if (mx < g_bar.x || mx >= g_bar.x + g_bar.w || my < g_bar.y || my >= g_bar.y + g_bar.h) return -1;
     for (i = 0; i < g_model.num_parts && i < RDB_MAX_PARTS; i++) {
         RdbPartition *pt = &g_model.parts[i];
-        int x0 = g_bar.x + (int)((pt->low_cyl      * (ULONG)g_bar.w) / g_model.cylinders);
-        int x1 = g_bar.x + (int)(((pt->high_cyl+1) * (ULONG)g_bar.w) / g_model.cylinders);
+        int x0 = g_bar.x + map_x(&g_model, pt->low_cyl, g_bar.w);
+        int x1 = g_bar.x + map_x(&g_model, pt->high_cyl + 1u, g_bar.w);
         if (x1 <= x0) x1 = x0 + 1;
         if (mx >= x0 && mx < x1) return i;
     }
@@ -5043,30 +5033,20 @@ static void gui_draw_chrome(void)
 }
 
 /* The disk map for model m in the rectangle x,y,w,h on rp: free space first, then each
-   partition to scale. The main window and the Quick setup screens share it. The RDB area at
-   the start is always hatched as reserved; rdb_label adds the "RDB" plate, which the wizard
-   leaves off. vols, when
-   given, is a Quick setup mask: slices carry its volume names (System, Work...) not DH0... */
-static void gui_map_draw(struct RastPort *rp, const RdbModel *m, int x, int y, int w, int h, int sel, int rdb_label,
+   partition to scale over the partitionable cylinders (see map_x). The main window and the
+   Quick setup screens share it. vols, when given, is a Quick setup mask: slices carry its
+   volume names (System, Work...) not DH0... */
+static void gui_map_draw(struct RastPort *rp, const RdbModel *m, int x, int y, int w, int h, int sel,
                          const uint32_t *vols)
 {
     static char lbl[12];
-    int i, rw;
+    int i;
     g_map_rp = rp;
-    rw = (int)((m->lo_cyl * (ULONG)w) / m->cylinders);
-    gui_pattern(x + rw, y, w - rw, h, FILL_FREE);
-    if (rw >= 6) {  /* Reserved, not editable: sunk in and hatched; the main map adds a plate */
-        gui_hatch(x, y, rw, h);
-        DrawBevelBox(rp, x, y, rw, h, GT_VisualInfo, (ULONG)g_vi, GTBB_Recessed, TRUE, TAG_END);
-        if (rdb_label && rw >= 34) {
-            gui_box(x + (rw - 24) / 2 - 3, y + (h - 8) / 2 - 2, 30, 12, g_pen_bg);
-            gui_text(x + (rw - 24) / 2, y + (h - 8) / 2, "RDB", g_pen_text);
-        }
-    }
+    gui_pattern(x, y, w, h, FILL_FREE);
     for (i = 0; i < m->num_parts && i < RDB_MAX_PARTS; i++) {
         const RdbPartition *pt = &m->parts[i];
-        int x0 = x + (int)((pt->low_cyl  * (ULONG)w) / m->cylinders);
-        int x1 = x + (int)(((pt->high_cyl + 1) * (ULONG)w) / m->cylinders);
+        int x0 = x + map_x(m, pt->low_cyl, w);
+        int x1 = x + map_x(m, pt->high_cyl + 1u, w);
         int p = 0;
         if (x1 <= x0) x1 = x0 + 1;
         if (x1 > x + w) x1 = x + w;
@@ -5094,7 +5074,7 @@ void gui_draw_bar(void)
     gui_box(g_bar.x, g_bar.y, g_bar.w, g_bar.h, g_pen_bg);
     gui_draw_easter();
     if (!g_have_model || g_model.cylinders == 0) return;
-    gui_map_draw(g_win->RPort, &g_model, g_bar.x, g_bar.y, g_bar.w, g_bar.h, g_sel_part, 1, 0);
+    gui_map_draw(g_win->RPort, &g_model, g_bar.x, g_bar.y, g_bar.w, g_bar.h, g_sel_part, 0);
 }
 
 /* A tiny hand-drawn pi glyph in the bottom-right corner (no Topaz glyph for it).

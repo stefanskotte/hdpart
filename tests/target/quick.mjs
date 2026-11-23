@@ -221,11 +221,11 @@ export class QuickSuite {
 
   async selectPart(i) {
     const e = this.e, w = await this.main();
-    const cyl = await e.u32(e.addr('g_model'));
+    const m = await e.mem(e.addr('g_model'), 28), lo = m.readUInt32BE(20), span = m.readUInt32BE(24) - lo + 1;   // RdbModel lo_cyl/hi_cyl: the map covers only them
     const nums = (await this.row(i)).trim().split(/\s+/).filter((x) => /^\d+$/.test(x)).map(Number);
     const [low, high] = nums;   // columns: Start End Size
     const bar = await e.mem(e.addr('g_bar'), 8);
-    const x = bar.readInt16BE(0) + Math.floor(((low + high + 1) / 2 * bar.readInt16BE(4)) / cyl);
+    const x = bar.readInt16BE(0) + Math.floor((((low + high + 1) / 2 - lo) * bar.readInt16BE(4)) / span);
     await e.clickAt((await e.i16(w + 4)) + x, (await e.i16(w + 6)) + bar.readInt16BE(2) + (bar.readInt16BE(6) >> 1));
     await e.waitFor(`partition ${i} selected`, async () => (await this.sel()) === i);
   }

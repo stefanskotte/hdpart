@@ -890,19 +890,25 @@ uint16_t rdb_permille(uint32_t cyl, uint32_t cylinders)
     return (uint16_t)(v > 1000u ? 1000u : v);
 }
 
+uint16_t rdb_span_permille(uint32_t cyl, uint32_t lo, uint32_t hi)
+{
+    if (hi < lo) return 0;
+    if (cyl < lo) cyl = lo;
+    if (cyl > hi + 1u) cyl = hi + 1u;
+    return rdb_permille(cyl - lo, hi - lo + 1u);
+}
+
 int rdb_used_layout(BlockIO io, void *ctx, uint32_t *pct, RdbLayout *lay)
 {
     uint8_t blk[RDB_BLOCK_BYTES];
-    uint32_t lo, hi, cyls, part, used = 0, span;
+    uint32_t lo, hi, part, used = 0, span;
     int guard = 0;
     int r = find_rdsk_block(io, ctx, blk);
-    if (lay) { lay->nseg = 0; lay->rdb_end = 0; }
+    if (lay) lay->nseg = 0;
     if (r < 0) return RDB_ERR_IO;
     if (r == 0) return RDB_ERR_NO_RDB;
     lo   = be_get32(blk + RDB_o_LoCylinder);
     hi   = be_get32(blk + RDB_o_HiCylinder);
-    cyls = be_get32(blk + RDB_o_Cylinders);
-    if (lay) lay->rdb_end = rdb_permille(lo, cyls);
     part = be_get32(blk + RDB_o_PartitionList);
     while (part != NULLPTR && part != 0 && ++guard <= RDB_MAX_PARTS) {
         if (io(ctx, part, blk, 0)) return RDB_ERR_IO;
@@ -913,8 +919,8 @@ int rdb_used_layout(BlockIO io, void *ctx, uint32_t *pct, RdbLayout *lay)
               used += b - a + 1u;
               if (lay && lay->nseg < RDB_LAYOUT_MAX) {
                   RdbLayoutSeg *g = &lay->seg[lay->nseg++];
-                  g->lo = rdb_permille(a, cyls);
-                  g->hi = rdb_permille(b + 1u, cyls);
+                  g->lo = rdb_span_permille(a, lo, hi);
+                  g->hi = rdb_span_permille(b + 1u, lo, hi);
                   g->dos_type = env_get(blk, DE_DosType);
               }
           } }

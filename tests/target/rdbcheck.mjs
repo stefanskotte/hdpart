@@ -26,7 +26,7 @@ function readHead(file, max = 32 << 20) {
 export function readRdb(file) {
   const d = readHead(file);
   const r = block(d, 0, 'RDSK');
-  const out = { cylinders: r.readUInt32BE(64), cylBlocks: r.readUInt32BE(144), loCyl: r.readUInt32BE(136), hiCyl: r.readUInt32BE(140), parts: [], fs: [] };
+  const out = { cylBlocks: r.readUInt32BE(144), loCyl: r.readUInt32BE(136), hiCyl: r.readUInt32BE(140), parts: [], fs: [] };
   for (let n = r.readUInt32BE(28); n !== NIL;) {
     const p = block(d, n, 'PART');
     out.parts.push({ name: p.toString('latin1', 37, 37 + p[36]), flags: p.readUInt32BE(20), low: p.readUInt32BE(128 + 36), high: p.readUInt32BE(128 + 40),

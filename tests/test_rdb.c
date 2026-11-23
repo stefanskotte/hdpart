@@ -550,10 +550,13 @@ static void test_used_layout(void)
       CHECK(rdb_used_layout(file_io, &c, &pct, &lay) == RDB_OK);
       CHECK(pct == (2u * q * 100u) / span);
       CHECK(lay.nseg == 2);
-      CHECK(lay.rdb_end == rdb_permille(m.lo_cyl, m.cylinders));
-      CHECK(lay.seg[0].lo == rdb_permille(m.lo_cyl, 64));
+      CHECK(lay.seg[0].lo == 0);                 /* the RDB area is not part of the layout */
       CHECK(lay.seg[0].hi == lay.seg[1].lo);
-      CHECK(lay.seg[1].hi == rdb_permille(m.lo_cyl + 2u * q, 64));
+      CHECK(lay.seg[1].hi == rdb_permille(2u * q, span));
+      CHECK(rdb_span_permille(m.hi_cyl + 1u, m.lo_cyl, m.hi_cyl) == 1000);
+      CHECK(rdb_span_permille(0, m.lo_cyl, m.hi_cyl) == 0);              /* clamped */
+      CHECK(rdb_span_permille(m.hi_cyl + 99u, m.lo_cyl, m.hi_cyl) == 1000); /* clamped */
+      CHECK(rdb_span_permille(5, 9, 3) == 0);                            /* empty range */
       CHECK(lay.seg[0].dos_type == RDB_DOSTYPE_FFS_INTL);
       CHECK(lay.seg[1].dos_type == 0x50465303u); }
     /* more partitions than the mini-map keeps: 16 segments, the percentage counts all */
