@@ -134,6 +134,17 @@ class Suite {
     await this.e.waitFor('unit shown', async () => ((await this.e.g32('g_cur_unitidx')) | 0) === row);
     await this.idle();
   }
+  // The Units mini-map layout kept for a listed row: DiscDisk is 232 bytes with the
+  // layout at 60 (both pinned in src/discover.h). Segments are 8 bytes from +4.
+  async unitLayout(row) {
+    const e = this.e, idx = (await e.u32(e.addr('g_unitmap') + row * 4)) | 0;
+    const base = e.addr('g_disks') + idx * 232 + 60, n = await e.u8(base + 2), seg = [];
+    for (let i = 0; i < n; i++) {
+      const b = await e.mem(base + 4 + i * 8, 8);
+      seg.push({ lo: b.readUInt16BE(0), hi: b.readUInt16BE(2), dosType: b.readUInt32BE(4) });
+    }
+    return { rdbEnd: await e.u16(base), seg };
+  }
   // A listed unit other than the current one.
   async otherUnitRow() {
     const cur = (await this.e.g32('g_cur_unitidx')) | 0;
@@ -316,6 +327,16 @@ class Suite {
       eq(r.parts.map((p) => p.name).join(), 'DH0,DH1,DH2', 'names on disk');
       eq(r.fs.length, 0, 'no filesystem embedded');
       eq(r.parts[0].maxTransfer, 0x1FE00, 'new partition uses the IDE-safe MaxTransfer');
+      // The disk was blank at Scan, so a mini-map layout here can only come from Save.
+      const pm = (c) => Math.min(1000, r.cylinders > 4000000 ? Math.floor(c / Math.floor(r.cylinders / 1000)) : Math.floor((c * 1000) / r.cylinders));
+      const lay = await this.unitLayout((await e.g32('g_cur_unitidx')) | 0);
+      eq(lay.seg.length, 3, 'mini-map segments after Save');
+      eq(lay.rdbEnd, pm(r.loCyl), 'mini-map RDB end');
+      r.parts.forEach((p, i) => {
+        eq(lay.seg[i].lo, pm(p.low), `mini-map segment ${i} start`);
+        eq(lay.seg[i].hi, pm(p.high + 1), `mini-map segment ${i} end`);
+        eq(lay.seg[i].dosType, p.dosType, `mini-map segment ${i} DosType`);
+      });
       this.expectedRows = await this.rows();
     });
     await this.step('Refresh: re-reads the same table', async () => {
@@ -345,6 +366,7 @@ class Suite {
       await this.answer('Unit', PROCEED);
       await e.waitFor('unit change', async () => (await e.g32('g_cur_unitidx')) !== unit);
       eq(await this.dirty(), 0, 'dirty');
+      eq((await this.unitLayout(await this.unitRow(' 8 MB'))).seg.length, 3, 'mini-map keeps the saved layout, not the discarded edit');
       await this.pickUnit(' 8 MB');
       eq(await this.nparts(), 3, 'saved table reloaded');
     });
@@ -439,6 +461,7 @@ class Suite {
       ok(p.hasLabel('PFSVOL'), 'label on disk');
       ok(JSON.parse(await e.tool('winuae_tasks')).some((t) => t.name === 'DH1'), 'DH1 handler running');
       await e.go();
+      await sleep(1000); await e.shot(`${this.dir}/shots/map-pfs.png`);   // the disk map with a PFS slice
     });
     await this.step('Format: fresh FFS partition', async () => {
       await this.format(0, 'FFSVOL');

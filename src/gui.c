@@ -251,6 +251,8 @@ void gui_draw_bar(void);
 static void gui_map_draw(struct RastPort *rp, const RdbModel *m, int x, int y, int w, int h, int sel, int rdb_label, const uint32_t *vols);
 static void gui_draw_table(void);         /* partition table rows */
 static void gui_draw_units(void);         /* Units list rows + meters */
+static int gui_unit_percent(int row);
+static void gui_layout_from_model(RdbLayout *l, const RdbModel *m);
 static void gui_draw_details(void);       /* details of the selected partition */
 static void gui_list_changed(ListGeom *l, int gid);
 static void gui_list_scrolled(ListGeom *l, int top);
@@ -969,7 +971,15 @@ static int gui_save(void)
     if (wv == WV_NO_DEVICE) { gui_msg("Save", "Could not open the device."); return 0; }
     ok = wv == WV_OK;
 
-    if (ok) { g_dirty = 0; gui_msg("Save", "Saved and verified."); }
+    if (ok) {
+        g_dirty = 0;
+        if (g_cur_unitidx >= 0) {   /* the saved layout, so the Units mini-map is right after switching away */
+            DiscDisk *d = &g_disks[g_unitmap[g_cur_unitidx]];
+            gui_layout_from_model(&d->layout, &g_model);
+            d->used_pct = gui_unit_percent(g_cur_unitidx);
+        }
+        gui_msg("Save", "Saved and verified.");
+    }
     else if (wv == WV_NO_SPACE)
         gui_msg("Save", "Embedded filesystem(s) don't fit the reserved RDB area.\nRemove one or use a smaller handler. Nothing was written.");
     else gui_msg("Save", "WRITE FAILED or verify mismatch.\nThe disk RDB may be inconsistent.");
@@ -2350,6 +2360,7 @@ static int __attribute__((noinline)) qs_find_card(DiscDisk *out)
     out->size_mb = mb;
     out->partitionable = 1;
     out->used_pct = -1;
+    out->layout.nseg = 0; out->layout.rdb_end = 0;
     return 0;
 }
 
@@ -4714,6 +4725,36 @@ static void gui_pattern(int x, int y, int w, int h, int kind)
     SetBPen(rp, g_pen_bg);
 }
 
+/* Dithered bevel on a partition slice. A 4x4 ordered (Bayer) dither, so the
+   dots never line up into columns: white fades in over the top rows, black over the
+   bottom rows, drawn JAM1 over whatever pattern is there. Aligned to the screen x. */
+static const UBYTE kBayer[4][4] = { {0, 8, 2, 10}, {12, 4, 14, 6}, {3, 11, 1, 9}, {15, 7, 13, 5} };
+
+static void gui_dither_row(int x, int row, int w, int level, int pen)
+{
+    struct RastPort *rp = MAP_RP();
+    UWORD p = 0;
+    int i;
+    for (i = 0; i < 16; i++)
+        if (kBayer[row & 3][(x + i) & 3] < level) p |= (UWORD)(0x8000u >> i);
+    SetAPen(rp, pen);
+    rp->LinePtrn = p; rp->Flags |= FRST_DOT; rp->linpatcnt = 15;
+    Move(rp, x, row);
+    Draw(rp, x + w - 1, row);
+}
+
+static void gui_shade(int x, int y, int w, int h)
+{
+    static const UBYTE lit[5] = { 11, 7, 4, 2, 1 }, dark[4] = { 8, 5, 3, 1 };
+    struct RastPort *rp = MAP_RP();
+    int r;
+    if (w <= 2 || h < 14) return;
+    SetDrMd(rp, JAM1);
+    for (r = 0; r < 5; r++) gui_dither_row(x, y + r, w, lit[r], g_pen_shine);
+    for (r = 0; r < 4; r++) gui_dither_row(x, y + h - 1 - r, w, dark[r], g_pen_text);
+    rp->LinePtrn = 0xFFFF; rp->Flags |= FRST_DOT; rp->linpatcnt = 15;
+}
+
 static int fs_fill_kind(uint32_t t)
 {
     switch (t & 0xFFFFFF00u) {
@@ -4725,17 +4766,82 @@ static int fs_fill_kind(uint32_t t)
     }
 }
 
+/* Diagonal hatching for the RDB area: reserved space, not a partition. */
+static void gui_hatch(int x, int y, int w, int h)
+{
+    struct RastPort *rp = MAP_RP();
+    int r, i;
+    if (w <= 0 || h <= 0) return;
+    gui_box(x, y, w, h, g_pen_bg);
+    SetDrMd(rp, JAM1);
+    SetAPen(rp, g_pen_text);
+    for (r = 0; r < h; r++) {
+        UWORD p = 0;
+        for (i = 0; i < 16; i++)
+            if (((x + i + y + r) & 7) == 0) p |= (UWORD)(0x8000u >> i);
+        rp->LinePtrn = p; rp->Flags |= FRST_DOT; rp->linpatcnt = 15;
+        Move(rp, x, y + r);
+        Draw(rp, x + w - 1, y + r);
+    }
+    rp->LinePtrn = 0xFFFF; rp->Flags |= FRST_DOT; rp->linpatcnt = 15;
+}
+
+/* The Units list mini-map: the disk map in miniature, from a layout in 1/1000ths. */
+static void gui_mini_map(int x, int y, int w, int h, const RdbLayout *l)
+{
+    int i, re = (int)((l->rdb_end * (ULONG)w) / 1000u);
+    gui_pattern(x, y, w, h, FILL_FREE);
+    gui_hatch(x, y, re, h);
+    for (i = 0; i < l->nseg; i++) {
+        int x0 = x + (int)((l->seg[i].lo * (ULONG)w) / 1000u);
+        int x1 = x + (int)((l->seg[i].hi * (ULONG)w) / 1000u);
+        if (x1 <= x0) x1 = x0 + 1;
+        if (x1 > x + w) x1 = x + w;
+        gui_pattern(x0, y, x1 - x0, h, fs_fill_kind(l->seg[i].dos_type));
+        SetDrMd(MAP_RP(), JAM1);
+        gui_dither_row(x0, y, x1 - x0, 7, g_pen_shine);
+        gui_dither_row(x0, y + h - 1, x1 - x0, 6, g_pen_text);
+        MAP_RP()->LinePtrn = 0xFFFF; MAP_RP()->Flags |= FRST_DOT; MAP_RP()->linpatcnt = 15;
+        if (x1 - x0 > 2) gui_box(x1 - 1, y, 1, h, g_pen_bg);
+    }
+}
+
+/* The live table as a mini-map layout, so the shown unit follows edits. */
+static void gui_layout_from_model(RdbLayout *l, const RdbModel *m)
+{
+    int i;
+    l->nseg = 0;
+    l->rdb_end = rdb_permille(m->lo_cyl, m->cylinders);
+    for (i = 0; i < m->num_parts && i < RDB_MAX_PARTS && l->nseg < RDB_LAYOUT_MAX; i++) {
+        RdbLayoutSeg *g = &l->seg[l->nseg++];
+        g->lo = rdb_permille(m->parts[i].low_cyl, m->cylinders);
+        g->hi = rdb_permille(m->parts[i].high_cyl + 1u, m->cylinders);
+        g->dos_type = m->parts[i].dos_type;
+    }
+}
+
 /* Short "name, size" label on a map slice, when the slice is wide enough. */
-static void gui_slice_label(int x, int y, int w, const char *top, const char *bot)
+/* White text over a dark edge. On solid blue a drop shadow (one pass at +1,+1)
+   is enough; on the patterned fills (PFS checks, SFS stripes) the text gets a full
+   black outline (the 8 neighbours) so it stays readable over the white in the pattern. */
+static void gui_text_fx(int x, int y, const char *s, int outline)
+{
+    static const signed char ox[8] = { -1, 0, 1, -1, 1, -1, 0, 1 }, oy[8] = { -1, -1, -1, 0, 0, 1, 1, 1 };
+    int k;
+    if (outline) for (k = 0; k < 8; k++) gui_text(x + ox[k], y + oy[k], s, g_pen_text);
+    else gui_text(x + 1, y + 1, s, g_pen_text);
+    gui_text(x, y, s, g_pen_shine);
+}
+
+static void gui_slice_label(int x, int y, int w, const char *top, const char *bot, int kind)
 {
     int a = 0, b = 0, lw;
     while (top[a]) a++;
     while (bot[b]) b++;
     lw = ((a > b) ? a : b) * 8;
     if (lw + 10 > w) return;
-    gui_box(x + 3, y + 4, lw + 4, 24, g_pen_shine);
-    gui_text(x + 5, y + 5, top, g_pen_text);
-    gui_text(x + 5, y + 16, bot, g_pen_text);
+    gui_text_fx(x + 5, y + 8, top, kind != FILL_DOS);
+    gui_text_fx(x + 5, y + 18, bot, kind != FILL_DOS);
 }
 
 /* Return the partition index whose map slice contains (mx,my), or -1. */
@@ -4835,9 +4941,15 @@ static void gui_draw_units(void)
         int pct = gui_unit_percent(i), mx = g_ulist.x + 4, mw = g_ulist.w - 8;
         if (sel) gui_box(g_ulist.x, y, g_ulist.w, g_ulist.rowh, g_pen_fill);
         gui_text(mx, y + 2, g_unittext[i], sel ? g_pen_seltext : g_pen_text);
-        DrawBevelBox(g_win->RPort, mx, y + 12, mw, 7, GT_VisualInfo, (ULONG)g_vi, GTBB_Recessed, TRUE, TAG_END);
-        gui_box(mx + 2, y + 13, mw - 4, 5, g_pen_shine);
-        if (pct > 0) gui_box(mx + 2, y + 13, ((mw - 4) * pct) / 100, 5, sel ? g_pen_text : g_pen_fill);
+        DrawBevelBox(g_win->RPort, mx, y + 11, mw, 9, GT_VisualInfo, (ULONG)g_vi, GTBB_Recessed, TRUE, TAG_END);
+        if (pct < 0 && !(sel && g_have_model)) {
+            gui_box(mx + 2, y + 12, mw - 4, 7, g_pen_shine);      /* no RDB: an empty bar */
+        } else {
+            static RdbLayout live;
+            const RdbLayout *l = &g_disks[g_unitmap[i]].layout;
+            if (sel && g_have_model) { gui_layout_from_model(&live, &g_model); l = &live; }
+            gui_mini_map(mx + 2, y + 12, mw - 4, 7, l);
+        }
     }
 }
 
@@ -4931,8 +5043,9 @@ static void gui_draw_chrome(void)
 }
 
 /* The disk map for model m in the rectangle x,y,w,h on rp: free space first, then each
-   partition to scale. The main window and the Quick setup screens share it. rdb_label says
-   what the blank block at the start is called; the wizard leaves it unlabelled. vols, when
+   partition to scale. The main window and the Quick setup screens share it. The RDB area at
+   the start is always hatched as reserved; rdb_label adds the "RDB" plate, which the wizard
+   leaves off. vols, when
    given, is a Quick setup mask: slices carry its volume names (System, Work...) not DH0... */
 static void gui_map_draw(struct RastPort *rp, const RdbModel *m, int x, int y, int w, int h, int sel, int rdb_label,
                          const uint32_t *vols)
@@ -4942,8 +5055,14 @@ static void gui_map_draw(struct RastPort *rp, const RdbModel *m, int x, int y, i
     g_map_rp = rp;
     rw = (int)((m->lo_cyl * (ULONG)w) / m->cylinders);
     gui_pattern(x + rw, y, w - rw, h, FILL_FREE);
-    if (rdb_label && rw >= 26)   /* Cylinders below lo_cyl hold the RDB: say so, or it reads as a drawing fault. */
-        gui_text(x + (rw - 24) / 2, y + (h - 8) / 2, "RDB", g_pen_text);
+    if (rw >= 6) {  /* Reserved, not editable: sunk in and hatched; the main map adds a plate */
+        gui_hatch(x, y, rw, h);
+        DrawBevelBox(rp, x, y, rw, h, GT_VisualInfo, (ULONG)g_vi, GTBB_Recessed, TRUE, TAG_END);
+        if (rdb_label && rw >= 34) {
+            gui_box(x + (rw - 24) / 2 - 3, y + (h - 8) / 2 - 2, 30, 12, g_pen_bg);
+            gui_text(x + (rw - 24) / 2, y + (h - 8) / 2, "RDB", g_pen_text);
+        }
+    }
     for (i = 0; i < m->num_parts && i < RDB_MAX_PARTS; i++) {
         const RdbPartition *pt = &m->parts[i];
         int x0 = x + (int)((pt->low_cyl  * (ULONG)w) / m->cylinders);
@@ -4952,9 +5071,10 @@ static void gui_map_draw(struct RastPort *rp, const RdbModel *m, int x, int y, i
         if (x1 <= x0) x1 = x0 + 1;
         if (x1 > x + w) x1 = x + w;
         gui_pattern(x0, y, x1 - x0, h, fs_fill_kind(pt->dos_type));
+        gui_shade(x0, y, x1 - x0, h);
         p += u2s(lbl + p, disc_blocks_to_mb((pt->high_cyl - pt->low_cyl + 1) * m->cyl_blocks, m->block_bytes));
         s_cat(lbl, &p, " MB"); lbl[p] = 0;
-        gui_slice_label(x0, y, x1 - x0, (vols && quick_volume_name(*vols, i)) ? quick_volume_name(*vols, i) : pt->name, lbl);
+        gui_slice_label(x0, y, x1 - x0, (vols && quick_volume_name(*vols, i)) ? quick_volume_name(*vols, i) : pt->name, lbl, fs_fill_kind(pt->dos_type));
         if (x1 - x0 > 1) {            /* a 1-pixel gap keeps neighbours apart */
             gui_box(x1 - 1, y, 1, h, g_pen_bg);
         }

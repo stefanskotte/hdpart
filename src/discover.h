@@ -2,6 +2,7 @@
 #define HDPART_DISCOVER_H
 
 #include <stdint.h>
+#include "rdb.h"
 
 #define DISC_MAX        32
 #define DISC_DRIVER_LEN 40
@@ -22,8 +23,14 @@ typedef struct {
     DiskStatus status;
     int        partitionable;             /* 1 if this can hold an RDB (for the GUI picker) */
     int        used_pct;                  /* partitioned share 0..100, -1 if no RDB */
+    RdbLayout  layout;                    /* Partitions for the Units mini-map */
     char       label[DISC_LABEL_LEN];     /* model string / DOS name for display */
 } DiscDisk;
+
+/* tests/target/run.mjs reads a unit's layout from guest memory at these offsets
+   (unitLayout). A build error here means updating it there too. */
+typedef char disc_layout_offset_check[(__builtin_offsetof(DiscDisk, layout) == 60) ? 1 : -1];
+typedef char disc_size_check[(sizeof(DiscDisk) == 232) ? 1 : -1];
 
 /* ---- pure helpers (no OS calls; unit-tested on host) ---- */
 
